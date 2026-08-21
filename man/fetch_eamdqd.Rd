@@ -7,17 +7,32 @@
 fetch_eamdqd(vintage = "latest", use_cache = TRUE)
 }
 \arguments{
-\item{vintage}{\code{"latest"} (default) or a vintage date string
-(\code{"YYYY-MM"}) as published by the EA-MD/QD maintainers.}
+\item{vintage}{\code{"latest"} (default), or a Zenodo version label (e.g.
+\code{"07.2026"}) to pin a specific past vintage.}
 
-\item{use_cache}{Logical; if \code{TRUE} (default) and a cached vintage
-exists under \verb{data/cache/}, skip the network call.}
+\item{use_cache}{Logical; if \code{TRUE} (default) and a cached ZIP with a
+matching checksum already exists, skip the network call.}
 }
 \value{
-A \code{data.frame} in the EA-MD/QD wide format (one date column plus
-one column per raw series code).
+An object of class \code{eamdqd_vintage}: a list with \code{vintage}
+(resolved version label), \code{manifest} (the entry just written), \code{root}
+(path to the extracted vintage folder), \code{xlsx} (named vector of
+per-country Excel file paths, named by ISO-2/\code{"EA"}), \code{codebook_pdf},
+and \code{readme_pdf}.
 }
 \description{
-Downloads one vintage of the EA-MD/QD dataset and caches the raw file
-under \verb{data/cache/}.
+Downloads one vintage of the EA-MD/QD dataset from Zenodo, caches the ZIP
+and its extracted contents under \verb{data/cache/eamdqd/}, and records the
+vintage (Zenodo record id/DOI, publication date, file checksum, download
+timestamp) in \code{data/cache/eamdqd/manifest.json} so results are
+reproducible: re-running with the same \code{vintage} (including \code{"latest"}
+resolved to a specific record at fetch time) always returns the exact
+same files.
+}
+\details{
+This function only downloads and unpacks; it does not read or transform
+any series. See \code{\link[=eamdqd_codebook]{eamdqd_codebook()}} for the series/transformation-code
+table, and \code{vignette("panel_build")}-equivalent functions in
+\code{panel_build.R} for turning the per-country Excel files into \code{koma_ts}
+panels.
 }

@@ -16,13 +16,16 @@ Depends:
     R (>= 4.1.0)
 Imports:
     cli,
-    koma,
-    rlang,
-    stats
-Suggests:
-    devtools,
     httr2,
     jsonlite,
+    koma,
+    pdftools,
+    readxl,
+    rlang,
+    stats,
+    utils
+Suggests:
+    devtools,
     targets,
     tarchetypes,
     testthat (>= 3.2.3),

@@ -68,6 +68,43 @@ Use [`country_var()`][R/equations.R], [`shared_var()`][R/equations.R], and
 [`is_valid_project_name()`][R/equations.R] rather than pasting strings by
 hand — they encode and validate this convention.
 
+## Data transformation policy: everything stays in levels
+
+**Every data-ingestion function in this project (`data_fred.R`,
+`data_eamdqd.R`, `panel_build.R`) must return series in levels.** Do not
+apply growth-rate, log-difference, or any other stationarity transform
+while fetching or cleaning data, even when the upstream source's own
+reference pipeline would normally apply one at this stage.
+
+The reason: `koma_ts`/`as_ets()` (see `docs/koma-api.md` §1 and §8) does
+its own level-to-rate conversion via its `series_type`/`method` attributes
+(e.g. `as_ets(x, series_type = "level", method = "diff_log")`), applied
+once, at the point a series is handed to `koma::estimate()`/`forecast()`.
+If a series arrives pre-transformed, that conversion silently
+double-transforms it (e.g. differencing an already-differenced series) —
+there is no check in `koma` that would catch this, since it has no way to
+know the data was already transformed upstream. **Never call `rate()` or
+otherwise difference/log-transform a series in this repo's own ingestion
+code; leave that entirely to `as_ets(..., method = )` at the point of
+estimation.**
+
+This specifically means, for the EA-MD/QD port in `data_eamdqd.R`:
+- Do **not** port `EA_transform()` / the `TR1`/`TR2`/`TR3`
+  (heavy/light/BLT) transformation-code logic described in
+  `_data_description.pdf` and `_ReadME.pdf`. Those codes exist in the
+  upstream codebook (`data/raw/eamdqd_codebook.csv`) for reference and are
+  useful for understanding what the source considers e.g. an interest
+  rate vs. a level series, but must not be applied by our ingestion code.
+- Quarterly aggregation of monthly series, missing-value imputation (EM
+  algorithm), and outlier treatment **do still apply to levels** — those
+  are not stationarity transforms, they are data-cleaning steps, and the
+  upstream series (before any `TR` code is applied) are already levels.
+- A future contributor implementing `eamdqd_variable_map()` should map
+  each EA-MD/QD series to a project variable with `series_type = "level"`
+  and whatever `method` (`"diff_log"`, `"percentage"`, `"none"`, ...)
+  matches that series' economic nature, mirroring how `small_open_economy`
+  is handled in the `koma` vignettes — not from the EA-MD/QD `TR` codes.
+
 ## FRED API key
 
 The FRED API key lives in `.Renviron` as `FRED_API_KEY`. Copy

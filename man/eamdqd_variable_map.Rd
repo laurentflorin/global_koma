@@ -14,5 +14,7 @@ method, e.g. \code{"diff_log"}).
 \description{
 Returns the translation table from raw EA-MD/QD series codes to this
 project's \verb{<iso2>_<concept>} / \verb{ea_<concept>} naming convention (see
-\code{equations.R} and CLAUDE.md).
+\code{equations.R} and CLAUDE.md). Built on top of \code{\link[=eamdqd_codebook]{eamdqd_codebook()}} --
+the raw series list and transformation codes -- once the mapping from
+EA-MD/QD codes to project concepts has been reviewed and confirmed.
 }
