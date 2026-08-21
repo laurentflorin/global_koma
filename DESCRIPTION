@@ -1,0 +1,30 @@
+Package: globalkoma
+Title: Multi-Country Bayesian Macro Model Built on koma
+Version: 0.0.0.9000
+Authors@R: person("Laurent", "Florin", , "laurent.f94@gmail.com", role = c("aut", "cre"))
+Description: Data pipeline and modelling code for a multi-country Bayesian
+    simultaneous-equations macro model, built on top of the 'koma' package.
+    Stage 1 estimates per-country satellite models, stage 2 assembles the
+    joint multi-country system of equations, and stage 3 builds regional
+    (euro-area) and global aggregation blocks. Orchestrated with 'targets';
+    library management with 'renv'.
+License: file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/testthat/edition: 3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    cli,
+    koma,
+    rlang,
+    stats
+Suggests:
+    devtools,
+    httr2,
+    jsonlite,
+    targets,
+    tarchetypes,
+    testthat (>= 3.2.3),
+    withr
+Config/roxygen2/version: 8.1.0

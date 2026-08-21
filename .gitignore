@@ -1,0 +1,36 @@
+# Secrets -- never commit.
+.Renviron
+
+# Raw and cached data -- never commit; refetch/rebuild instead.
+data/raw/*
+data/cache/*
+!data/raw/.gitkeep
+!data/cache/.gitkeep
+
+# renv project library -- restored from renv.lock with renv::restore().
+renv/library/
+renv/local/
+renv/cellar/
+renv/lockfile.lock
+renv/python/
+renv/sandbox/
+renv/staging/
+
+# targets pipeline store -- rebuild with targets::tar_make().
+_targets/
+_targets_r/
+
+# R session/package build artifacts.
+.Rproj.user/
+.Rhistory
+.RData
+.Rbuildignore.bak
+*.Rcheck/
+inst/doc/
+man/*.Rd.bak
+NAMESPACE.bak
+
+# rendered reports (rebuild from docs/methodology.qmd, reports/ scripts).
+reports/*.html
+reports/*_files/
+docs/*.html

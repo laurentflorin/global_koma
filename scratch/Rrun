@@ -1,0 +1,14 @@
+#!/bin/sh
+# Wrapper: run Rscript from the project's micromamba R environment, with
+# renv's root/library/sandbox/cache redirected off $HOME (which is nearly
+# full) onto the Data disk, and the conda toolchain (compiler, pkg-config)
+# on PATH for source package installs. See CLAUDE.md.
+ENV=/run/media/system/Data/opt/micromamba/envs/koma
+RR=/run/media/system/Data/opt/renv-root
+export RENV_PATHS_ROOT="$RR"
+export RENV_PATHS_LIBRARY_ROOT="$RR/library"
+export RENV_PATHS_SANDBOX="$RR/sandbox"
+export RENV_PATHS_CACHE="$RR/cache"
+export PATH="$ENV/bin:$PATH"
+export PKG_CONFIG_PATH="$ENV/lib/pkgconfig:$PKG_CONFIG_PATH"
+exec "$ENV/bin/Rscript" "$@"

@@ -1,0 +1,19 @@
+---
+title: "Methodology"
+format: html
+---
+
+## Status
+
+Stub. This document will describe the three-stage modelling approach once
+the stage 1/2/3 functions in `R/` are implemented (see `../CLAUDE.md`):
+
+1. **Stage 1** -- per-country satellite models (`R/stage1_models.R`).
+2. **Stage 2** -- the joint multi-country system, estimated together so
+   cross-country simultaneity through `ea_`/`world_` variables is captured
+   (`R/stage2_system.R`).
+3. **Stage 3** -- regional (`ea_`) and global (`world_`) aggregation blocks
+   for reporting (`R/stage3_blocks.R`).
+
+For the underlying `koma` package's equation grammar, estimation, and
+forecasting API, see `koma-api.md` in this directory.

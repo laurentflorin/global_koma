@@ -1,0 +1,10 @@
+^renv$
+^renv\.lock$
+^_targets\.R$
+^_targets$
+^data$
+^docs$
+^reports$
+^scratch$
+^CLAUDE\.md$
+^\.Renviron\.example$

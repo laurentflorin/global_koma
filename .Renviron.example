@@ -1,0 +1,6 @@
+# Copy this file to .Renviron (never commit .Renviron itself -- it is
+# git-ignored) and fill in real values. R reads .Renviron automatically at
+# session start; see CLAUDE.md for the rule that FRED_API_KEY must never be
+# committed, logged, or printed.
+
+FRED_API_KEY=
