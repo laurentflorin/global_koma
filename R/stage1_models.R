@@ -224,10 +224,14 @@ stage1_spec <- function(iso2, shares) {
 #' @param iso2 Two-letter lowercase ISO country code.
 #' @param spec A list as returned by [stage1_spec()], with elements
 #'   `stochastic` and `identities`.
+#' @param tau Optional named numeric vector, dependent variable ->
+#'   sampler `tau` override, appended to that equation as `[tau = value]`
+#'   (koma's own per-equation settings syntax). Used by [tune_tau()];
+#'   equations not named here keep koma's default `tau = 1.1`.
 #'
 #' @return A `koma::koma_seq` object.
 #' @export
-stage1_country_equations <- function(iso2, spec) {
+stage1_country_equations <- function(iso2, spec, tau = NULL) {
   iso2 <- tolower(iso2)
 
   stochastic <- spec$stochastic %||% list()
@@ -236,9 +240,18 @@ stage1_country_equations <- function(iso2, spec) {
     cli::cli_abort("{.arg spec} must contain at least one stochastic equation; koma requires one.")
   }
 
+  unknown_tau <- setdiff(names(tau), names(stochastic))
+  if (length(unknown_tau) > 0) {
+    cli::cli_abort("{.arg tau} names {.val {unknown_tau}}, which {?is/are} not a stochastic equation in {.arg spec}.")
+  }
+
   stochastic_strings <- vapply(names(stochastic), function(dep) {
     eq <- stochastic[[dep]]
-    stochastic_equation(dep, terms = eq$terms, lags = eq$lags)
+    out <- stochastic_equation(dep, terms = eq$terms, lags = eq$lags)
+    if (!is.null(tau) && dep %in% names(tau)) {
+      out <- paste0(out, " [tau = ", format(tau[[dep]], trim = TRUE), "]")
+    }
+    out
   }, character(1))
 
   identity_strings <- vapply(names(identities), function(dep) {
@@ -318,10 +331,25 @@ stage1_dates <- function(panel, estimation_end = c(2019, 4),
 #' @export
 fit_stage1 <- function(iso2, panel, dates, options = list()) {
   iso2 <- tolower(iso2)
-
   shares <- expenditure_shares(panel, iso2, dates)
   sys_eq <- stage1_country_equations(iso2, stage1_spec(iso2, shares))
+  estimate_stage1_system(iso2, sys_eq, panel, dates, options = options)
+}
 
+#' Estimate a stage-1 system already built by [stage1_country_equations()]
+#'
+#' The shared body of [fit_stage1()], factored out so [tune_tau()] can
+#' re-estimate the same country under a different `sys_eq` (one with
+#' `tau` overrides) without duplicating the panel-subsetting, gap-check,
+#' attribute-harmonisation and truncation logic.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @param sys_eq A `koma::koma_seq`, e.g. from [stage1_country_equations()].
+#' @param panel,dates,options As in [fit_stage1()].
+#'
+#' @return A `koma::koma_estimate`, carrying `runtime_s` and `iso2`.
+#' @keywords internal
+estimate_stage1_system <- function(iso2, sys_eq, panel, dates, options = list()) {
   # Same subset koma itself takes in new_prepare_estimation().
   # `weight_variables` is empty here (our identity weights are numeric,
   # not injected expressions), but including it keeps this correct if a
@@ -377,6 +405,23 @@ window_keeping_attrs <- function(x, ...) {
   do.call(koma::as_ets, c(list(stats::window(x, ...)), attrs))
 }
 
+#' Pick a `future::plan()` strategy for this platform
+#'
+#' Apple's Accelerate BLAS is not fork-safe and segfaults inside koma's
+#' `eigen()` call, and Windows cannot fork at all -- both need
+#' `multisession`. See `docs/koma-api.md` §3. Shared by [fit_stage1_all()]
+#' and [tune_tau_all()].
+#' @keywords internal
+stage1_parallel_strategy <- function() {
+  can_fork <- .Platform$OS.type != "windows" && Sys.info()[["sysname"]] != "Darwin"
+  if (can_fork) "future::multicore" else "future::multisession"
+}
+
+#' @keywords internal
+stage1_parallel_workers <- function(countries) {
+  min(length(countries), parallelly::availableCores(omit = 1))
+}
+
 #' Fit stage 1 for every country
 #'
 #' Runs the 11 country estimations concurrently and caches each fit to
@@ -408,13 +453,8 @@ fit_stage1_all <- function(countries = modelled_countries, panel, dates,
                            options = list(), parallel = TRUE,
                            cache_dir = stage1_cache_dir()) {
   if (parallel) {
-    # Apple's Accelerate BLAS is not fork-safe and segfaults inside
-    # koma's eigen() call, and Windows cannot fork at all -- both need
-    # multisession. See docs/koma-api.md §3.
-    can_fork <- .Platform$OS.type != "windows" && Sys.info()[["sysname"]] != "Darwin"
-    strategy <- if (can_fork) "future::multicore" else "future::multisession"
-    workers <- min(length(countries), parallelly::availableCores(omit = 1))
-
+    strategy <- stage1_parallel_strategy()
+    workers <- stage1_parallel_workers(countries)
     old_plan <- future::plan(strategy, workers = workers)
     on.exit(future::plan(old_plan), add = TRUE)
     cli::cli_inform("Fitting {length(countries)} stage-1 model{?s} on {workers} worker{?s} ({strategy}).")

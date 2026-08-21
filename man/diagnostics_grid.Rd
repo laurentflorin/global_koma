@@ -27,5 +27,14 @@ A named list of \code{ggplot} objects, keyed by variable name.
 Wraps \code{koma::trace_plot()}, \code{koma::acf_plot()}, and
 \code{koma::running_mean_plot()} for every \verb{<iso2>_<concept>} combination
 implied by \code{countries} x \code{concepts}, returning one plot per
-variable/kind rather than requiring the caller to loop.
+variable/kind rather than requiring the caller to loop. Each returned
+plot already facets over every coefficient of that equation, since
+that is what koma's own plotting functions do when given one
+\code{variables} name.
+}
+\details{
+A \code{concepts} name with no matching stochastic equation in \code{fit} (e.g.
+\code{"exports"} or \code{"prices"}, which have no Metropolis step and therefore
+nothing to trace) is skipped with a warning naming it, rather than
+erroring the whole grid.
 }

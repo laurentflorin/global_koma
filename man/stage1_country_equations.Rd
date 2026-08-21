@@ -4,13 +4,18 @@
 \alias{stage1_country_equations}
 \title{Build one country's stage-1 equation set}
 \usage{
-stage1_country_equations(iso2, spec)
+stage1_country_equations(iso2, spec, tau = NULL)
 }
 \arguments{
 \item{iso2}{Two-letter lowercase ISO country code.}
 
 \item{spec}{A list as returned by \code{\link[=stage1_spec]{stage1_spec()}}, with elements
 \code{stochastic} and \code{identities}.}
+
+\item{tau}{Optional named numeric vector, dependent variable ->
+sampler \code{tau} override, appended to that equation as \verb{[tau = value]}
+(koma's own per-equation settings syntax). Used by \code{\link[=tune_tau]{tune_tau()}};
+equations not named here keep koma's default \code{tau = 1.1}.}
 }
 \value{
 A \code{koma::koma_seq} object.
