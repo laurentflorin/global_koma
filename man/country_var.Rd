@@ -7,12 +7,15 @@
 country_var(iso2, concept)
 }
 \arguments{
-\item{iso2}{Two-letter lowercase ISO country code, e.g. \code{"de"}.}
+\item{iso2}{Two-letter lowercase ISO country code, e.g. \code{"de"}. May be a
+vector, e.g. to build every \verb{<iso2>_gdp} name for a set of countries at
+once; \code{concept} is recycled against it.}
 
 \item{concept}{Lowercase concept name, e.g. \code{"gdp"}.}
 }
 \value{
-A single string \code{"<iso2>_<concept>"}.
+A character vector of \code{"<iso2>_<concept>"} names, same length as
+\code{iso2}.
 }
 \description{
 Combines an ISO-2 country code and a concept into the project's

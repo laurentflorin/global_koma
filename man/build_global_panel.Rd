@@ -4,23 +4,23 @@
 \alias{build_global_panel}
 \title{Build the full multi-country panel}
 \usage{
-build_global_panel(countries, shared_series_map, raw_dir = "data/raw")
+build_global_panel(countries = modelled_countries, eamdqd = NULL, row_weights)
 }
 \arguments{
-\item{countries}{Character vector of ISO-2 country codes.}
+\item{countries}{Character vector of ISO-2 country codes. Defaults to
+every modelled country (\code{ea_countries} plus \code{"us"}).}
 
-\item{shared_series_map}{A \code{data.frame} describing the shared series
-(source, code, concept, scope, series_type, method).}
+\item{eamdqd}{An \code{eamdqd_vintage}, as returned by \code{\link[=fetch_eamdqd]{fetch_eamdqd()}}.}
 
-\item{raw_dir}{Directory holding cached raw series (default
-\code{"data/raw"}).}
+\item{row_weights}{Named numeric vector as returned by
+\code{\link[=row_gdp_weights]{row_gdp_weights()}}.}
 }
 \value{
 A named list of \code{koma_ts} objects, validated with
 \code{\link[=is_valid_project_name]{is_valid_project_name()}}.
 }
 \description{
-Combines \code{\link[=build_country_panel]{build_country_panel()}} output across all countries with the
-shared (\code{ea_} / \code{world_} / unprefixed) series into one \code{ts_data} list
-suitable for \code{koma::estimate()}.
+Combines \code{\link[=build_country_panel]{build_country_panel()}} output across all requested countries
+with the shared variables from \code{\link[=build_shared_panel]{build_shared_panel()}} into one flat
+\code{ts_data} list suitable for \code{koma::estimate()}.
 }

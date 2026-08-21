@@ -128,6 +128,52 @@ This specifically means, for the EA-MD/QD port in `data_eamdqd.R`:
   call, and silently picking one would be exactly the kind of hidden
   decision this section exists to prevent.
 
+## Harmonised panel and trade weights (`panel_build.R`, `weights.R`)
+
+- **Country codes are not the same string across sources.** This project's
+  own convention is the true ISO-2 code (Greece = `"gr"`), but EA-MD/QD and
+  Eurostat both use the EU statistical convention `"EL"`, while the ECB's
+  own dataflows use `"GR"` (which happens to match ISO). `panel_build.R`'s
+  `iso2_to_eamdqd`/`iso2_to_ecb` crosswalks exist specifically for this; get
+  it wrong and Greek series come back silently empty rather than erroring.
+- **`FM.D.U2.EUR.4F.KR.MRR_FR.LEV` (the ECB main refinancing rate) is a
+  step function, not a daily-observed series**, despite its `FREQ = D`
+  label — the ECB only records an observation when the rate *changes*, so
+  multi-year gaps in the raw series are normal. Grouping raw observations
+  by calendar month and handing that straight to `ts(..., frequency = 12)`
+  silently compresses those gaps and misaligns every later quarter's
+  aggregation with real calendar time. `ecb_quarterly_series()` forward-
+  fills the step series onto a complete daily grid before aggregating —
+  apply the same pattern to any other ECB step-function series (e.g. other
+  `FM` key rates) rather than aggregating raw SDMX observations directly.
+- **The ECB WTS dataflow's `CURRENCY_TRANS` dimension is not just a
+  currency label for an aggregate reporter.** For a genuine bilateral
+  country pair (e.g. DE-FR) its variants agree to 3 decimal places and
+  picking any one is fine. For the euro-area aggregate reporter (`"I9"`)
+  the variants are genuinely different partner-group definitions — verified
+  `WTS.A.I9.GB...O.TMS.F` returns 0.205/0.130/0.104 for 2021 depending on
+  variant, and China/Poland are only defined under the broader variants at
+  all. Always pick the lexicographically **last** `CURRENCY_TRANS` (the
+  broadest group) when querying an aggregate reporter — see
+  `ecb_trade_weight()`'s doc comment for the full reasoning.
+- **The ECB has no US-reporter series in WTS** (no USD-denominated
+  dataflow), so `W_trade["us", ]` is built from a documented approximation
+  — the reciprocal of each EA country's own weight on the US, renormalised
+  — flagged with `cli::cli_warn()` at build time, not silently substituted.
+  Ireland's cell in that row is additionally flagged as unreliable: its own
+  ECB weight-on-US is inflated by the same multinational/tax-redomiciliation
+  distortion behind the 2015 Irish GDP break (`data_eamdqd.R`).
+- Eurostat (`eurostat` package) and ECB (`ecb` package) responses are
+  cached to `data/cache/eurostat/` and `data/cache/ecb/` respectively
+  (git-ignored, same as `data/cache/fred/` and `data/cache/eamdqd/`) —
+  both APIs are slow enough (single-digit minutes for a full trade-weight
+  matrix, uncached) that iterating without the cache is impractical.
+- `eurostat` itself exports a data object literally named `ea_countries`.
+  Do not write `[ea_countries]`/`[modelled_countries]` roxygen markdown
+  links for this project's own (undocumented, internal) constants of the
+  same name — they silently resolve to `eurostat::ea_countries` instead of
+  erroring. Use plain `` `ea_countries` `` code spans.
+
 ## FRED API key
 
 The FRED API key lives in `.Renviron` as `FRED_API_KEY`. Copy
@@ -152,11 +198,12 @@ devtools::test()
 Run both after any change to `R/`, `_targets.R`, or the data pipeline.
 `tar_make()` confirms the pipeline still executes top-to-bottom (or fails
 at the expected, not-yet-implemented step); `devtools::test()` confirms
-the unit tests for whatever you touched now pass. Until `data_fred.R`,
-`data_eamdqd.R`, and `panel_build.R` are implemented, `tar_make()` will
-error partway through by design — that is expected, not a regression; make
-sure it errors at the *next* unimplemented stub, not an earlier one you
-touched.
+the unit tests for whatever you touched now pass. `data_fred.R`,
+`data_eamdqd.R`, `panel_build.R`, and `weights.R` are implemented;
+`stage1_models.R`, `stage2_system.R`, `stage3_blocks.R`, `diagnostics.R`,
+and `scoring.R` are not, so `tar_make()` will still error partway through
+by design — that is expected, not a regression; make sure it errors at the
+*next* unimplemented stub, not an earlier one you touched.
 
 Do not fetch real data as part of "proving a change works" unless the
 change is specifically about the fetch layer — most iteration should run

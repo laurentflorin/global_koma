@@ -4,12 +4,14 @@
 \alias{align_panel}
 \title{Align a panel to a common frequency and sample}
 \usage{
-align_panel(panel, start, end)
+align_panel(panel, start = NULL, end = NULL)
 }
 \arguments{
 \item{panel}{A named list of \code{koma_ts} objects.}
 
-\item{start, end}{\code{c(year, period)} bounds.}
+\item{start, end}{\code{c(year, period)} bounds. If omitted, computed as the
+widest common window across every series in \code{panel} (the latest
+start, the earliest end) -- i.e. the effective common sample.}
 }
 \value{
 The windowed panel, same names as \code{panel}.

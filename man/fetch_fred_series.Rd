@@ -12,7 +12,7 @@ fetch_fred_series(
 )
 }
 \arguments{
-\item{series_id}{FRED series identifier, e.g. \code{"CPALTT01DEQ657N"}.}
+\item{series_id}{FRED series identifier, e.g. \code{"GDPC1"}.}
 
 \item{start_date}{Optional \code{Date} or \code{"YYYY-MM-DD"} string.}
 
@@ -22,10 +22,14 @@ fetch_fred_series(
 exists under \verb{data/cache/}, skip the network call.}
 }
 \value{
-A \code{data.frame} with columns \code{date} and \code{value}.
+A \code{data.frame} with columns \code{date} and \code{value}, ascending by
+date. Observations FRED marks missing (\code{"."}) are dropped, not
+coerced to \code{NA} silently mixed in with real gaps -- callers see only
+observed periods, matching \code{\link[=extract_eamdqd_series]{extract_eamdqd_series()}}'s contract.
 }
 \description{
 Downloads one series from the FRED \code{series/observations} endpoint and
-caches the raw JSON response under \verb{data/cache/}. Does not transform the
-series into a \code{koma_ts} -- see \code{panel_build.R} for that step.
+caches the raw JSON response under \verb{data/cache/fred/}. Does not
+transform the series into a \code{koma_ts} -- see \code{panel_build.R} for that
+step.
 }

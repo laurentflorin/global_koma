@@ -11,13 +11,24 @@
 #' `<iso2>_<concept>` naming convention, and validates the result against
 #' koma's variable-name grammar (`^[a-zA-Z][a-zA-Z0-9_]*$`).
 #'
-#' @param iso2 Two-letter lowercase ISO country code, e.g. `"de"`.
+#' @param iso2 Two-letter lowercase ISO country code, e.g. `"de"`. May be a
+#'   vector, e.g. to build every `<iso2>_gdp` name for a set of countries at
+#'   once; `concept` is recycled against it.
 #' @param concept Lowercase concept name, e.g. `"gdp"`.
 #'
-#' @return A single string `"<iso2>_<concept>"`.
+#' @return A character vector of `"<iso2>_<concept>"` names, same length as
+#'   `iso2`.
 #' @export
 country_var <- function(iso2, concept) {
-  stop("not implemented", call. = FALSE)
+  bad <- iso2[!grepl("^[a-z]{2}$", iso2)]
+  if (length(bad) > 0) {
+    cli::cli_abort("{.arg iso2} must be two-letter lowercase codes, got {.val {bad}}.")
+  }
+  name <- paste0(iso2, "_", concept)
+  if (!all(is_valid_project_name(name))) {
+    cli::cli_abort("{.val {name[!is_valid_project_name(name)]}} is not a valid project variable name.")
+  }
+  name
 }
 
 #' Build a shared (cross-country) variable name
@@ -32,7 +43,16 @@ country_var <- function(iso2, concept) {
 #' @return A single string.
 #' @export
 shared_var <- function(concept, scope = c("ea", "world", "none")) {
-  stop("not implemented", call. = FALSE)
+  scope <- match.arg(scope)
+  name <- switch(scope,
+    ea = paste0("ea_", concept),
+    world = paste0("world_", concept),
+    none = concept
+  )
+  if (!is_valid_project_name(name)) {
+    cli::cli_abort("{.val {name}} is not a valid project variable name.")
+  }
+  name
 }
 
 #' Validate a variable name against the project naming convention
@@ -95,5 +115,13 @@ stochastic_equation <- function(dep, terms, lags = NULL, priors = NULL,
 #'   `"de_gdp == 0.6*de_c + 0.4*de_i"`.
 #' @export
 identity_equation <- function(dep, weighted_terms) {
-  stop("not implemented", call. = FALSE)
+  if (length(weighted_terms) == 0) {
+    cli::cli_abort("{.arg weighted_terms} must have at least one component.")
+  }
+  terms <- vapply(names(weighted_terms), function(component) {
+    weight <- weighted_terms[[component]]
+    weight_str <- if (is.character(weight)) paste0("(", weight, ")") else format(weight, trim = TRUE)
+    paste0(weight_str, "*", component)
+  }, character(1))
+  paste0(dep, " == ", paste(terms, collapse = " + "))
 }

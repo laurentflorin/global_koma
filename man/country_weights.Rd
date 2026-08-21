@@ -4,17 +4,21 @@
 \alias{country_weights}
 \title{Compute country aggregation weights}
 \usage{
-country_weights(countries, basis = c("gdp", "trade"), year)
+country_weights(countries, basis = c("gdp", "trade"), year = NULL)
 }
 \arguments{
 \item{countries}{Character vector of ISO-2 country codes to weight.}
 
-\item{basis}{One of \code{"gdp"} (nominal GDP shares) or \code{"trade"}
-(bilateral trade shares).}
+\item{basis}{One of \code{"gdp"} (nominal GDP shares, \code{\link[=build_gdp_weight_matrix]{build_gdp_weight_matrix()}})
+or \code{"trade"} (bilateral trade shares, \code{\link[=ecb_trade_weight]{ecb_trade_weight()}}-based:
+each country's share of the \emph{group's total external trade}, i.e. the
+\code{1 - "row"} mass of \code{\link[=build_trade_weight_matrix]{build_trade_weight_matrix()}} redistributed across
+\code{countries}).}
 
-\item{year}{Reference year for the weights (weights are typically fixed
-at a base year rather than time-varying, unlike koma's own dynamic
-identity weights).}
+\item{year}{Ignored for \code{basis = "trade"} (ECB weights are already a
+multi-year average, see \code{window} in the underlying fetchers); for
+\code{basis = "gdp"}, restricts the Eurostat window average to end no
+later than fourth quarter of \code{year}, if provided.}
 }
 \value{
 A named numeric vector, one weight per element of \code{countries},

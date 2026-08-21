@@ -4,23 +4,22 @@
 \alias{build_country_panel}
 \title{Build one country's panel}
 \usage{
-build_country_panel(iso2, series_map, raw_dir = "data/raw")
+build_country_panel(iso2, eamdqd = NULL)
 }
 \arguments{
-\item{iso2}{Two-letter lowercase ISO country code.}
+\item{iso2}{Two-letter lowercase ISO country code. One of
+\code{ea_countries} or \code{"us"}.}
 
-\item{series_map}{A \code{data.frame} describing which raw source and code
-maps to which concept for this country (source, code, concept,
-series_type, method).}
-
-\item{raw_dir}{Directory holding cached raw series (default
-\code{"data/raw"}).}
+\item{eamdqd}{An \code{eamdqd_vintage} (required for EA countries; ignored
+for \code{"us"}). See \code{\link[=fetch_eamdqd]{fetch_eamdqd()}}.}
 }
 \value{
-A named list of \code{koma_ts} objects.
+A named list of \code{koma::koma_ts} objects, keyed by
+\verb{<iso2>_<concept>} names, covering \code{gdp}, \code{consumption},
+\code{investment}, \code{government}, \code{exports}, \code{imports}, \code{domestic_demand},
+\code{prices}, \code{core_prices}, \code{unemployment}, \code{long_rate}.
 }
 \description{
-Combines the raw FRED and EA-MD/QD series belonging to a single country
-into a named list of \code{koma::koma_ts} objects, keyed by
-\verb{<iso2>_<concept>} names.
+Dispatches to \code{\link[=build_ea_country_panel]{build_ea_country_panel()}} (EA-MD/QD, Eurostat fallback)
+or \code{\link[=build_us_panel]{build_us_panel()}} (FRED) depending on \code{iso2}.
 }

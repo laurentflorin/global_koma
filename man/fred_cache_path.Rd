@@ -4,10 +4,13 @@
 \alias{fred_cache_path}
 \title{Cache file path for a FRED series}
 \usage{
-fred_cache_path(series_id)
+fred_cache_path(series_id, start_date = NULL, end_date = NULL)
 }
 \arguments{
 \item{series_id}{FRED series identifier.}
+
+\item{start_date, end_date}{As passed to \code{\link[=fetch_fred_series]{fetch_fred_series()}}; folded
+into the cache key because a narrower window is a different query.}
 }
 \value{
 A path under \verb{data/cache/fred/}.
