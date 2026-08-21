@@ -52,13 +52,23 @@ test_that("eamdqd_codebook writes a reviewable CSV with the expected columns", {
 })
 
 test_that("eamdqd_variable_map has the required columns", {
-  m <- eamdqd_variable_map()
+  skip_if_offline_zenodo()
+  skip_on_cran()
+  withr::local_dir(withr::local_tempdir())
+
+  cb <- eamdqd_codebook(fetch_eamdqd(vintage = "latest"), use_cache = FALSE)
+  m <- suppressWarnings(eamdqd_variable_map(cb, out_path = NULL))
   expect_s3_class(m, "data.frame")
-  expect_named(m, c("eamdqd_code", "project_name", "series_type", "method"))
+  expect_true(all(c("eamdqd_code", "project_name", "series_type", "method") %in% names(m)))
 })
 
 test_that("eamdqd_variable_map only maps to valid project names", {
-  m <- eamdqd_variable_map()
+  skip_if_offline_zenodo()
+  skip_on_cran()
+  withr::local_dir(withr::local_tempdir())
+
+  cb <- eamdqd_codebook(fetch_eamdqd(vintage = "latest"), use_cache = FALSE)
+  m <- suppressWarnings(eamdqd_variable_map(cb, out_path = NULL))
   expect_true(all(is_valid_project_name(m$project_name)))
 })
 
@@ -68,9 +78,20 @@ test_that("extract_eamdqd_series returns a date/value data.frame", {
   withr::local_dir(withr::local_tempdir())
 
   raw <- fetch_eamdqd(use_cache = TRUE)
-  out <- extract_eamdqd_series(raw, "IPI.M.DE")
+  out <- extract_eamdqd_series(raw, "GDP_DE")
   expect_s3_class(out, "data.frame")
   expect_named(out, c("date", "value"))
+  expect_gt(nrow(out), 0)
+  expect_false(anyNA(out$value)) # only observed periods are returned
+})
+
+test_that("extract_eamdqd_series rejects an unknown series name", {
+  skip_if_offline_zenodo()
+  skip_on_cran()
+  withr::local_dir(withr::local_tempdir())
+
+  raw <- fetch_eamdqd(use_cache = TRUE)
+  expect_error(extract_eamdqd_series(raw, "NOT_A_SERIES"), "not found")
 })
 
 # --- eamdqd_aggregate_quarterly() ---------------------------------------
@@ -198,4 +219,246 @@ test_that("EM imputation is a no-op when there are no missing values", {
   X <- matrix(rnorm(50 * 5), 50, 5)
   imputed <- eamdqd_em_impute(X, q = 1)
   expect_identical(imputed, X)
+})
+
+# --- eamdqd_transform(): one test per transformation code ----------------
+#
+# The codes are the DATASET's, not the FRED-MD numbering: 1 = log,
+# 2 = Dlog, 3 = D2log, 4 = none, 5 = D, 6 = D2. Codes 2 and 4 are the two
+# most dangerous to get wrong -- under the FRED-MD numbering quoted in the
+# original brief, 1 would mean "none" and 2 "first difference", so a
+# mis-port would silently log-difference series meant to be left alone and
+# vice versa. Both are asserted explicitly below.
+
+tr_fixture <- function() {
+  matrix(c(1, 2, 4, 8), ncol = 1, dimnames = list(NULL, "s"))
+}
+
+test_that("TR code 1 is a scaled log", {
+  x <- tr_fixture()
+  expect_equal(as.numeric(eamdqd_transform(x, tr = 1, scale = 100)), 100 * log(c(1, 2, 4, 8)))
+})
+
+test_that("TR code 2 is a scaled log difference, not a plain difference", {
+  x <- tr_fixture()
+  got <- as.numeric(eamdqd_transform(x, tr = 2, scale = 100))
+  expect_equal(got, c(NA, 100 * diff(log(c(1, 2, 4, 8)))))
+  expect_false(isTRUE(all.equal(got[-1], diff(c(1, 2, 4, 8))))) # not a plain difference
+})
+
+test_that("TR code 3 is a scaled second log difference", {
+  x <- tr_fixture()
+  expect_equal(
+    as.numeric(eamdqd_transform(x, tr = 3, scale = 100)),
+    c(NA, NA, diff(100 * log(c(1, 2, 4, 8)), differences = 2))
+  )
+})
+
+test_that("TR code 4 is no transformation at all", {
+  x <- tr_fixture()
+  expect_equal(as.numeric(eamdqd_transform(x, tr = 4)), c(1, 2, 4, 8))
+})
+
+test_that("TR code 5 is a plain first difference", {
+  x <- tr_fixture()
+  expect_equal(as.numeric(eamdqd_transform(x, tr = 5)), c(NA, 1, 2, 4))
+})
+
+test_that("TR code 6 is a plain second difference", {
+  x <- tr_fixture()
+  expect_equal(as.numeric(eamdqd_transform(x, tr = 6)), c(NA, NA, 1, 2))
+})
+
+test_that("the scale argument only affects the log-based codes", {
+  x <- tr_fixture()
+  expect_equal(as.numeric(eamdqd_transform(x, tr = 2, scale = 1)), c(NA, diff(log(c(1, 2, 4, 8)))))
+  expect_equal(as.numeric(eamdqd_transform(x, tr = 5, scale = 1)),
+               as.numeric(eamdqd_transform(x, tr = 5, scale = 100)))
+})
+
+test_that("a negative value under a log code demotes to the non-log code and warns", {
+  x <- matrix(c(1, -2, 3, 4), ncol = 1, dimnames = list(NULL, "neg"))
+  expect_warning(got <- eamdqd_transform(x, tr = 2), "negative values")
+  expect_equal(as.numeric(got), c(NA, -3, 5, 1)) # demoted 2 -> 5, a plain difference
+})
+
+test_that("an out-of-range transformation code is rejected", {
+  expect_error(eamdqd_transform(tr_fixture(), tr = 7), "1-6")
+})
+
+# --- frequency handling --------------------------------------------------
+
+synthetic_sheet <- function() {
+  time <- seq(as.Date("2020-01-01"), by = "month", length.out = 12)
+  values <- cbind(
+    q_stock = c(NA, NA, 100, NA, NA, 101, NA, NA, 102, NA, NA, 103),
+    m_mean  = as.numeric(1:12),
+    m_sum   = as.numeric(1:12)
+  )
+  info <- data.frame(
+    code = c("QSTOCK", "MMEAN", "MSUM"),
+    country = "XX",
+    name = c("q_stock", "m_mean", "m_sum"),
+    frequency = c("Q", "M", "M"),
+    aggregation = c(1, 1, 2),
+    tr_heavy = c(2, 2, 2), tr_light = c(2, 4, 2), tr_blt = c(2, 2, 2),
+    class = c("R", "R", "N"),
+    stringsAsFactors = FALSE
+  )
+  list(values = values, time = time, info = info)
+}
+
+test_that("a natively quarterly series survives the monthly grid intact", {
+  # Regression guard: quarterly series are stored only in months 3/6/9/12,
+  # so routing them through the monthly aggregator would see two NAs per
+  # quarter and silently return an all-NA series.
+  p <- eamdqd_to_frequency(synthetic_sheet(), frequency = "q")
+  expect_equal(as.numeric(p$values[, "q_stock"]), c(100, 101, 102, 103))
+  expect_equal(p$frequency, 4)
+})
+
+test_that("monthly series are aggregated by mean or sum per their Aggregation code", {
+  p <- eamdqd_to_frequency(synthetic_sheet(), frequency = "q")
+  expect_equal(as.numeric(p$values[, "m_mean"]), c(2, 5, 8, 11))
+  expect_equal(as.numeric(p$values[, "m_sum"]), c(6, 15, 24, 33))
+})
+
+test_that("frequency = 'm' keeps only natively monthly series", {
+  p <- eamdqd_to_frequency(synthetic_sheet(), frequency = "m")
+  expect_equal(colnames(p$values), c("m_mean", "m_sum"))
+  expect_equal(p$frequency, 12)
+  expect_equal(nrow(p$values), 12)
+})
+
+# --- covid window --------------------------------------------------------
+
+test_that("the covid window blanks calendar 2020-2021 for real series only", {
+  values <- matrix(1, nrow = 12, ncol = 2, dimnames = list(NULL, c("real", "fin")))
+  out <- eamdqd_covid_window(values, class = c("R", "F"),
+                             start = c(2019, 1), frequency = 4)
+  yr <- rep(2019:2021, each = 4)
+  expect_true(all(is.na(out[yr %in% c(2020, 2021), "real"])))
+  expect_true(all(!is.na(out[yr == 2019, "real"])))
+  expect_true(all(!is.na(out[, "fin"]))) # financial series untouched
+})
+
+# --- caveat warnings -----------------------------------------------------
+
+# Collect every warning a call emits, so each caveat can be asserted
+# independently -- eamdqd_warn_caveats() always emits the 2020 one, which
+# makes expect_no_warning() useless for the country-specific ones.
+caveat_messages <- function(countries) {
+  msgs <- character()
+  withCallingHandlers(
+    eamdqd_warn_caveats(countries),
+    warning = function(w) {
+      msgs <<- c(msgs, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  msgs
+}
+
+test_that("the Irish 2015 break warning fires only for IE", {
+  expect_true(any(grepl("Irish", caveat_messages(c("DE", "IE")))))
+  expect_false(any(grepl("Irish", caveat_messages("DE"))))
+})
+
+test_that("the Greek coverage warning fires only for EL", {
+  expect_true(any(grepl("Greek", caveat_messages(c("EL", "FR")))))
+  expect_false(any(grepl("Greek", caveat_messages("FR"))))
+})
+
+test_that("the 2020 break warning always fires", {
+  for (cc in list("DE", "EL", "IE", c("FR", "NL"))) {
+    expect_true(any(grepl("2020", caveat_messages(cc))))
+  }
+})
+
+# --- variable map --------------------------------------------------------
+
+map_fixture <- function() {
+  data.frame(
+    code = c("GDP", "GDP", "TASS.SDB", "UNETOT", "THOURS"),
+    country = c("DE", "EA", "DE", "DE", "DE"),
+    name = c("GDP_DE", "GDP_EA", "TASS.SDB_DE", "UNETOT_DE", "THOURS_DE"),
+    tr_heavy = c(2, 2, 2, 5, 3), tr_light = c(2, 2, 2, 4, 3), tr_blt = c(2, 2, 2, 4, 3),
+    class = c("R", "R", "F", "R", "R"),
+    stringsAsFactors = FALSE
+  )
+}
+
+test_that("variable names follow the <iso2>_<concept> convention", {
+  m <- suppressWarnings(eamdqd_variable_map(map_fixture(), out_path = NULL))
+  expect_equal(m$project_name[m$eamdqd_code == "GDP_DE"], "de_gdp")
+  expect_equal(m$project_name[m$eamdqd_code == "GDP_EA"], "ea_gdp")
+  expect_true(all(is_valid_project_name(m$project_name)))
+})
+
+test_that("dots in EA-MD/QD codes are sanitised, since koma rejects them", {
+  m <- suppressWarnings(eamdqd_variable_map(map_fixture(), out_path = NULL))
+  expect_equal(m$project_name[m$eamdqd_code == "TASS.SDB_DE"], "de_tass_sdb")
+  expect_false(any(grepl(".", m$project_name, fixed = TRUE)))
+})
+
+test_that("method is derived from the transformation code", {
+  m <- suppressWarnings(eamdqd_variable_map(map_fixture(), tr_set = "light", out_path = NULL))
+  expect_equal(m$method[m$eamdqd_code == "GDP_DE"], "diff_log")  # TR 2
+  expect_equal(m$method[m$eamdqd_code == "UNETOT_DE"], "none")   # TR 4
+  expect_true(all(m$series_type == "level"))
+})
+
+test_that("codes with no koma equivalent fall back to 'none' with a warning", {
+  expect_warning(
+    m <- eamdqd_variable_map(map_fixture(), tr_set = "light", out_path = NULL),
+    "no koma equivalent"
+  )
+  expect_equal(m$method[m$eamdqd_code == "THOURS_DE"], "none") # TR 3
+})
+
+# --- eamdqd_panel() ------------------------------------------------------
+
+test_that("covid_treatment without transform is an error, not a silent no-op", {
+  fake <- structure(list(xlsx = c(DE = "does-not-exist.xlsx")), class = "eamdqd_vintage")
+  expect_error(
+    eamdqd_panel(fake, countries = "DE", covid_treatment = TRUE, transform = FALSE),
+    "requires"
+  )
+})
+
+test_that("eamdqd_panel returns koma_ts in levels, untransformed, by default", {
+  skip_if_offline_zenodo()
+  skip_on_cran()
+  withr::local_dir(withr::local_tempdir())
+
+  eamdqd <- fetch_eamdqd(vintage = "latest")
+  p <- suppressWarnings(eamdqd_panel(eamdqd, countries = "DE", frequency = "q"))
+
+  expect_true(all(vapply(p, koma::is_ets, logical(1))))
+  expect_true(all(is_valid_project_name(names(p))))
+  expect_true("de_gdp" %in% names(p))
+
+  g <- p$de_gdp
+  expect_identical(attr(g, "series_type"), "level")
+  expect_identical(attr(g, "method"), "diff_log")
+  expect_identical(attr(g, "country"), "DE")
+  expect_identical(attr(g, "series_class"), "R") # not `class`, which is reserved
+  expect_true(inherits(g, "koma_ts")) # attribute naming did not clobber the class
+  expect_gt(stats::var(as.numeric(g), na.rm = TRUE), 0) # levels, not all-NA
+})
+
+test_that("transform = TRUE marks the panel so koma will not transform it twice", {
+  skip_if_offline_zenodo()
+  skip_on_cran()
+  withr::local_dir(withr::local_tempdir())
+
+  eamdqd <- fetch_eamdqd(vintage = "latest")
+  p <- suppressWarnings(eamdqd_panel(eamdqd, countries = "IE", frequency = "q", transform = TRUE))
+
+  g <- p$ie_gdp
+  expect_identical(attr(g, "series_type"), "rate")
+  expect_identical(attr(g, "method"), "none")
+  # the guard that matters: koma's own rate() must be a no-op here
+  expect_equal(as.numeric(koma::rate(g)), as.numeric(g))
+  expect_false(anyNA(as.numeric(g))) # EM imputation ran
 })

@@ -437,23 +437,132 @@ eamdqd_codebook <- function(eamdqd,
 #' the raw series list and transformation codes -- once the mapping from
 #' EA-MD/QD codes to project concepts has been reviewed and confirmed.
 #'
+#' The mapping is **mechanical**, not hand-curated: EA-MD/QD names are
+#' already `<CODE>_<COUNTRY>`, which maps onto this project's
+#' `<iso2>_<concept>` convention by lowercasing and swapping the order
+#' (`GDP_DE` -> `de_gdp`; `GDP_EA` -> `ea_gdp`, which is already the `ea_`
+#' shared-variable prefix). Dots in EA-MD/QD codes (`TASS.SDB`,
+#' `GGLB.LLN`) become underscores, since koma rejects `.` in variable
+#' names (see `docs/koma-api.md` §8 Q2). Every generated name is checked
+#' with [is_valid_project_name()].
+#'
+#' `method` is derived from the series' transformation code so that koma
+#' applies, once, at estimation time, the transform the dataset's own
+#' authors judged appropriate:
+#'
+#' | `TR` code | meaning | koma `method` |
+#' |---|---|---|
+#' | 1 | `log(x)` | `"diff_log"` |
+#' | 2 | `Δlog(x)` | `"diff_log"` |
+#' | 4 | `x` (none) | `"none"` |
+#' | 3, 5, 6 | `Δ²log(x)`, `Δx`, `Δ²x` | `"none"` + warning |
+#'
+#' Codes 3/5/6 have no koma equivalent (koma offers `"percentage"`,
+#' `"diff_log"`, `"none"`, or a custom expression -- there is no plain
+#' first-difference or second-difference method). They fall back to
+#' `"none"` and are listed in a warning rather than silently assigned,
+#' because picking a substitute is a per-series judgement call.
+#'
+#' @param codebook A codebook `data.frame` as returned by
+#'   [eamdqd_codebook()].
+#' @param tr_set Which transformation-code set to derive `method` from:
+#'   `"light"` (default, the reference implementation's own default),
+#'   `"heavy"`, or `"blt"`.
+#' @param out_path Where to write the mapping CSV for review. Defaults to
+#'   `data/raw/eamdqd_variable_map.csv`. Pass `NULL` to skip writing.
+#'
 #' @return A `data.frame` with columns `eamdqd_code`, `project_name`,
 #'   `series_type` (`"level"` or `"rate"`), `method` (koma `rate()`/`level()`
-#'   method, e.g. `"diff_log"`).
+#'   method, e.g. `"diff_log"`), plus `country`, `tr_code` and `class` for
+#'   traceability back to the codebook.
 #' @export
-eamdqd_variable_map <- function() {
-  stop("not implemented", call. = FALSE)
+eamdqd_variable_map <- function(codebook,
+                                tr_set = c("light", "heavy", "blt"),
+                                out_path = file.path("data", "raw", "eamdqd_variable_map.csv")) {
+  tr_set <- match.arg(tr_set)
+  tr_col <- c(light = "tr_light", heavy = "tr_heavy", blt = "tr_blt")[[tr_set]]
+  tr <- codebook[[tr_col]]
+
+  project_name <- tolower(paste0(codebook$country, "_", codebook$code))
+  project_name <- gsub(".", "_", project_name, fixed = TRUE)
+
+  method <- ifelse(tr %in% c(1, 2), "diff_log", "none")
+
+  no_equivalent <- tr %in% c(3, 5, 6)
+  if (any(no_equivalent)) {
+    affected <- sort(unique(paste0(codebook$code[no_equivalent], " (TR", tr[no_equivalent], ")")))
+    cli::cli_warn(c(
+      "!" = "{length(affected)} series use{?s/} a transformation code with no koma equivalent; {.field method} set to {.val none}.",
+      "x" = paste(utils::head(affected, 12), collapse = ", "),
+      "i" = if (length(affected) > 12) "...and {length(affected) - 12} more." else NULL,
+      "i" = "koma offers {.val percentage}, {.val diff_log}, {.val none}, or a custom expression -- there is no plain first- or second-difference method. Assign these by hand before using them in a model."
+    ))
+  }
+
+  invalid <- !is_valid_project_name(project_name)
+  if (any(invalid)) {
+    cli::cli_abort(c(
+      "!" = "Generated project names that violate the naming convention:",
+      "x" = paste(utils::head(unique(project_name[invalid]), 10), collapse = ", ")
+    ))
+  }
+
+  out <- data.frame(
+    eamdqd_code = codebook$name,
+    project_name = project_name,
+    series_type = "level",
+    method = method,
+    country = codebook$country,
+    tr_code = tr,
+    class = codebook$class,
+    stringsAsFactors = FALSE
+  )
+  out <- out[order(out$project_name), ]
+  rownames(out) <- NULL
+
+  if (!is.null(out_path)) {
+    dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+    utils::write.csv(out, out_path, row.names = FALSE)
+  }
+
+  out
 }
 
-#' Extract one mapped series from a raw EA-MD/QD vintage
+#' Extract one raw series from an EA-MD/QD vintage
 #'
-#' @param eamdqd_data Output of [fetch_eamdqd()].
-#' @param eamdqd_code Raw EA-MD/QD series code to extract.
+#' Low-level accessor: pulls a single series straight out of the relevant
+#' country's `data` sheet, at the sheet's own monthly grid, with no
+#' aggregation, transformation, or imputation applied. For a usable
+#' analysis panel, see [eamdqd_panel()].
 #'
-#' @return A `data.frame` with columns `date` and `value`.
+#' @param eamdqd_data An `eamdqd_vintage` object, as returned by
+#'   [fetch_eamdqd()].
+#' @param eamdqd_code Raw EA-MD/QD series name, e.g. `"GDP_DE"`.
+#'
+#' @return A `data.frame` with columns `date` (`Date`) and `value`
+#'   (numeric), covering only the periods where the series is observed.
 #' @export
 extract_eamdqd_series <- function(eamdqd_data, eamdqd_code) {
-  stop("not implemented", call. = FALSE)
+  stopifnot(inherits(eamdqd_data, "eamdqd_vintage"))
+  stopifnot(is.character(eamdqd_code), length(eamdqd_code) == 1L)
+
+  for (cc in names(eamdqd_data$xlsx)) {
+    sheet <- eamdqd_read_data_sheet(eamdqd_data$xlsx[[cc]], cc)
+    if (eamdqd_code %in% colnames(sheet$values)) {
+      v <- sheet$values[, eamdqd_code]
+      keep <- !is.na(v)
+      return(data.frame(
+        date = as.Date(sheet$time[keep]),
+        value = as.numeric(v[keep]),
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+
+  cli::cli_abort(c(
+    "!" = "Series {.val {eamdqd_code}} was not found in EA-MD/QD vintage {.val {eamdqd_data$vintage}}.",
+    "i" = "Series names are {.code <CODE>_<COUNTRY>}, e.g. {.val GDP_DE}. See {.file data/raw/eamdqd_codebook.csv}."
+  ))
 }
 
 # --------------------------------------------------------------------------
@@ -461,12 +570,14 @@ extract_eamdqd_series <- function(eamdqd_data, eamdqd_code) {
 #
 # Ported from `aggregate()`, `remove_outliers()`, and `EMimputation()` /
 # `princfact()` / `BaiNg()` in `routine_data.py` (equivalently
-# `routine_data.m`), with one deliberate change from the reference
-# implementation: per project policy (see CLAUDE.md, "Data transformation
-# policy"), we never apply `EA_transform()` / the TR1/TR2/TR3
-# stationarity-transform codes. Everything here operates on, and returns,
-# levels; `koma::as_ets(..., method = )` is responsible for any
-# rate-of-change transform, later, at the point of estimation.
+# `routine_data.m`).
+#
+# Per project policy (see CLAUDE.md, "Data transformation policy"),
+# `eamdqd_panel()` defaults to `transform = FALSE` and returns levels;
+# `koma::as_ets(..., method = )` is responsible for any rate-of-change
+# transform, later, at the point of estimation. Outlier treatment and EM
+# imputation therefore run *only* under `transform = TRUE`, since both
+# assume stationary data.
 #
 # Outlier treatment also deliberately diverges from the reference
 # implementation: `remove_outliers()` there just sets outliers to NA and
@@ -701,4 +812,410 @@ eamdqd_em_impute <- function(X, q = 99, maxiter = 1000, thresh = 1e-5) {
   }
 
   X
+}
+
+# --------------------------------------------------------------------------
+# Reading the `data` sheets, frequency handling, transformation codes,
+# and the assembled analysis panel.
+#
+# LAYOUT NOTE: the `data` sheet is a *monthly* grid (one row per month),
+# not two frequency blocks. Series recorded at quarterly frequency carry
+# their observation in the **last month of the quarter** (months 3, 6, 9,
+# 12) and are `NA` in the other two. The sheet's column order matches the
+# `info` sheet's row order exactly, so transformation codes align
+# positionally. Both facts are relied on below and asserted at read time.
+# --------------------------------------------------------------------------
+
+#' Read one country's `data` sheet
+#'
+#' @param xlsx_path Path to a `<COUNTRY>data.xlsx` file.
+#' @param country ISO-2 code (or `"EA"`) for that file.
+#'
+#' @return A list with `values` (numeric `T x N` matrix, columns named by
+#'   the raw EA-MD/QD series name), `time` (`Date` vector of length `T`,
+#'   monthly), and `info` (the per-series metadata rows, in the same order
+#'   as the columns of `values`).
+#' @keywords internal
+eamdqd_read_data_sheet <- function(xlsx_path, country) {
+  raw <- as.data.frame(readxl::read_excel(xlsx_path, sheet = "data"))
+  info <- eamdqd_read_info_sheets(stats::setNames(xlsx_path, country))
+
+  time_col <- names(raw)[1]
+  series_names <- names(raw)[-1]
+
+  if (!identical(series_names, info$name)) {
+    cli::cli_abort(c(
+      "!" = "The {.file {basename(xlsx_path)}} {.field data} sheet's columns do not line up with its {.field info} sheet.",
+      "i" = "This port relies on those two being in the same order; the vintage's layout may have changed."
+    ))
+  }
+
+  values <- as.matrix(raw[, -1, drop = FALSE])
+  storage.mode(values) <- "double"
+  colnames(values) <- series_names
+
+  list(
+    values = values,
+    time = as.Date(raw[[time_col]]),
+    info = info
+  )
+}
+
+#' Pull a native quarterly series out of the monthly grid
+#'
+#' Quarterly series are stored with their value in the last month of the
+#' quarter and `NA` in the other two, so they must be *extracted*, not
+#' aggregated -- running them through [eamdqd_aggregate_quarterly()] would
+#' see two `NA`s in every quarter and return an all-`NA` series.
+#'
+#' @param x Numeric vector on the monthly grid.
+#' @param time `Date` vector of the same length.
+#'
+#' @return A quarterly `ts` (`frequency = 4`).
+#' @keywords internal
+eamdqd_extract_quarterly <- function(x, time) {
+  month <- as.integer(format(time, "%m"))
+  year <- as.integer(format(time, "%Y"))
+  quarter <- (month - 1L) %/% 3L + 1L
+
+  keep <- month %% 3L == 0L # last month of each quarter
+  vals <- x[keep]
+  yy <- year[keep]
+  qq <- quarter[keep]
+
+  if (length(vals) == 0) {
+    return(stats::ts(numeric(0), start = c(year[1], 1), frequency = 4))
+  }
+  stats::ts(vals, start = c(yy[1], qq[1]), frequency = 4)
+}
+
+#' Put a country's panel onto the requested frequency
+#'
+#' `frequency = "q"` reproduces the reference implementation's default
+#' `QM` mode: every series ends up quarterly, with monthly series
+#' aggregated (mean for `Aggregation == 1`, sum for `Aggregation == 2`)
+#' and natively quarterly series extracted from the monthly grid.
+#' `frequency = "m"` keeps only the natively monthly series.
+#'
+#' @param sheet Output of [eamdqd_read_data_sheet()].
+#' @param frequency `"q"` or `"m"`.
+#'
+#' @return A list with `values` (`T x N` matrix), `info` (metadata rows for
+#'   the retained series), `start` (`c(year, period)`) and `frequency`
+#'   (`4` or `12`).
+#' @keywords internal
+eamdqd_to_frequency <- function(sheet, frequency = c("q", "m")) {
+  frequency <- match.arg(frequency)
+  info <- sheet$info
+  time <- sheet$time
+
+  if (frequency == "m") {
+    keep <- info$frequency == "M"
+    if (!any(keep)) {
+      cli::cli_abort("No monthly series available for this country.")
+    }
+    return(list(
+      values = sheet$values[, keep, drop = FALSE],
+      info = info[keep, , drop = FALSE],
+      start = c(as.integer(format(time[1], "%Y")), as.integer(format(time[1], "%m"))),
+      frequency = 12
+    ))
+  }
+
+  month1 <- as.integer(format(time[1], "%m"))
+  year1 <- as.integer(format(time[1], "%Y"))
+
+  cols <- lapply(seq_len(ncol(sheet$values)), function(j) {
+    x <- sheet$values[, j]
+    if (info$frequency[j] == "Q") {
+      eamdqd_extract_quarterly(x, time)
+    } else {
+      eamdqd_aggregate_quarterly(x, start = c(year1, month1),
+                                 aggregation = info$aggregation[j])
+    }
+  })
+
+  starts <- vapply(cols, function(z) stats::tsp(z)[1], numeric(1))
+  ends <- vapply(cols, function(z) stats::tsp(z)[2], numeric(1))
+  common_start <- min(starts)
+  common_end <- max(ends)
+
+  values <- vapply(cols, function(z) {
+    as.numeric(stats::window(z, start = common_start, end = common_end, extend = TRUE))
+  }, numeric(round((common_end - common_start) * 4) + 1L))
+  values <- as.matrix(values)
+  colnames(values) <- info$name
+
+  list(
+    values = values,
+    info = info,
+    start = c(common_start %/% 1, round((common_start %% 1) * 4) + 1L),
+    frequency = 4
+  )
+}
+
+#' Apply the EA-MD/QD transformation codes
+#'
+#' Ports `EA_transform()` from `routine_data.py`. **The codes are the
+#' dataset's own, which are not the FRED-MD numbering:**
+#'
+#' | code | operation |
+#' |---|---|
+#' | 1 | `scale * log(x)` |
+#' | 2 | `scale * Δlog(x)` |
+#' | 3 | `scale * Δ²log(x)` |
+#' | 4 | `x` (no transformation) |
+#' | 5 | `Δx` |
+#' | 6 | `Δ²x` |
+#'
+#' Note in particular that `4`, not `1`, means "no transformation", and
+#' that `2` is a log difference rather than a plain first difference.
+#'
+#' Observations lost to differencing become `NA` at the head of the series.
+#' Series carrying negative values under a log code (1/2/3) are demoted to
+#' the corresponding non-log code (4/5/6) with a warning, matching the
+#' reference implementation's guard -- but warned rather than printed, so
+#' it cannot be missed in a non-interactive run.
+#'
+#' @param values Numeric `T x N` matrix, in levels.
+#' @param tr Integer vector of length `N` of transformation codes.
+#' @param scale Multiplier applied to the log-based codes (1/2/3).
+#'   Defaults to `100`, matching the published codebook (`100 x log(x)`)
+#'   and koma's own `diff_log`. The shipped reference code instead
+#'   defaults to `c = 1`, i.e. no scaling.
+#'
+#' @return A numeric `T x N` matrix of transformed series.
+#' @keywords internal
+eamdqd_transform <- function(values, tr, scale = 100) {
+  stopifnot(ncol(values) == length(tr))
+  if (!all(tr %in% 1:6)) {
+    cli::cli_abort("Transformation codes must be integers 1-6; got {.val {sort(unique(tr[!tr %in% 1:6]))}}.")
+  }
+
+  has_negative <- apply(values, 2, function(x) any(x < 0, na.rm = TRUE))
+  demote <- has_negative & tr %in% c(1, 2, 3)
+  if (any(demote)) {
+    cli::cli_warn(c(
+      "!" = "{sum(demote)} series contain{?s/} negative values under a log transformation code; demoting to the non-log equivalent.",
+      "x" = paste(utils::head(colnames(values)[demote], 12), collapse = ", "),
+      "i" = "TR 1->4, 2->5, 3->6 (log -> level, Dlog -> D, D2log -> D2)."
+    ))
+    tr[demote] <- tr[demote] + 3L
+  }
+
+  out <- matrix(NA_real_, nrow(values), ncol(values), dimnames = dimnames(values))
+  d <- function(x, k) c(rep(NA_real_, k), diff(x, differences = k))
+
+  for (j in seq_len(ncol(values))) {
+    x <- values[, j]
+    out[, j] <- switch(as.character(tr[j]),
+      "1" = scale * log(x),
+      "2" = d(scale * log(x), 1),
+      "3" = d(scale * log(x), 2),
+      "4" = x,
+      "5" = d(x, 1),
+      "6" = d(x, 2)
+    )
+  }
+  out
+}
+
+#' Blank the covid period for real variables
+#'
+#' Implements the reference implementation's imputation "method 2": set
+#' calendar 2020 and 2021 to `NA` for every series in class `R` (real), so
+#' the subsequent EM step reconstructs them from the financial and nominal
+#' series instead of from their own collapsed-and-rebounded history.
+#'
+#' The window is defined **semantically as calendar 2020-2021**, which
+#' matches `_ReadME.pdf` ("2020 and 2021, regardless of the frequency")
+#' and the Matlab reference, whose `Xnan(T19+1:T21, loc)` is inclusive of
+#' 2021Q4. The Python port's `Xnan[T19+1:T21]` is exclusive and so stops
+#' at 2021Q3; and on the monthly path both references anchor on *October*,
+#' giving Nov-2019 to Oct-2021. Defining the window by calendar year
+#' avoids inheriting either quirk.
+#'
+#' @param values Numeric `T x N` matrix.
+#' @param class Character vector of length `N` of series classes.
+#' @param start `c(year, period)` of the first row.
+#' @param frequency `4` or `12`.
+#'
+#' @return `values` with the covid window set to `NA` for real series.
+#' @keywords internal
+eamdqd_covid_window <- function(values, class, start, frequency) {
+  time_year <- floor(stats::time(stats::ts(rep(NA_real_, nrow(values)),
+                                           start = start, frequency = frequency)))
+  in_window <- time_year %in% c(2020, 2021)
+  real <- class == "R"
+
+  if (any(in_window) && any(real)) {
+    values[in_window, real] <- NA_real_
+  }
+  values
+}
+
+#' Emit the dataset's known structural-break caveats
+#'
+#' These are warnings, deliberately, rather than silent corrections: each
+#' is a real property of the underlying economies that the user has to
+#' decide how to handle (dummy, sample split, or accept), and none of them
+#' has a fix this layer could apply on the user's behalf.
+#'
+#' @param countries Character vector of ISO-2 codes present in the panel.
+#'
+#' @return Invisibly `NULL`; called for its warnings.
+#' @keywords internal
+eamdqd_warn_caveats <- function(countries) {
+  if ("IE" %in% countries) {
+    cli::cli_warn(c(
+      "!" = "Irish series carry a large level break in 2015.",
+      "i" = "Multinational balance-sheet redomiciliation inflated measured real GDP by roughly 25% in a single year (vs ~2-10% in adjacent years). Treat Irish output, investment and trade aggregates across 2015 as a break, not a business-cycle movement."
+    ))
+  }
+  if ("EL" %in% countries) {
+    cli::cli_warn(c(
+      "!" = "Greek series are shorter and break repeatedly over 2010-2018.",
+      "i" = "Greece publishes fewer series than the other member states (96 vs up to 118 for the EA aggregate), and the sovereign-debt crisis and successive adjustment programmes make 2010-2018 structurally unstable. Check coverage before relying on any Greek series."
+    ))
+  }
+  cli::cli_warn(c(
+    "!" = "All EA-MD/QD series break in 2020.",
+    "i" = "The covid collapse and rebound are outliers on any pre-2020 calibration. {.code eamdqd_panel(covid_treatment = TRUE)} reconstructs real variables over 2020-2021 from the nominal and financial block; otherwise handle the break explicitly."
+  ))
+  invisible(NULL)
+}
+
+#' Build an analysis-ready EA-MD/QD panel
+#'
+#' Assembles one or more countries' series into a named list of
+#' `koma::koma_ts` objects, keyed by this project's `<iso2>_<concept>`
+#' variable names (see [eamdqd_variable_map()]).
+#'
+#' By default the panel is returned **in levels, untransformed and
+#' unbalanced** -- see CLAUDE.md, "Data transformation policy". koma
+#' applies the appropriate rate-of-change transform once, at estimation
+#' time, from each series' `method` attribute, and fills ragged edges
+#' itself. Setting `transform = TRUE` instead reproduces the upstream
+#' pipeline (stationarity transform, outlier treatment, EM imputation) and
+#' marks the result `series_type = "rate"`, `method = "none"` so that koma
+#' does not transform it a second time.
+#'
+#' Outlier treatment and EM imputation are deliberately tied to
+#' `transform`: both assume stationary data, and neither is meaningful on
+#' untransformed levels of a trending series.
+#'
+#' @section Interaction between `covid_treatment` and outlier detection:
+#' Blanking 2020-2021 removes the largest swings in the sample, which
+#' narrows each series' interquartile range and therefore makes the
+#' `>10 x IQR` outlier rule considerably more sensitive everywhere else.
+#' Measured on the Irish quarterly panel, outlier replacements rise from
+#' 13 cells with `covid_treatment = FALSE` to 293 with it enabled. This is
+#' inherent to the reference method (which likewise runs outlier removal
+#' after covid-blanking) rather than a quirk of this port, but it is worth
+#' knowing before comparing the two settings: the differences between them
+#' are not confined to 2020-2021.
+#'
+#' @param eamdqd An `eamdqd_vintage` object, as returned by
+#'   [fetch_eamdqd()].
+#' @param countries Character vector of ISO-2 codes (and/or `"EA"`) to
+#'   include. Defaults to every economy in the vintage.
+#' @param frequency `"q"` (default) for a quarterly panel of all series,
+#'   monthly ones aggregated up; `"m"` for the natively monthly series
+#'   only.
+#' @param transform `FALSE` (default) to return levels; `TRUE` to apply
+#'   the dataset's transformation codes, outlier treatment and EM
+#'   imputation.
+#' @param covid_treatment `FALSE` (default); `TRUE` blanks calendar
+#'   2020-2021 for real variables so the EM step reconstructs them. Requires
+#'   `transform = TRUE`.
+#' @param tr_set Which transformation-code set to use: `"light"`
+#'   (default), `"heavy"` or `"blt"`. See `_ReadME.pdf`.
+#' @param q Number of factors for EM imputation, or `99` (default) to
+#'   select via Bai & Ng (2002).
+#' @param scale Multiplier for log-based transformation codes. Default
+#'   `100`.
+#'
+#' @return A named list of `koma_ts` objects. Each carries `series_type`,
+#'   `method`, and the extra attributes `eamdqd_code`, `country`,
+#'   `series_class` and `tr_code`. (The class R/N/F/C is exposed as
+#'   `series_class`, not `class`, because `class` is a reserved R
+#'   attribute -- setting it would overwrite the object's `koma_ts` class.)
+#' @export
+eamdqd_panel <- function(eamdqd,
+                         countries = NULL,
+                         frequency = c("q", "m"),
+                         transform = FALSE,
+                         covid_treatment = FALSE,
+                         tr_set = c("light", "heavy", "blt"),
+                         q = 99,
+                         scale = 100) {
+  stopifnot(inherits(eamdqd, "eamdqd_vintage"))
+  frequency <- match.arg(frequency)
+  tr_set <- match.arg(tr_set)
+
+  if (isTRUE(covid_treatment) && !isTRUE(transform)) {
+    cli::cli_abort(c(
+      "!" = "{.arg covid_treatment = TRUE} requires {.arg transform = TRUE}.",
+      "x" = "Covid treatment blanks 2020-2021 for real variables and relies on the EM imputation step to reconstruct them; with {.arg transform = FALSE} that step does not run, so the panel would simply lose two years of data.",
+      "i" = "Either set {.arg transform = TRUE}, or leave {.arg covid_treatment = FALSE} and handle the 2020 break downstream."
+    ))
+  }
+
+  if (is.null(countries)) countries <- names(eamdqd$xlsx)
+  unknown <- setdiff(countries, names(eamdqd$xlsx))
+  if (length(unknown) > 0) {
+    cli::cli_abort("Unknown econom{?y/ies} {.val {unknown}}; available: {.val {names(eamdqd$xlsx)}}.")
+  }
+
+  eamdqd_warn_caveats(countries)
+
+  tr_col <- c(light = "tr_light", heavy = "tr_heavy", blt = "tr_blt")[[tr_set]]
+  out <- list()
+  no_equiv <- character()
+
+  for (cc in countries) {
+    sheet <- eamdqd_read_data_sheet(eamdqd$xlsx[[cc]], cc)
+    panel <- eamdqd_to_frequency(sheet, frequency = frequency)
+    values <- panel$values
+    info <- panel$info
+
+    if (transform) {
+      values <- eamdqd_transform(values, tr = info[[tr_col]], scale = scale)
+      if (covid_treatment) {
+        values <- eamdqd_covid_window(values, class = info$class,
+                                      start = panel$start, frequency = panel$frequency)
+      }
+      values <- apply(values, 2, function(x) eamdqd_treat_outliers(x)$x)
+      values <- eamdqd_em_impute(values, q = q)
+    }
+
+    # Suppressed here and re-raised once after the loop: otherwise the
+    # "no koma equivalent" warning repeats identically for every country.
+    map <- suppressWarnings(eamdqd_variable_map(info, tr_set = tr_set, out_path = NULL))
+    map <- map[match(info$name, map$eamdqd_code), ]
+    no_equiv <- c(no_equiv, map$eamdqd_code[map$tr_code %in% c(3, 5, 6)])
+
+    for (j in seq_len(ncol(values))) {
+      series <- koma::as_ets(
+        stats::ts(values[, j], start = panel$start, frequency = panel$frequency),
+        series_type = if (transform) "rate" else "level",
+        method = if (transform) "none" else map$method[j],
+        eamdqd_code = info$name[j],
+        country = cc,
+        series_class = info$class[j],
+        tr_code = info[[tr_col]][j]
+      )
+      out[[map$project_name[j]]] <- series
+    }
+  }
+
+  if (length(no_equiv) > 0 && !transform) {
+    cli::cli_warn(c(
+      "!" = "{length(no_equiv)} series across {length(countries)} econom{?y/ies} use a transformation code with no koma equivalent; {.field method} set to {.val none}.",
+      "x" = paste(utils::head(sort(unique(no_equiv)), 10), collapse = ", "),
+      "i" = "TR codes 3, 5 and 6 are second log differences and plain first/second differences; koma offers only {.val percentage}, {.val diff_log}, {.val none} or a custom expression. Assign these by hand before using them in a model."
+    ))
+  }
+
+  out
 }

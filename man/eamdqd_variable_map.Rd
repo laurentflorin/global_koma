@@ -4,12 +4,28 @@
 \alias{eamdqd_variable_map}
 \title{Map of EA-MD/QD codes to project variable names}
 \usage{
-eamdqd_variable_map()
+eamdqd_variable_map(
+  codebook,
+  tr_set = c("light", "heavy", "blt"),
+  out_path = file.path("data", "raw", "eamdqd_variable_map.csv")
+)
+}
+\arguments{
+\item{codebook}{A codebook \code{data.frame} as returned by
+\code{\link[=eamdqd_codebook]{eamdqd_codebook()}}.}
+
+\item{tr_set}{Which transformation-code set to derive \code{method} from:
+\code{"light"} (default, the reference implementation's own default),
+\code{"heavy"}, or \code{"blt"}.}
+
+\item{out_path}{Where to write the mapping CSV for review. Defaults to
+\code{data/raw/eamdqd_variable_map.csv}. Pass \code{NULL} to skip writing.}
 }
 \value{
 A \code{data.frame} with columns \code{eamdqd_code}, \code{project_name},
 \code{series_type} (\code{"level"} or \code{"rate"}), \code{method} (koma \code{rate()}/\code{level()}
-method, e.g. \code{"diff_log"}).
+method, e.g. \code{"diff_log"}), plus \code{country}, \code{tr_code} and \code{class} for
+traceability back to the codebook.
 }
 \description{
 Returns the translation table from raw EA-MD/QD series codes to this
@@ -17,4 +33,31 @@ project's \verb{<iso2>_<concept>} / \verb{ea_<concept>} naming convention (see
 \code{equations.R} and CLAUDE.md). Built on top of \code{\link[=eamdqd_codebook]{eamdqd_codebook()}} --
 the raw series list and transformation codes -- once the mapping from
 EA-MD/QD codes to project concepts has been reviewed and confirmed.
+}
+\details{
+The mapping is \strong{mechanical}, not hand-curated: EA-MD/QD names are
+already \verb{<CODE>_<COUNTRY>}, which maps onto this project's
+\verb{<iso2>_<concept>} convention by lowercasing and swapping the order
+(\code{GDP_DE} -> \code{de_gdp}; \code{GDP_EA} -> \code{ea_gdp}, which is already the \code{ea_}
+shared-variable prefix). Dots in EA-MD/QD codes (\code{TASS.SDB},
+\code{GGLB.LLN}) become underscores, since koma rejects \code{.} in variable
+names (see \code{docs/koma-api.md} §8 Q2). Every generated name is checked
+with \code{\link[=is_valid_project_name]{is_valid_project_name()}}.
+
+\code{method} is derived from the series' transformation code so that koma
+applies, once, at estimation time, the transform the dataset's own
+authors judged appropriate:\tabular{lll}{
+   \code{TR} code \tab meaning \tab koma \code{method} \cr
+   1 \tab \code{log(x)} \tab \code{"diff_log"} \cr
+   2 \tab \code{Δlog(x)} \tab \code{"diff_log"} \cr
+   4 \tab \code{x} (none) \tab \code{"none"} \cr
+   3, 5, 6 \tab \verb{Δ²log(x)}, \code{Δx}, \verb{Δ²x} \tab \code{"none"} + warning \cr
+}
+
+
+Codes 3/5/6 have no koma equivalent (koma offers \code{"percentage"},
+\code{"diff_log"}, \code{"none"}, or a custom expression -- there is no plain
+first-difference or second-difference method). They fall back to
+\code{"none"} and are listed in a warning rather than silently assigned,
+because picking a substitute is a per-series judgement call.
 }

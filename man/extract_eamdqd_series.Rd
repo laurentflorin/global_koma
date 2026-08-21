@@ -2,18 +2,23 @@
 % Please edit documentation in R/data_eamdqd.R
 \name{extract_eamdqd_series}
 \alias{extract_eamdqd_series}
-\title{Extract one mapped series from a raw EA-MD/QD vintage}
+\title{Extract one raw series from an EA-MD/QD vintage}
 \usage{
 extract_eamdqd_series(eamdqd_data, eamdqd_code)
 }
 \arguments{
-\item{eamdqd_data}{Output of \code{\link[=fetch_eamdqd]{fetch_eamdqd()}}.}
+\item{eamdqd_data}{An \code{eamdqd_vintage} object, as returned by
+\code{\link[=fetch_eamdqd]{fetch_eamdqd()}}.}
 
-\item{eamdqd_code}{Raw EA-MD/QD series code to extract.}
+\item{eamdqd_code}{Raw EA-MD/QD series name, e.g. \code{"GDP_DE"}.}
 }
 \value{
-A \code{data.frame} with columns \code{date} and \code{value}.
+A \code{data.frame} with columns \code{date} (\code{Date}) and \code{value}
+(numeric), covering only the periods where the series is observed.
 }
 \description{
-Extract one mapped series from a raw EA-MD/QD vintage
+Low-level accessor: pulls a single series straight out of the relevant
+country's \code{data} sheet, at the sheet's own monthly grid, with no
+aggregation, transformation, or imputation applied. For a usable
+analysis panel, see \code{\link[=eamdqd_panel]{eamdqd_panel()}}.
 }

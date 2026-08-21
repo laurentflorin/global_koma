@@ -89,21 +89,44 @@ code; leave that entirely to `as_ets(..., method = )` at the point of
 estimation.**
 
 This specifically means, for the EA-MD/QD port in `data_eamdqd.R`:
-- Do **not** port `EA_transform()` / the `TR1`/`TR2`/`TR3`
-  (heavy/light/BLT) transformation-code logic described in
-  `_data_description.pdf` and `_ReadME.pdf`. Those codes exist in the
-  upstream codebook (`data/raw/eamdqd_codebook.csv`) for reference and are
-  useful for understanding what the source considers e.g. an interest
-  rate vs. a level series, but must not be applied by our ingestion code.
-- Quarterly aggregation of monthly series, missing-value imputation (EM
-  algorithm), and outlier treatment **do still apply to levels** — those
-  are not stationarity transforms, they are data-cleaning steps, and the
-  upstream series (before any `TR` code is applied) are already levels.
-- A future contributor implementing `eamdqd_variable_map()` should map
-  each EA-MD/QD series to a project variable with `series_type = "level"`
-  and whatever `method` (`"diff_log"`, `"percentage"`, `"none"`, ...)
-  matches that series' economic nature, mirroring how `small_open_economy`
-  is handled in the `koma` vignettes — not from the EA-MD/QD `TR` codes.
+
+- `eamdqd_panel()` defaults to **`transform = FALSE`** and returns levels.
+  Leave it that way for anything feeding the koma model.
+- The upstream `EA_transform()` / `TR1`/`TR2`/`TR3` (heavy/light/BLT)
+  transformation codes **are** ported, and are reachable via
+  `transform = TRUE`. That exists so the upstream pipeline can be
+  reproduced exactly (e.g. to check our numbers against the published
+  dataset), **not** because our own model pipeline should use it.
+- The guard against double-transformation is encoded in the `koma_ts`
+  attributes that `eamdqd_panel()` sets, and it is the whole reason the
+  argument exists:
+
+  | | `series_type` | `method` |
+  |---|---|---|
+  | `transform = FALSE` (default) | `"level"` | from the series' `TR` code — koma transforms later |
+  | `transform = TRUE` | `"rate"` | `"none"` — already transformed, koma must leave it alone |
+
+  So a `transform = TRUE` panel is still safe to hand to `koma`, because
+  `method = "none"` tells `rate()` not to touch it. What is **not** safe is
+  transforming a series yourself and then labelling it `method =
+  "diff_log"`.
+- Quarterly aggregation of monthly series applies in both modes — it is a
+  frequency change, not a stationarity transform.
+- **Outlier treatment and EM imputation run only when `transform = TRUE`.**
+  Both assume stationary data: a PCA factor model has no stationarity to
+  work with on levels, and an "outlier is >10 IQRs from the median" rule is
+  meaningless for a trending series, where early and late observations are
+  legitimately far from the sample median. With `transform = FALSE` the
+  levels panel is returned unbalanced, with its `NA`s intact — which is
+  fine, because koma fills ragged edges itself (`fill_ragged_edge()` /
+  `conditional_fill()`, see `docs/koma-api.md` §4 and §10).
+- `eamdqd_variable_map()` maps each EA-MD/QD series to a project variable
+  with `series_type = "level"` and a `method` derived from its `TR` code
+  (`2 -> "diff_log"`, `4 -> "none"`, ...). Codes with no koma equivalent
+  (`3`, `5`, `6` — second differences and plain first differences) fall
+  back to `"none"` **with a warning**: those need a per-series judgement
+  call, and silently picking one would be exactly the kind of hidden
+  decision this section exists to prevent.
 
 ## FRED API key
 

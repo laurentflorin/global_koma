@@ -48,7 +48,12 @@ shared_var <- function(concept, scope = c("ea", "world", "none")) {
 #' @return Logical vector, same length as `x`.
 #' @export
 is_valid_project_name <- function(x) {
-  stop("not implemented", call. = FALSE)
+  # Lowercase-only form of koma's own variable grammar
+  # (`^[a-zA-Z][a-zA-Z0-9_]*$`, see docs/koma-api.md §2.1). Restricting to
+  # lowercase is this project's convention, not koma's; the `<iso2>_`,
+  # `ea_`/`world_`, and unprefixed forms are all covered by this one
+  # pattern, so there is nothing further to branch on.
+  grepl("^[a-z][a-z0-9_]*$", x)
 }
 
 #' Build a stochastic (behavioural) equation string
