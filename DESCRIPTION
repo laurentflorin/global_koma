@@ -28,6 +28,9 @@ Imports:
     utils
 Suggests:
     devtools,
+    future,
+    future.apply,
+    parallelly,
     targets,
     tarchetypes,
     testthat (>= 3.2.3),

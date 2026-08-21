@@ -16,6 +16,14 @@ A named list of \code{koma_ts}.
 \description{
 \code{ea_policy_rate} (ECB main refinancing rate), \code{us_policy_rate} (FRED
 effective federal funds rate), \code{eur_usd} (ECB reference rate),
-\code{oil_price} (FRED Brent, monthly average), and \code{row_gdp} (see
-\code{\link[=build_row_gdp]{build_row_gdp()}}).
+\code{us_exchange_rate} (spliced Fed broad dollar index, see
+\code{\link[=fred_spliced_dollar_index]{fred_spliced_dollar_index()}}), \code{oil_price} (FRED Brent, monthly
+average), and \code{row_gdp} (see \code{\link[=build_row_gdp]{build_row_gdp()}}).
+}
+\details{
+Note the asymmetry between \code{eur_usd} and \code{us_exchange_rate}: the ten
+euro-area countries share one currency and therefore one bilateral
+EUR/USD rate, whereas the US block uses a \emph{broad effective} index
+against all its trading partners. That is deliberate -- see CLAUDE.md
+on why no \verb{<iso2>_exchange_rate} exists for an EA member.
 }

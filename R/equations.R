@@ -82,6 +82,17 @@ is_valid_project_name <- function(x) {
 #' terms, each optionally carrying a lag spec and/or a coefficient prior.
 #' See `vignette("equations", package = "koma")` for the grammar.
 #'
+#' A term named in `lags` is rendered **only** in its lagged form:
+#' `stochastic_equation("de_c", c("de_gdp", "de_c"), lags = list(de_c = "1"))`
+#' gives `"de_c ~ de_gdp + de_c.L(1)"`, not `"... + de_c + de_c.L(1)"`.
+#' That is the usual case for an autoregressive own-term, where the
+#' contemporaneous value is the dependent variable and cannot also be a
+#' regressor. To include both a contemporaneous term and its lag, name the
+#' variable twice in `terms` and give the lag spec for one of them.
+#'
+#' The intercept is implicit in koma's grammar, so `intercept = TRUE` adds
+#' nothing; `intercept = FALSE` appends `- 1`.
+#'
 #' @param dep Dependent variable name.
 #' @param terms Character vector of RHS term names (without lag/prior
 #'   decoration).
@@ -90,14 +101,50 @@ is_valid_project_name <- function(x) {
 #' @param priors Optional named list, `term name -> c(mean, variance)`,
 #'   rendered as a leading `{mean, variance}` prior on that term.
 #' @param error_prior Optional `c(df, scale)` for the trailing error-term
-#'   prior.
+#'   prior. Must be last in the equation, per koma's grammar.
 #' @param intercept Logical; if `FALSE`, appends `- 1` to drop the intercept.
 #'
 #' @return A single equation string, e.g. `"de_c ~ de_gdp + de_c.L(1)"`.
 #' @export
 stochastic_equation <- function(dep, terms, lags = NULL, priors = NULL,
                                 error_prior = NULL, intercept = TRUE) {
-  stop("not implemented", call. = FALSE)
+  if (length(terms) == 0) {
+    cli::cli_abort("{.arg terms} must name at least one regressor.")
+  }
+
+  unknown_lags <- setdiff(names(lags), terms)
+  if (length(unknown_lags) > 0) {
+    cli::cli_abort("{.arg lags} names {.val {unknown_lags}}, which {?is/are} not in {.arg terms}.")
+  }
+  unknown_priors <- setdiff(names(priors), terms)
+  if (length(unknown_priors) > 0) {
+    cli::cli_abort("{.arg priors} names {.val {unknown_priors}}, which {?is/are} not in {.arg terms}.")
+  }
+  if (dep %in% names(priors)) {
+    cli::cli_abort("The dependent variable {.val {dep}} cannot carry a prior.")
+  }
+
+  rendered <- vapply(terms, function(term) {
+    lag_spec <- lags[[term]]
+    out <- if (is.null(lag_spec)) term else paste0(term, ".L(", lag_spec, ")")
+
+    prior <- priors[[term]]
+    if (!is.null(prior)) {
+      out <- paste0("{", prior[1], ", ", prior[2], "} ", out)
+    }
+    out
+  }, character(1))
+
+  rhs <- paste(rendered, collapse = " + ")
+
+  if (!is.null(error_prior)) {
+    rhs <- paste0(rhs, " + {", error_prior[1], ", ", error_prior[2], "}")
+  }
+  if (!intercept) {
+    rhs <- paste(rhs, "- 1")
+  }
+
+  paste0(dep, " ~ ", rhs)
 }
 
 #' Build an identity (accounting) equation string
@@ -107,9 +154,21 @@ stochastic_equation <- function(dep, terms, lags = NULL, priors = NULL,
 #' expression string (e.g. `"n_de_c/n_de_gdp"`), rendered as
 #' `(weight)*component`.
 #'
+#' A negative weight is rendered with a `-` separator (`"... - 0.4*de_m"`),
+#' never as `"+ -0.4*de_m"`. This is not cosmetic: koma parses the
+#' `+ -0.4*x` form **without error** but stores the identity's weights
+#' wrong -- verified against koma 0.3.1, `gdp == 0.6*c + -0.4*i` yields
+#' three weights (`0.6`, `character(0)`, `-0.4`) for two components,
+#' whereas `gdp == 0.6*c - 0.4*i` correctly yields `c(0.6, -0.4)`. koma
+#' performs no identity-consistency check that would catch the corrupted
+#' form later, so it has to be avoided here. See `docs/koma-api.md`
+#' (gotcha 8) and CLAUDE.md.
+#'
 #' @param dep Dependent variable name.
 #' @param weighted_terms Named list, `component name -> weight`, where each
 #'   weight is either `numeric(1)` or a character expression string.
+#'   Injected (character) weights are always joined with `+`, since their
+#'   sign is not knowable until koma evaluates them against the data.
 #'
 #' @return A single equation string, e.g.
 #'   `"de_gdp == 0.6*de_c + 0.4*de_i"`.
@@ -118,10 +177,29 @@ identity_equation <- function(dep, weighted_terms) {
   if (length(weighted_terms) == 0) {
     cli::cli_abort("{.arg weighted_terms} must have at least one component.")
   }
-  terms <- vapply(names(weighted_terms), function(component) {
-    weight <- weighted_terms[[component]]
-    weight_str <- if (is.character(weight)) paste0("(", weight, ")") else format(weight, trim = TRUE)
-    paste0(weight_str, "*", component)
-  }, character(1))
-  paste0(dep, " == ", paste(terms, collapse = " + "))
+
+  components <- names(weighted_terms)
+  rendered <- character(length(components))
+  separators <- character(length(components))
+
+  for (i in seq_along(components)) {
+    weight <- weighted_terms[[i]]
+    if (is.character(weight)) {
+      separators[i] <- "+"
+      rendered[i] <- paste0("(", weight, ")*", components[i])
+    } else {
+      separators[i] <- if (weight < 0) "-" else "+"
+      rendered[i] <- paste0(format(abs(weight), trim = TRUE), "*", components[i])
+    }
+  }
+
+  rhs <- rendered[1]
+  if (separators[1] == "-") {
+    rhs <- paste0("-", rhs)
+  }
+  for (i in seq_along(components)[-1]) {
+    rhs <- paste(rhs, separators[i], rendered[i])
+  }
+
+  paste0(dep, " == ", rhs)
 }

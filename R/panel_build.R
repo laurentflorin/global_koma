@@ -63,6 +63,28 @@ concept_method <- c(
   unemployment = "none", long_rate = "none"
 )
 
+#' koma `series_type` for each target concept
+#'
+#' `"level"` for anything whose stored numbers are a level or an index
+#' that koma should difference itself; `"rate"` for series that are
+#' *already* expressed as a percentage rate (unemployment, long-term
+#' interest rates), which koma must take as-is.
+#'
+#' Pairing `series_type = "rate"` with `method = "none"` is the correct
+#' tag for a rate: it says "these numbers are the rate, do not transform
+#' them". Tagging a rate `series_type = "level", method = "none"` is
+#' numerically identical during estimation -- `rate()` is the identity
+#' under `method = "none"` either way -- but it misdescribes the series,
+#' and it is what `level()` consults when inverting a forecast back to
+#' levels. See `docs/koma-api.md` §1 and CLAUDE.md.
+#' @keywords internal
+concept_series_type <- c(
+  gdp = "level", consumption = "level", investment = "level",
+  government = "level", exports = "level", imports = "level",
+  prices = "level", core_prices = "level",
+  unemployment = "rate", long_rate = "rate"
+)
+
 # --------------------------------------------------------------------------
 # Eurostat / ECB fallback fetchers, used only when EA-MD/QD is missing a
 # needed series for a country. Each converts to a quarterly koma_ts in
@@ -226,7 +248,7 @@ build_ea_country_panel <- function(iso2, eamdqd) {
 
     out[[country_var(iso2, concept)]] <- koma::as_ets(
       series,
-      series_type = "level",
+      series_type = concept_series_type[[concept]],
       method = concept_method[[concept]],
       country = toupper(iso2),
       source = if (identical(series, raw[[src_name]])) "eamdqd" else "eurostat"
@@ -270,7 +292,7 @@ build_us_panel <- function(start_date = "1995-01-01") {
     series <- df_to_quarterly_ts(d)
     out[[country_var("us", concept)]] <- koma::as_ets(
       series,
-      series_type = "level",
+      series_type = concept_series_type[[concept]],
       method = concept_method[[concept]],
       country = "US",
       source = "fred"
@@ -350,12 +372,70 @@ build_country_panel <- function(iso2, eamdqd = NULL) {
 # Shared (non-country) variables
 # --------------------------------------------------------------------------
 
+#' Build the US broad nominal effective exchange rate, spliced
+#'
+#' The Federal Reserve's broad dollar index is published as two
+#' non-overlapping-in-name series: `TWEXBMTH` (goods only, 1973-01 to
+#' 2019-12, **discontinued**) and `TWEXBGSMTH` (goods and services,
+#' 2006-01 onwards). Neither alone spans what this project needs -- the
+#' estimation sample starts 2000Q1, and exogenous variables must run
+#' through the forecast horizon, which `TWEXBMTH` ends well before and
+#' `TWEXBGSMTH` starts well after.
+#'
+#' They do, however, overlap for **168 months** (2006-01 to 2019-12), and
+#' over that window they are near-interchangeable up to a level shift:
+#' verified `TWEXBGSMTH / TWEXBMTH` has mean 0.9149 with sd 0.0075
+#' (0.8%, range 0.896-0.925), and their month-on-month growth rates
+#' correlate at **0.996**. So the two baskets move together almost
+#' exactly, and the only real difference is the base.
+#'
+#' This function therefore rescales the older series onto the newer one's
+#' base by the mean overlap ratio and takes the newer series from 2006-01
+#' onwards. That is a pure **level** rescaling, not a stationarity
+#' transform, so it complies with CLAUDE.md's levels-only ingestion
+#' policy: koma still does the `diff_log` conversion itself at
+#' estimation time.
+#'
+#' @return A quarterly `ts`, index level, spliced.
+#' @keywords internal
+fred_spliced_dollar_index <- function() {
+  old <- df_to_quarterly_ts(fetch_fred_series("TWEXBMTH", start_date = "1995-01-01"))
+  new <- df_to_quarterly_ts(fetch_fred_series("TWEXBGSMTH", start_date = "1995-01-01"))
+
+  overlap_start <- max(stats::tsp(old)[1], stats::tsp(new)[1])
+  overlap_end <- min(stats::tsp(old)[2], stats::tsp(new)[2])
+  if (overlap_start > overlap_end) {
+    cli::cli_abort(c(
+      "!" = "{.val TWEXBMTH} and {.val TWEXBGSMTH} no longer overlap.",
+      "i" = "The splice in {.fn fred_spliced_dollar_index} needs a common window to compute its rescaling ratio."
+    ))
+  }
+
+  old_overlap <- as.numeric(stats::window(old, start = overlap_start, end = overlap_end))
+  new_overlap <- as.numeric(stats::window(new, start = overlap_start, end = overlap_end))
+  ratio <- mean(new_overlap / old_overlap, na.rm = TRUE)
+
+  head_part <- as.numeric(stats::window(old, end = overlap_start - 1 / 4)) * ratio
+  stats::ts(
+    c(head_part, as.numeric(new)),
+    start = stats::start(old),
+    frequency = 4
+  )
+}
+
 #' Build the shared, non-country-prefixed variables
 #'
 #' `ea_policy_rate` (ECB main refinancing rate), `us_policy_rate` (FRED
 #' effective federal funds rate), `eur_usd` (ECB reference rate),
-#' `oil_price` (FRED Brent, monthly average), and `row_gdp` (see
-#' [build_row_gdp()]).
+#' `us_exchange_rate` (spliced Fed broad dollar index, see
+#' [fred_spliced_dollar_index()]), `oil_price` (FRED Brent, monthly
+#' average), and `row_gdp` (see [build_row_gdp()]).
+#'
+#' Note the asymmetry between `eur_usd` and `us_exchange_rate`: the ten
+#' euro-area countries share one currency and therefore one bilateral
+#' EUR/USD rate, whereas the US block uses a *broad effective* index
+#' against all its trading partners. That is deliberate -- see CLAUDE.md
+#' on why no `<iso2>_exchange_rate` exists for an EA member.
 #'
 #' @param row_weights Named numeric vector as returned by
 #'   [row_gdp_weights()], passed through to [build_row_gdp()].
@@ -368,13 +448,15 @@ build_shared_panel <- function(row_weights) {
 
   us_policy_rate <- df_to_quarterly_ts(fetch_fred_series("FEDFUNDS", start_date = "1995-01-01"))
   oil_price <- df_to_quarterly_ts(fetch_fred_series("MCOILBRENTEU", start_date = "1995-01-01"))
+  us_exchange_rate <- fred_spliced_dollar_index()
 
   list(
-    ea_policy_rate = koma::as_ets(ea_policy_rate, series_type = "level", method = "none", source = "ecb"),
-    us_policy_rate = koma::as_ets(us_policy_rate, series_type = "level", method = "none", source = "fred"),
-    eur_usd        = koma::as_ets(eur_usd, series_type = "level", method = "diff_log", source = "ecb"),
-    oil_price      = koma::as_ets(oil_price, series_type = "level", method = "diff_log", source = "fred"),
-    row_gdp        = build_row_gdp(row_weights)
+    ea_policy_rate   = koma::as_ets(ea_policy_rate, series_type = "rate", method = "none", source = "ecb"),
+    us_policy_rate   = koma::as_ets(us_policy_rate, series_type = "rate", method = "none", source = "fred"),
+    eur_usd          = koma::as_ets(eur_usd, series_type = "level", method = "diff_log", source = "ecb"),
+    us_exchange_rate = koma::as_ets(us_exchange_rate, series_type = "level", method = "diff_log", source = "fred"),
+    oil_price        = koma::as_ets(oil_price, series_type = "level", method = "diff_log", source = "fred"),
+    row_gdp          = build_row_gdp(row_weights)
   )
 }
 
@@ -459,4 +541,121 @@ get_custom_attrs <- function(x) {
   keep <- setdiff(names(attributes(x)), c("tsp", "class", "dim", "dimnames", "names"))
   attrs <- attributes(x)[keep]
   attrs
+}
+
+#' Report which series in a panel have internal (non-edge) `NA`s
+#'
+#' Distinguishes an **internal** gap -- an `NA` with observed values on
+#' both sides -- from a leading or trailing `NA`, which is a ragged edge.
+#' The distinction matters because koma fills ragged edges itself
+#' (`fill_ragged_edge()`/`conditional_fill()`), but has no facility for a
+#' hole in the middle of a series and fails with an opaque
+#' "time series contains internal NAs" from deep inside `level()`.
+#'
+#' @param panel A named list of `koma_ts`.
+#'
+#' @return A named list, one element per affected series, each a numeric
+#'   vector of the affected times. Empty if the panel is clean.
+#' @export
+internal_gaps <- function(panel) {
+  gaps <- lapply(panel, function(x) {
+    values <- as.numeric(x)
+    observed <- which(!is.na(values))
+    if (length(observed) == 0) {
+      return(numeric(0))
+    }
+    span <- seq(min(observed), max(observed))
+    as.numeric(stats::time(x))[span[is.na(values[span])]]
+  })
+  gaps[vapply(gaps, length, integer(1)) > 0]
+}
+
+#' Linearly interpolate internal gaps in a panel
+#'
+#' koma cannot estimate on a series with a hole in it (see
+#' [internal_gaps()]), so any internal `NA` has to be resolved before
+#' estimation. This interpolates them linearly and **warns**, naming
+#' every series and period touched -- it never fixes silently, because an
+#' interpolated observation is invented data and the caller needs to know
+#' it is there.
+#'
+#' Leading and trailing `NA`s are left alone: those are ragged edges,
+#' which koma fills itself with proper conditioning, and overwriting them
+#' here would replace a principled conditional fill with a crude
+#' extrapolation.
+#'
+#' In the current EA-MD/QD vintage exactly one series is affected:
+#' `gr_long_rate` at 2015Q3. That is not a data error -- Greek banks were
+#' closed under capital controls from 29 June 2015 and the sovereign bond
+#' market was effectively shut, so no Maastricht long-term rate was
+#' published for that quarter. It sits between 11.46% (2015Q2) and 7.81%
+#' (2015Q4).
+#'
+#' @param panel A named list of `koma_ts`.
+#'
+#' @return The panel, with internal gaps interpolated.
+#' @export
+fill_internal_gaps <- function(panel) {
+  gaps <- internal_gaps(panel)
+  if (length(gaps) == 0) {
+    return(panel)
+  }
+
+  described <- vapply(names(gaps), function(name) {
+    paste0(name, " (", paste(sprintf("%.2f", gaps[[name]]), collapse = ", "), ")")
+  }, character(1))
+  cli::cli_warn(c(
+    "!" = "Linearly interpolated {sum(lengths(gaps))} internal gap{?s} in {length(gaps)} series: {.val {unname(described)}}.",
+    "i" = "koma cannot estimate on a series with an internal {.val NA}; these values are interpolated, not observed."
+  ))
+
+  for (name in names(gaps)) {
+    x <- panel[[name]]
+    values <- as.numeric(x)
+    observed <- which(!is.na(values))
+    span <- seq(min(observed), max(observed))
+    values[span] <- stats::approx(observed, values[observed], xout = span)$y
+
+    attrs <- get_custom_attrs(x)
+    attrs[["ets_attributes"]] <- NULL
+    filled <- stats::ts(values, start = stats::start(x), frequency = stats::frequency(x))
+    panel[[name]] <- do.call(koma::as_ets, c(list(filled), attrs))
+  }
+
+  panel
+}
+
+#' Give every series in a panel the same set of attributes
+#'
+#' `koma::estimate()` runs its `ts_data` through `as_mets()`, which
+#' **requires every series to carry an identical set of attribute
+#' names** -- it aborts with "Provide the same attributes for each series
+#' in your list" otherwise. Our panel does not naturally satisfy that:
+#' EA-MD/QD series carry `eamdqd_code`/`tr_code`/`series_class`, derived
+#' and FRED series do not, and the shared (non-country) series have no
+#' `country` at all.
+#'
+#' This takes the union of the attribute names present anywhere in
+#' `panel` and fills the gaps with `NA`, so the metadata is preserved
+#' where it exists and merely absent-but-declared where it does not.
+#' `ets_attributes` is dropped and left to koma, which maintains it
+#' itself.
+#'
+#' @param panel A named list of `koma_ts`.
+#'
+#' @return The same list, every element carrying the same attribute names.
+#' @export
+harmonise_panel_attrs <- function(panel) {
+  custom <- lapply(panel, get_custom_attrs)
+  attr_names <- setdiff(unique(unlist(lapply(custom, names))), "ets_attributes")
+
+  out <- lapply(seq_along(panel), function(i) {
+    attrs <- custom[[i]]
+    attrs[["ets_attributes"]] <- NULL
+    for (missing_name in setdiff(attr_names, names(attrs))) {
+      attrs[[missing_name]] <- NA
+    }
+    do.call(koma::as_ets, c(list(panel[[i]]), attrs[attr_names]))
+  })
+  stats::setNames(out, names(panel))
 }

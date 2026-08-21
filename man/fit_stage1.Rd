@@ -9,16 +9,24 @@ fit_stage1(iso2, panel, dates, options = list())
 \arguments{
 \item{iso2}{Two-letter lowercase ISO country code.}
 
-\item{panel}{Named list of \code{koma_ts} for this country plus its
-exogenous (shared) regressors, as built by \code{\link[=build_global_panel]{build_global_panel()}}.}
+\item{panel}{Named list of \code{koma_ts} covering this country plus the
+shared exogenous regressors, as built by \code{\link[=build_global_panel]{build_global_panel()}}.}
 
-\item{dates}{koma \code{dates} list (\code{estimation}, \code{forecast}, ...).}
+\item{dates}{koma \code{dates} list, e.g. from \code{\link[=stage1_dates]{stage1_dates()}}.}
 
-\item{options}{Passed through to \code{koma::estimate(options = )}.}
+\item{options}{Passed through to \code{koma::estimate(options = )}. The
+default is koma's own default (\code{ndraws = 2000}, \code{burnin_ratio = 0.5},
+\code{nstore = 1}, \code{tau = 1.1}) -- stage 1 is deliberately untuned, so
+that the raw acceptance rates from \code{\link[=stage1_summary]{stage1_summary()}} show where
+tuning is actually needed.}
 }
 \value{
-A \code{koma::koma_estimate} object.
+A \code{koma::koma_estimate} object, carrying \code{runtime_s} and
+\code{iso2} attributes.
 }
 \description{
-Fit one country's stage-1 model
+Computes the country's expenditure shares, builds its system, subsets
+the panel to exactly the variables that system needs, truncates the
+\strong{endogenous} series to the estimation end so koma conditionally
+fills the gap up to the forecast start, and estimates.
 }

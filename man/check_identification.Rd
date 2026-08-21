@@ -18,3 +18,15 @@ Runs \code{koma::model_identification()} and reports failures per equation
 with the offending country/concept, rather than koma's single
 system-wide abort.
 }
+\details{
+\code{koma::model_identification()} is called automatically inside
+\code{koma::estimate()}, but only aborts -- it does not report which
+equation failed. Calling it here up front is cheap (it is a purely
+symbolic check on the \code{Gamma}/\code{Beta} matrices, with no data and no
+MCMC) and catches a mis-specified system before committing to a long
+run.
+
+Note the argument koma actually wants is the whole \code{identities} list
+(post-weight-resolution), not just the weights -- passing the weights
+alone fails with an opaque "NA/NaN/Inf in foreign function call".
+}

@@ -10,7 +10,9 @@ identity_equation(dep, weighted_terms)
 \item{dep}{Dependent variable name.}
 
 \item{weighted_terms}{Named list, \verb{component name -> weight}, where each
-weight is either \code{numeric(1)} or a character expression string.}
+weight is either \code{numeric(1)} or a character expression string.
+Injected (character) weights are always joined with \code{+}, since their
+sign is not knowable until koma evaluates them against the data.}
 }
 \value{
 A single equation string, e.g.
@@ -21,4 +23,15 @@ Assembles a koma \code{==} equation from a dependent variable and a named list
 of weighted components. Weights may be a fixed number or an injected
 expression string (e.g. \code{"n_de_c/n_de_gdp"}), rendered as
 \code{(weight)*component}.
+}
+\details{
+A negative weight is rendered with a \code{-} separator (\code{"... - 0.4*de_m"}),
+never as \code{"+ -0.4*de_m"}. This is not cosmetic: koma parses the
+\code{+ -0.4*x} form \strong{without error} but stores the identity's weights
+wrong -- verified against koma 0.3.1, \code{gdp == 0.6*c + -0.4*i} yields
+three weights (\code{0.6}, \code{character(0)}, \code{-0.4}) for two components,
+whereas \code{gdp == 0.6*c - 0.4*i} correctly yields \code{c(0.6, -0.4)}. koma
+performs no identity-consistency check that would catch the corrupted
+form later, so it has to be avoided here. See \code{docs/koma-api.md}
+(gotcha 8) and CLAUDE.md.
 }

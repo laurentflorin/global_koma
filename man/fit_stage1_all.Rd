@@ -4,20 +4,46 @@
 \alias{fit_stage1_all}
 \title{Fit stage 1 for every country}
 \usage{
-fit_stage1_all(countries, panel, dates, options = list())
+fit_stage1_all(
+  countries = modelled_countries,
+  panel,
+  dates,
+  options = list(),
+  parallel = TRUE,
+  cache_dir = stage1_cache_dir()
+)
 }
 \arguments{
 \item{countries}{Character vector of ISO-2 country codes.}
 
 \item{panel}{Named list of \code{koma_ts}, the full multi-country panel.}
 
-\item{dates}{koma \code{dates} list.}
+\item{dates}{koma \code{dates} list, e.g. from \code{\link[=stage1_dates]{stage1_dates()}}.}
 
 \item{options}{Passed through to \code{\link[=fit_stage1]{fit_stage1()}}.}
+
+\item{parallel}{Logical; if \code{FALSE}, runs sequentially under whatever
+plan is already active (useful when debugging, since worker errors
+are easier to read).}
+
+\item{cache_dir}{Directory to write \verb{<iso2>.rds} into. \code{NULL} skips
+caching.}
 }
 \value{
 A named list of \code{koma_estimate} objects, one per country.
 }
 \description{
-Fit stage 1 for every country
+Runs the 11 country estimations concurrently and caches each fit to
+\verb{data/cache/stage1/<iso2>.rds}.
+}
+\details{
+\strong{Parallelism.} koma has no \code{cores} argument -- it uses
+\code{future::plan()} set by the caller, and fans out one future \emph{per
+stochastic equation}, so on its own it parallelises only ~6 ways
+within a single country. Here the outer loop over countries is the
+wider axis (11 independent fits), so this function sets the plan and
+spreads countries across workers with \code{future.apply::future_lapply()};
+\code{future} makes the nested inner level sequential automatically. The
+caller's plan is restored on exit. \code{future.seed = TRUE} keeps results
+reproducible and identical to a sequential run.
 }

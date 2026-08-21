@@ -9,15 +9,21 @@ stage1_country_equations(iso2, spec)
 \arguments{
 \item{iso2}{Two-letter lowercase ISO country code.}
 
-\item{spec}{A list describing the country's equations (dependent
-variables, regressors, lags) -- shape TBD once the model spec is
-finalised.}
+\item{spec}{A list as returned by \code{\link[=stage1_spec]{stage1_spec()}}, with elements
+\code{stochastic} and \code{identities}.}
 }
 \value{
 A \code{koma::koma_seq} object.
 }
 \description{
-Returns the character vector of stochastic and identity equations for a
-single country's satellite model, using \code{\link[=stochastic_equation]{stochastic_equation()}} and
-\code{\link[=identity_equation]{identity_equation()}} with \verb{<iso2>_}-prefixed variable names.
+Turns a \code{\link[=stage1_spec]{stage1_spec()}} into a \code{koma_seq} via \code{\link[=stochastic_equation]{stochastic_equation()}}
+and \code{\link[=identity_equation]{identity_equation()}}.
+}
+\details{
+Exogenous variables are \strong{derived}, not declared: any variable
+appearing on a right-hand side that is not itself the dependent
+variable of a stochastic equation or an identity is exogenous. That
+keeps the exogenous set in sync with the template automatically -- so
+moving \code{us_policy_rate} from exogenous to endogenous, as the US
+variant does, requires no second edit.
 }

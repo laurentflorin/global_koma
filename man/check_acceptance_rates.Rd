@@ -21,3 +21,16 @@ Wraps koma's per-equation acceptance-rate logic (see
 \code{?koma::estimate}, "What tau does" in \code{docs/koma-api.md}) across every
 stochastic equation in a fit, flagging any outside the target band.
 }
+\details{
+koma exposes no accessor for this: the per-draw 0/1 acceptance
+indicator lives at \code{fit$estimates[[equation]]$count_accepted}, and the
+rate is its mean. Equations with \strong{no contemporaneous endogenous
+regressor} have no Metropolis step at all -- their gamma block is
+empty and \code{count_accepted} is \code{NA} throughout. Those are reported with
+\code{has_mh_step = FALSE} and an \code{NA} rate, and are never flagged; koma
+excludes them from its own warning for the same reason.
+
+The default band matches \code{koma:::get_default_acceptance_prob()}, which
+returns \code{c(0.2, 0.6)}. (koma's \code{equations} vignette prose says
+30\%-60\%; the code is authoritative and says 20\%-60\%.)
+}

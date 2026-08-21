@@ -26,7 +26,7 @@ decoration).}
 rendered as a leading \verb{\{mean, variance\}} prior on that term.}
 
 \item{error_prior}{Optional \code{c(df, scale)} for the trailing error-term
-prior.}
+prior. Must be last in the equation, per koma's grammar.}
 
 \item{intercept}{Logical; if \code{FALSE}, appends \code{- 1} to drop the intercept.}
 }
@@ -37,4 +37,16 @@ A single equation string, e.g. \code{"de_c ~ de_gdp + de_c.L(1)"}.
 Assembles a koma \code{~} equation from a dependent variable and a set of RHS
 terms, each optionally carrying a lag spec and/or a coefficient prior.
 See \code{vignette("equations", package = "koma")} for the grammar.
+}
+\details{
+A term named in \code{lags} is rendered \strong{only} in its lagged form:
+\code{stochastic_equation("de_c", c("de_gdp", "de_c"), lags = list(de_c = "1"))}
+gives \code{"de_c ~ de_gdp + de_c.L(1)"}, not \code{"... + de_c + de_c.L(1)"}.
+That is the usual case for an autoregressive own-term, where the
+contemporaneous value is the dependent variable and cannot also be a
+regressor. To include both a contemporaneous term and its lag, name the
+variable twice in \code{terms} and give the lag spec for one of them.
+
+The intercept is implicit in koma's grammar, so \code{intercept = TRUE} adds
+nothing; \code{intercept = FALSE} appends \code{- 1}.
 }

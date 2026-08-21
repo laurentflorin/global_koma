@@ -179,3 +179,94 @@ test_that("the national accounts identity holds to a stated tolerance for every 
     expect_lt(max(rel_err, na.rm = TRUE), tolerance[[cc]])
   }
 })
+
+# --- internal gaps / attribute harmonisation (no network) ----------------
+
+test_that("internal_gaps distinguishes an internal hole from a ragged edge", {
+  mk <- function(v) koma::as_ets(stats::ts(v, start = c(2000, 1), frequency = 4),
+                                 series_type = "level", method = "diff_log")
+  panel <- list(
+    hole    = mk(c(1, 2, NA, 4, 5)),            # internal -- koma cannot handle
+    leading = mk(c(NA, NA, 3, 4, 5)),           # ragged edge -- koma fills it
+    trailing = mk(c(1, 2, 3, NA, NA)),          # ragged edge
+    clean   = mk(c(1, 2, 3, 4, 5))
+  )
+  gaps <- internal_gaps(panel)
+
+  expect_named(gaps, "hole")
+  expect_equal(gaps$hole, 2000.5)
+})
+
+test_that("fill_internal_gaps interpolates internal holes, warns, and leaves edges alone", {
+  mk <- function(v) koma::as_ets(stats::ts(v, start = c(2000, 1), frequency = 4),
+                                 series_type = "level", method = "diff_log",
+                                 country = "DE")
+  panel <- list(hole = mk(c(1, 2, NA, 4, 5)), trailing = mk(c(1, 2, 3, NA, NA)))
+
+  expect_warning(filled <- fill_internal_gaps(panel), "interpolated")
+
+  expect_equal(as.numeric(filled$hole), c(1, 2, 3, 4, 5))
+  # ragged edge untouched -- koma conditions on it properly itself
+  expect_true(all(is.na(as.numeric(filled$trailing)[4:5])))
+  # koma attributes survive
+  expect_equal(attr(filled$hole, "series_type"), "level")
+  expect_equal(attr(filled$hole, "country"), "DE")
+  expect_true(koma::is_ets(filled$hole))
+})
+
+test_that("fill_internal_gaps is a silent no-op on a clean panel", {
+  mk <- function(v) koma::as_ets(stats::ts(v, start = c(2000, 1), frequency = 4),
+                                 series_type = "level", method = "diff_log")
+  panel <- list(a = mk(1:5), b = mk(2:6))
+  expect_no_warning(out <- fill_internal_gaps(panel))
+  expect_identical(out, panel)
+})
+
+test_that("harmonise_panel_attrs gives every series the same attribute names", {
+  # koma's as_mets() aborts unless every series carries an identical set
+  # of attribute names -- our panel naturally violates that.
+  x <- koma::as_ets(stats::ts(1:8, start = c(2000, 1), frequency = 4),
+                    series_type = "level", method = "diff_log",
+                    country = "DE", eamdqd_code = "GDP_DE")
+  y <- koma::as_ets(stats::ts(1:8, start = c(2000, 1), frequency = 4),
+                    series_type = "level", method = "diff_log", source = "ecb")
+
+  out <- harmonise_panel_attrs(list(de_gdp = x, oil_price = y))
+  names_of <- function(z) sort(setdiff(names(attributes(z)), c("tsp", "class")))
+
+  expect_equal(names_of(out$de_gdp), names_of(out$oil_price))
+  # values preserved where they existed, NA where they did not
+  expect_equal(attr(out$de_gdp, "eamdqd_code"), "GDP_DE")
+  expect_true(is.na(attr(out$oil_price, "eamdqd_code")))
+  expect_equal(attr(out$oil_price, "source"), "ecb")
+  expect_true(all(vapply(out, koma::is_ets, logical(1))))
+})
+
+test_that("rate concepts are tagged series_type = 'rate', levels as 'level'", {
+  expect_equal(concept_series_type[["long_rate"]], "rate")
+  expect_equal(concept_series_type[["unemployment"]], "rate")
+  expect_equal(concept_series_type[["gdp"]], "level")
+  expect_equal(concept_series_type[["prices"]], "level")
+  # every concept with a method must also have a series_type
+  expect_setequal(names(concept_series_type), names(concept_method))
+})
+
+test_that("fred_spliced_dollar_index joins the two Fed indices without a level break", {
+  skip_if_no_fred_key()
+  skip_on_cran()
+  withr::local_dir(.heavy_test_dir)
+
+  x <- suppressMessages(fred_spliced_dollar_index())
+
+  expect_equal(stats::frequency(x), 4)
+  expect_false(anyNA(as.numeric(x)))
+  # must span the estimation sample and run past the forecast horizon
+  expect_lte(stats::tsp(x)[1], 2000)
+  expect_gte(stats::tsp(x)[2], 2023.75)
+
+  # the join must not introduce an artificial jump: the quarter-on-quarter
+  # growth at the 2006Q1 splice point stays inside the series' own range
+  growth <- abs(diff(log(as.numeric(x))))
+  join <- which(abs(as.numeric(stats::time(x)) - 2006) < 0.01)
+  expect_lt(growth[join - 1], max(growth))
+})

@@ -174,6 +174,61 @@ This specifically means, for the EA-MD/QD port in `data_eamdqd.R`:
   same name — they silently resolve to `eurostat::ea_countries` instead of
   erroring. Use plain `` `ea_countries` `` code spans.
 
+## Writing koma equations and panels (`equations.R`, `stage1_models.R`)
+
+- **Never emit `+ -0.4*x` in an identity — always `- 0.4*x`.** koma parses
+  the first form *without any error* but stores the identity's weights
+  wrong: verified against koma 0.3.1, `gdp == 0.6*c + -0.4*i` yields three
+  weights (`0.6`, `character(0)`, `-0.4`) for two components, whereas
+  `gdp == 0.6*c - 0.4*i` correctly yields `c(0.6, -0.4)`. koma has **no
+  identity-consistency check** that would catch the corrupted form later,
+  so it silently mis-specifies the model. `identity_equation()` handles
+  this; don't paste identity strings by hand.
+- **Rate series are `series_type = "rate", method = "none"`**; levels and
+  indices are `series_type = "level"` with a `method` koma applies itself.
+  `concept_series_type` in `panel_build.R` is the lookup. Tagging a rate
+  as `"level"` is numerically inert during estimation but misdescribes the
+  series and misleads `level()` when inverting a forecast.
+- **koma requires a uniform attribute set across `ts_data`.** `as_mets()`
+  aborts with "Provide the same attributes for each series in your list"
+  if, say, EA-MD/QD series carry `eamdqd_code` and FRED ones don't. Run
+  `harmonise_panel_attrs()` before `koma::estimate()`.
+- **koma cannot estimate on an internal `NA`.** It fills *ragged edges*
+  (leading/trailing) itself, but a hole in the middle fails with an opaque
+  "time series contains internal NAs" from inside `level()`. Use
+  `internal_gaps()` to find them and `fill_internal_gaps()` to
+  interpolate — it warns, naming every series and period, because an
+  interpolated observation is invented data. Exactly one series in the
+  current vintage needs it: `gr_long_rate` at 2015Q3, when Greek capital
+  controls shut the bond market and no Maastricht rate was published.
+- **Conditional fill is automatic, not a function call.**
+  `fill_ragged_edge()`/`conditional_fill()` are koma-internal. The idiom
+  is: set `dates$forecast$start` well after `dates$estimation$end`, window
+  the **endogenous** series to the estimation end, and leave the exogenous
+  ones at full length — koma derives `dates$current` and fills the gap.
+  This project uses 2019Q4 / 2023Q1 so 2020–2022 is filled rather than
+  estimated, which is how COVID is neutralised. Do **not** `align_panel()`
+  to the estimation window before stage 1; that would truncate the
+  exogenous series the fill conditions on.
+- **Acceptance rates: the band is 20–60%**, from
+  `koma:::get_default_acceptance_prob()`. koma's own `equations` vignette
+  prose says 30–60% — the code is authoritative. There is no accessor:
+  read `mean(fit$estimates[[eq]]$count_accepted, na.rm = TRUE)`.
+  Equations with no contemporaneous endogenous regressor have no
+  Metropolis step, `count_accepted` is `NA`, and they must never be
+  flagged (`check_acceptance_rates()` handles this).
+- **koma parallelises per equation, not per country.** It has no `cores`
+  argument — the caller sets `future::plan()`. For the 11 stage-1 models
+  the wider axis is countries, so `fit_stage1_all()` sets the plan itself
+  and spreads countries across workers with `future.apply`; `future`
+  makes the nested inner level sequential. macOS must use `multisession`
+  (Accelerate BLAS is not fork-safe and segfaults in `eigen()`).
+- `targets` schedules any target whose dependencies are met, so
+  `tar_make()` does **not** fail in stage order — a stage-3 stub with no
+  upstream dependency errors before stage 1 runs. Use
+  `tar_make(names = "stage1_diagnostics")` to exercise the implemented
+  part of the pipeline.
+
 ## FRED API key
 
 The FRED API key lives in `.Renviron` as `FRED_API_KEY`. Copy
@@ -199,10 +254,10 @@ Run both after any change to `R/`, `_targets.R`, or the data pipeline.
 `tar_make()` confirms the pipeline still executes top-to-bottom (or fails
 at the expected, not-yet-implemented step); `devtools::test()` confirms
 the unit tests for whatever you touched now pass. `data_fred.R`,
-`data_eamdqd.R`, `panel_build.R`, and `weights.R` are implemented;
-`stage1_models.R`, `stage2_system.R`, `stage3_blocks.R`, `diagnostics.R`,
-and `scoring.R` are not, so `tar_make()` will still error partway through
-by design — that is expected, not a regression; make sure it errors at the
+`data_eamdqd.R`, `panel_build.R`, `weights.R`, `stage1_models.R`, and the
+acceptance-rate/identification half of `diagnostics.R` are implemented;
+`stage2_system.R`, `stage3_blocks.R`, `scoring.R` and `diagnostics_grid()`
+are not, so `tar_make()` will still error partway through by design — that is expected, not a regression; make sure it errors at the
 *next* unimplemented stub, not an earlier one you touched.
 
 Do not fetch real data as part of "proving a change works" unless the
