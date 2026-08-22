@@ -494,6 +494,27 @@ unconditional, one with `restrictions = `), differenced.
   so asking for a longer horizon without first extending them
   (`extend_forecast_horizon()`) silently returns fewer quarters than
   requested, with no error to catch it.
+- **An individual spillover-matrix cell is not a reliable number at 1000
+  draws, and never was.** Re-running the same battery on the *same fit*
+  changing only the seed moves an off-diagonal cell by **0.35 pp on average
+  and up to 1.85**, and flips the sign of 7–10 of 30. This holds for stage
+  2b (`df = 22`), not just the thinner stage-3 system — the seed noise is
+  0.346 for stage 2b against 0.392 for the extended system, barely
+  different. Common random numbers make the *baseline-vs-scenario* pair
+  exact, but
+  they do nothing about sampling error in the level of the estimand itself,
+  which is a median over draws of which a third have exploded by horizon 8.
+  Read the matrix as a pattern (sign, rough ordering), never cell by cell.
+- **Before reporting that a change moved the spillover matrix, run the
+  seed placebo**: re-run a few source countries on both fits at a second
+  seed and compare the cross-system difference against the seed-to-seed
+  difference. On the stage-3c comparison the placebo killed the two largest
+  apparent findings (`de -> ie` at −2.28 became −0.54; Ireland's own-diagonal
+  gap of +1.204 became −0.168) and confirmed the one real one (Germany's
+  own diagonal, +0.717 and +0.612 at the two seeds — the only country
+  carrying the blocks). Use non-block countries as controls: their gaps
+  should flip sign across seeds, and if they do not, the result is not
+  coming from the blocks.
 
 ## FRED API key
 

@@ -25,6 +25,13 @@ frontier <- readRDS(file.path(dir3c, "k_frontier.rds"))
 room <- readRDS(file.path(dir3c, "holdout_room.rds"))
 insample <- readRDS(file.path(dir3c, "insample_rmse.rds"))
 bench <- readRDS(file.path(dir3c, "bench_summary.rds"))
+
+spill_new  <- readRDS(file.path(dir3c, "spillover_matrix.rds"))
+spill_diff <- readRDS(file.path(dir3c, "spillover_diff.rds"))
+sanity_cmp <- readRDS(file.path(dir3c, "sanity_cmp.rds"))
+horizon    <- readRDS(file.path(dir3c, "horizon_profile.rds"))
+placebo      <- readRDS(file.path(dir3c, "placebo.rds"))
+placebo_diag <- readRDS(file.path(dir3c, "placebo_diag.rds"))
 ```
 
 ## Summary
@@ -45,7 +52,18 @@ rollout if it were affordable, the exact affordability frontier, and — most
 usefully — an answer to whether the extended system is actually better than
 stage 2b, or merely bigger.
 
-It is merely bigger.
+It is merely bigger. It fits no better in sample, cannot be validated out of
+sample, and its cross-country spillover matrix — the reason the eleven countries
+are estimated jointly at all — loses the sign coherence stage 2b mostly had
+without gaining interpretable structure in its place. The one genuine gain is
+Germany's own response to its own shock, which the new wage–price and credit
+blocks amplify by ~50% over eight quarters with the lagged onset those channels
+imply; a seed-placebo confirms it reproduces for Germany and not for the two
+control countries.
+
+A separate finding falls out of that placebo and applies to stage 2b too:
+**individual spillover cells are not reliable in this project at 1000 draws**,
+in either system. See §4.4.
 
 ## 1. Data availability: country × block
 
@@ -198,17 +216,218 @@ Fourteen degrees of freedom, nineteen equations, and about 36% more runtime.
 Acceptance rates are clean in both after tuning, so the sampler is not the
 problem — the budget is.
 
-### 3.4 The verdict
+## 4. The spillover battery, re-run on the extended system
+
+The brief asks whether the new channels changed the spillover answer. The
+battery is the same one stage 2 ran: an eleven-country sweep of +1% one-quarter
+GDP demand shocks, each a matched-seed `scenario_diff()`, cumulated over eight
+quarters into a source × receiver matrix.
+
+```{r spill-extended}
+kable(round(spill_new, 3),
+      caption = "Extended system: cumulative 8-quarter GDP response, median across draws.")
+```
+
+```{r spill-diff}
+kable(round(spill_diff, 3), caption = "Change from stage 2b (extended minus stage 2b).")
+```
+
+The matrix moves a great deal: mean absolute change **0.589 percentage points**
+against cross-country effects that in stage 2b were mostly below 1.0, and a
+largest single change of **2.33** (`de -> ie`, from +0.05 to −2.28). Taken at
+face value that is a different answer. It is not, and the rest of this section
+is why.
+
+### 4.1 The changes are only half where the blocks are
+
+The blocks are German and only German. Every non-German equation is
+structurally untouched, and §3.2 confirms it empirically — their in-sample RMSE
+ratios are 1.0000. So the German row should move, and little else should.
+
+| cells | mean abs. change |
+|---|---|
+| Germany as source (the blocks' own row) | 1.275 |
+| Germany as receiver | 0.377 |
+| **all other cells — no changed equation on either side** | **0.538** |
+
+Cells with an unchanged shock, unchanged transmission and unchanged receiving
+equation move by 0.54, **42% as much as the German row**. §4.4 measures the
+noise floor at 0.35–0.39, which is most of that 0.54: those cells are moving
+about as much as they move when nothing changes at all. The German row, at
+1.275, is roughly three times the floor and is the only band clearly above it.
+
+### 4.2 The sign structure collapses
+
+```{r spill-signs}
+kable(sanity_cmp, row.names = FALSE, digits = 3,
+      caption = "The stage-2 sanity checks, recomputed identically on both matrices.")
+```
+
+Stage 2b's off-diagonal cells were **95% positive**: whatever its ordering
+problems, a demand expansion raised partners' GDP essentially everywhere, which
+is the one thing a trade-linked system must get right. The extended system is
+**55% positive** — a coin flip. Fifty-one of 110 off-diagonal cells change sign,
+and negative cells go from 5 to 50.
+
+A euro-area demand expansion contracting GDP in 45% of partner countries is not
+a competitiveness channel. A competitiveness channel is *selective*: it should
+bite where the shocked country competes with the receiver in third markets, and
+should not touch pairs with no such relationship. Sign flips distributed across
+nearly half of all pairs, uncorrelated with trade weight (Spearman rho falls
+from 0.141 to 0.050), have no such structure.
+
+Two caveats, both of which the placebo in §4.4 forces. First, stage 2b's own
+sign coherence is less solid than the single cached seed implies: on the three
+placebo rows it is 97% positive at one seed and **70% at another**. The contrast
+is real but the baseline is weaker than "95%" suggests. Second, sanity check 1
+*improves*, 7/11 to 10/11 — which is not good news either, because own effects
+dominate more comprehensively when the cross-country cells shrink toward noise
+around zero, not because domestic transmission got sharper.
+
+### 4.3 The disorder tracks the explosive-draw share
+
+koma's Gibbs sampler has no stationarity constraint, so some posterior draws
+explode; `scenario_diff()` reports the share. Cutting the degrees of freedom
+from 22 to 8 widens the posterior, and more draws diverge:
+
+```{r spill-horizon}
+kable(horizon, row.names = FALSE, digits = 3,
+      caption = "Every measure of disorder rises with the explosive-draw share.")
+```
+
+At horizon 1, where only 8% of draws have exploded, magnitudes barely move
+(mean change 0.217). By horizon 8, at 67%, the change is 0.599 and the positive
+share has fallen from 95% to 55%. The median at horizon 8 is being taken over a
+*third* of the draws — and which third survives is itself shock-dependent.
+
+Both series are monotone in horizon, so this correlation is close to mechanical
+and is suggestive rather than decisive. That is what §4.4 is for.
+
+### 4.4 Placebo: how much does the matrix move when nothing changes?
+
+The cross-system difference is only evidence of a changed answer if it exceeds
+the sampling noise in the estimand. So three source countries — Germany (has
+the blocks), France (does not), Ireland (does not, and has the thinnest data)
+— were re-run on **the same two fits**, changing nothing but the Monte Carlo
+seed. Anything the cross-system difference does not clear is noise.
+
+```{r spill-placebo}
+kable(placebo, row.names = FALSE, digits = 3,
+      caption = "Rows de/fr/ie, 30 off-diagonal cells. The first two lines are pure noise: identical fit, identical shock, different seed.")
+```
+
+This is the most important table in the report, and it cuts both ways.
+
+**The cross-system difference is real, not noise.** At 0.916 it is about 2.4
+times the 0.35–0.39 noise floor. Something did change.
+
+**But no individual cell is interpretable, in either system.** Changing only the
+seed moves cells by 0.35–0.39 on average, by as much as 1.85, and flips the sign
+of 7 to 10 of 30. Stage 2b is barely better than the extended system on this
+measure (0.346 vs 0.392). Cell-level spillover readings were never safe here;
+the extended system makes a pre-existing problem worse rather than creating it.
+
+**The sign collapse survives the placebo.** Off-diagonal positive share is
+40%/30% for the extended system across the two seeds and 97%/70% for stage 2b —
+overlapping nowhere. That separation is a property of the systems, not of the
+draw.
+
+### 4.5 What survives: the German diagonal, and only Germany's
+
+The placebo doubles as a controlled experiment. If the new blocks genuinely
+amplify domestic propagation, the extended-minus-stage-2b gap on a country's own
+diagonal should reproduce across seeds **for Germany and for no one else** —
+Germany is the only country carrying the blocks.
+
+```{r spill-diag-placebo}
+kable(placebo_diag, row.names = FALSE, digits = 3,
+      caption = "Own-diagonal gap (extended minus stage 2b), measured at two independent seeds.")
+```
+
+That is exactly what happens. Germany's gap is +0.717 and +0.612 — same sign,
+similar size, and comfortably above the diagonal's own seed noise of 0.22–0.33.
+France's and Ireland's flip sign between seeds (+0.165/−0.143 and
++1.204/−0.168), which is what a null result looks like. Ireland's +1.204 at the
+first seed would have been the report's second-largest "finding" had the placebo
+not been run.
+
+The horizon shape confirms the mechanism:
+
+```{r spill-diag}
+kable(horizon[, c("horizon", "de_diag_stage2b", "de_diag_extended")], row.names = FALSE,
+      digits = 3, caption = "German own-effect, cumulative.")
+```
+
+The two systems are identical on impact (both exactly 1.000 — the restriction
+pins it) and near-identical at horizon 2 (0.997 vs 0.964). They separate from
+horizon 3 and the gap widens to +52% by horizon 8. A wage–price loop and a
+credit–investment accelerator are slow channels: they work through wages feeding
+consumption and credit feeding investment, neither of which moves in the impact
+quarter. Stronger, more persistent domestic amplification of a domestic demand
+shock, arriving with a lag, is precisely what those blocks were built to produce.
+
+That is a claim about **Germany's response to its own shock** — a within-country
+propagation result. It is not a spillover result, and it does not rescue the
+cross-country matrix.
+
+### 4.6 Where the new channels changed the answer
+
+Directly, as asked: **only in Germany's own response to its own shock.** That
+one result is placebo-controlled, reproduces across seeds, appears in the one
+country that has the blocks and not in the two that do not, and has the right
+horizon shape.
+
+Everywhere else the matrix changed by more than noise but not in any
+interpretable way. The changes are barely larger in structurally untouched cells
+than the seed noise itself, they destroy a sign regularity stage 2b mostly got
+right, they are uncorrelated with trade weight, and they scale with the
+explosive-draw share rather than with any competitiveness linkage.
+
+The specific figure most likely to be quoted, `de -> ie` at −2.28 (a German
+expansion contracting Irish GDP by 2.3% cumulatively), should not be. **At the
+placebo seed the same cell is −0.54** — a quarter of the size, from an identical
+model. Stage 2b's corresponding cells are +0.05 and +0.16, stable and small.
+Ireland has the thinnest data of the eleven (§1) and no equation the German
+blocks touch. The largest single change in the matrix is an artefact, and it is
+reported here rather than in the summary table precisely so it does not get
+quoted as a spillover estimate.
+
+## 5. The verdict
 
 **Merely bigger.** The extended blocks are worth building as *mechanisms* — the
 wage–price loop, the competitiveness channel and the debt-to-spread link are
-real structures that stage 2b cannot represent at all, and several of them come
-back correctly signed. But as a forecasting system the extension does not pay:
-negligible in-sample gain, a two-percent regression in German investment,
-36% more runtime, and no way to check out-of-sample generalisation because the
-degrees of freedom to do so no longer exist.
+real structures that stage 2b cannot represent at all, several of them come back
+correctly signed, and the German own-response in §4.5 is a genuine,
+placebo-controlled result: the wage–price and credit channels amplify a domestic
+demand shock by about 50% over eight quarters, with the lagged onset those
+channels imply.
+
+But as a system the extension does not pay. In-sample gain is negligible and the
+median equation fits marginally worse (§3.2). German investment regresses 2%.
+Runtime rises 36%. Out-of-sample generalisation cannot be checked at all,
+because the degrees of freedom to hold data out no longer exist (§3.1). And the
+cross-country spillover matrix — the main product of the linked system, and the
+thing eleven countries are jointly estimated *for* — loses the one sign
+regularity stage 2b mostly had, without gaining any interpretable structure in
+its place (§4).
+
+That last point settles it. The extension buys one real result about Germany at
+the cost of the answer the system exists to produce.
+
+§4.4 also leaves a finding that is not about the extension at all: **cell-level
+spillover readings were never reliable in this project.** Changing only the
+Monte Carlo seed moves a stage-2b cell by 0.35 on average and flips the sign of
+a third of them. That is a pre-existing property of a 1000-draw posterior with
+explosive draws, which the extended system worsens but did not create. Stage 2b's
+spillover matrix should be read as a pattern — mostly positive, ordered roughly
+by size — and not cell by cell. Any future spillover work should report the
+seed-noise floor alongside the estimates, which `scenario_diff()` already has
+the machinery to do.
 
 The right reading is that this project has reached the limit of what 98
 quarterly observations will support in a single joint system. Further structure
 needs either a longer sample or a smaller system — not a better sampler, and
-not more equations.
+not more equations. If the German blocks are wanted for their own sake, the
+place to run them is a single-country model where `k < T` is not competing with
+ten other countries; if the spillover matrix is wanted, stage 2b is the system
+that produces it.
