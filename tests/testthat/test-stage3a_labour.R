@@ -266,3 +266,74 @@ test_that("check_lag_stability flags only own lags at or above the threshold", {
   expect_false(out$flagged[out$equation == "de_employment"])
   expect_equal(out$equation[1], "de_wages")  # ordered most-persistent first
 })
+
+# --- stage 3b: lagged identities and the construct_phi prefix trap ----------
+
+test_that("stage2_exogenous_variables strips lag suffixes from identity components", {
+  # A stock-flow accumulation identity carries a LAGGED component. Left raw, it
+  # would be declared exogenous and koma's exact-set validate_completeness()
+  # aborts with "Redundant exogenous variables detected".
+  spec <- list(
+    stochastic = list(
+      de_netborrowing = list(terms = c("de_gdp", "de_netborrowing"),
+                             lags = list(de_netborrowing = "1")),
+      de_gdp = list(terms = c("oil_price", "de_gdp"), lags = list(de_gdp = "1"))
+    ),
+    identities = list(
+      de_govdebt = stats::setNames(c(1, 1), c("de_govdebt.L(1)", "de_netborrowing"))
+    )
+  )
+  exo <- stage2_exogenous_variables(spec)
+  expect_false("de_govdebt.L(1)" %in% exo)
+  expect_equal(exo, "oil_price")
+
+  # and the system actually builds, with the lag counted in k
+  sys <- build_stage2_system(spec)
+  expect_true("de_govdebt.L(1)" %in% sys$total_exogenous_variables)
+  expect_true("de_govdebt==1*de_govdebt.L(1)+1*de_netborrowing" %in% sys$equations)
+})
+
+test_that("an accumulation identity keeps explicit weights, never character(0)", {
+  # koma stores implicit weights as character(0) -- the same silent corruption
+  # CLAUDE.md records for `+ -0.4*x`. identity_equation() must emit "1*x".
+  eq <- identity_equation("de_govdebt",
+                          list(`de_govdebt.L(1)` = 1, de_netborrowing = 1))
+  expect_equal(eq, "de_govdebt == 1*de_govdebt.L(1) + 1*de_netborrowing")
+  sys <- koma::system_of_equations(
+    equations = c("de_netborrowing ~ de_gdp + de_netborrowing.L(1)",
+                  "de_gdp ~ oil_price + de_gdp.L(1)", eq),
+    exogenous_variables = "oil_price"
+  )
+  # The failure mode is an EMPTY weight (character(0)), not a wrongly-typed
+  # one: koma stores implicit weights as character(0) and then silently
+  # mis-specifies the identity. Assert both components carry a real weight of 1.
+  wts <- sys$identities$de_govdebt$weights
+  expect_length(wts, 2)
+  expect_false(any(vapply(wts, function(w) length(w) == 0, logical(1))))
+  expect_equal(unname(as.numeric(unlist(wts))), c(1, 1))
+})
+
+test_that("stage2_preflight catches a lagged-name prefix collision", {
+  # koma's construct_phi() prefix-matches lag columns, so `de_debt` would match
+  # both de_debt.L(1) and de_debt_ratio.L(1) and silently mis-map the companion
+  # matrix. Nothing downstream errors, so the preflight has to catch it.
+  panel <- stage3a_synthetic_panel("de")
+  mk <- function(v) koma::as_ets(stats::ts(v, start = c(2000, 1), frequency = 4),
+                                 series_type = "level", method = "diff_log")
+  n <- length(panel$de_gdp)
+  panel$de_debt <- mk(100 + cumsum(stats::rnorm(n, 0.4, 0.2)))
+  panel$de_debt_ratio <- mk(60 + cumsum(stats::rnorm(n, 0.1, 0.2)))
+
+  colliding <- koma::system_of_equations(
+    equations = c("de_debt ~ de_gdp + de_debt.L(1)",
+                  "de_debt_ratio ~ de_gdp + de_debt_ratio.L(1)",
+                  "de_gdp ~ oil_price + de_gdp.L(1)"),
+    exogenous_variables = "oil_price"
+  )
+  out <- stage2_preflight(colliding, panel, seeds = 1,
+                          dates = list(estimation = list(start = c(2000, 1), end = c(2015, 4)),
+                                       forecast = list(start = c(2016, 1), end = c(2016, 4))))
+  row <- out[out$check == "no lagged endogenous name prefixes another", ]
+  expect_false(row$ok)
+  expect_match(row$detail, "de_debt")
+})

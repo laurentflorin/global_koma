@@ -776,6 +776,17 @@ stage2_exogenous_variables <- function(spec) {
     unlist(lapply(stochastic, function(eq) eq$terms), use.names = FALSE),
     unlist(lapply(identities, names), use.names = FALSE)
   ))
+  # An identity may carry a LAGGED component -- the stock-flow accumulation
+  # idiom, `de_govdebt == 1*de_govdebt.L(1) + 1*de_netborrowing`, which koma
+  # supports and its own Klein vignette ships. Identity components arrive here
+  # as raw names, so `de_govdebt.L(1)` would be declared exogenous; koma's
+  # `validate_completeness()` strips the lag suffix on its side, finds no such
+  # variable, and aborts with "Redundant exogenous variables detected".
+  #
+  # A stochastic equation's lags never reach this path (they live in `$lags`,
+  # not `$terms`), so only identities need the strip. `stage2_preflight()`
+  # already does exactly this when it resolves identity RHS names.
+  rhs_variables <- unique(sub("\\.L\\(.*", "", rhs_variables))
   setdiff(rhs_variables, endogenous)
 }
 
@@ -999,6 +1010,21 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
     names(sys_eq$identities)
   )
 
+  # koma's construct_phi() locates an endogenous variable's lag columns with an
+  # UNANCHORED prefix match, `grepl(paste0("^", name), exogenous_variables)`.
+  # If one lagged endogenous name is a string prefix of another -- `de_debt`
+  # and `de_debt_ratio`, say -- the shorter name matches both lag columns, the
+  # inner loop runs twice for the same lag order, and the second pass
+  # OVERWRITES the first's entry, pointing Phi at the wrong row of B. Silently:
+  # no error, no warning, just a wrong companion matrix and therefore wrong
+  # forecasts. Nothing downstream would catch it, so catch it here.
+  lag_columns <- grep("\\.L\\(", sys_eq$total_exogenous_variables, value = TRUE)
+  colliding <- Filter(
+    function(v) sum(startsWith(lag_columns, v)) > 1,
+    endogenous
+  )
+  names_ok <- length(colliding) == 0
+
   # koma projects EVERY equation on the FULL k-column x_matrix on EVERY draw
   # (construct_pi_hat_0 / construct_theta_hat_j both do
   # Matrix::solve(t(x) %*% x)), and draws Omega from riwish(T - k, .). So
@@ -1017,6 +1043,7 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
       "every variable has a panel series",
       "no internal NAs in required series",
       "identities declared last",
+      "no lagged endogenous name prefixes another",
       "system identified",
       "k < T (x'x invertible, Wishart df > 0)"
     ),
@@ -1026,6 +1053,7 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
       length(missing_series) == 0,
       length(gaps) == 0,
       identities_last,
+      names_ok,
       all(identified),
       df_ok
     ),
@@ -1039,6 +1067,7 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
       },
       if (length(gaps) == 0) "-" else paste(names(gaps), collapse = ", "),
       paste0(n_stochastic, " stochastic then ", length(sys_eq$identities), " identities"),
+      if (names_ok) "-" else paste0("koma construct_phi() would mis-map: ", paste(colliding, collapse = ", ")),
       paste0(sum(identified), "/", length(seeds), " seeds pass order + rank"),
       if (is.na(df_residual)) {
         paste0("k = ", k, " (pass `dates` to check against T)")
