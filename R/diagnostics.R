@@ -393,7 +393,13 @@ sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
     rules <- c(rules, external_sign_rules(iso2))
   }
   if (isTRUE(fiscal)) rules <- c(rules, fiscal_sign_rules(iso2))
-  if (isTRUE(financial)) rules <- c(rules, financial_sign_rules(iso2))
+  if (isTRUE(financial)) {
+    # Under the financial block the long rate is an identity over the spread and
+    # the policy rate, so the policy-rate loading is IMPOSED at 1 rather than
+    # estimated -- there is no coefficient left to check the sign of.
+    rules <- Filter(function(r) r$check != "long_rate_loads_on_policy_rate", rules)
+    rules <- c(rules, financial_sign_rules(iso2))
+  }
 
   find_estimate <- function(eq, term) {
     row <- coef_table[coef_table$equation == eq & coef_table$term == term, ]
@@ -877,11 +883,12 @@ external_sign_rules <- function(iso2) {
   rule <- function(check, equation, term, expected, test) {
     list(check = check, equation = equation, term = term, expected = expected, test = test)
   }
+  # There is deliberately no imports rule: terms of trade was the fourth
+  # specification tried for an import price in the volume equation and the
+  # fourth to fail, so the term was dropped. See country_block().
   list(
     rule("exports_fall_in_competitiveness", v("exports"), v("competitiveness"), "< 0",
          function(x) x < 0),
-    rule("imports_rise_in_terms_of_trade", v("imports"), v("terms_of_trade"), "> 0",
-         function(x) x > 0),
     rule("current_account_rises_with_exports", v("current_account"), v("exports"), "> 0",
          function(x) x > 0),
     rule("current_account_falls_with_imports", v("current_account"), v("imports"), "< 0",
@@ -939,8 +946,12 @@ financial_sign_rules <- function(iso2) {
          function(x) x > 0),
     rule("investment_rises_with_credit", v("investment"), v("credit"), "> 0",
          function(x) x > 0),
-    rule("sovereign_spread_widens_with_debt", v("long_rate"), v("govdebt"), "> 0",
-         function(x) x > 0)
+    # The headline mechanism, now on the SPREAD rather than the rate level:
+    # modelling the level let its own lag run to a unit root and swallow this
+    # coefficient (-0.006). See financial_block().
+    rule("sovereign_spread_widens_with_debt", v("spread"), v("govdebt"), "> 0",
+         function(x) x > 0),
+    rule("spread_narrows_with_growth", v("spread"), v("gdp"), "< 0", function(x) x < 0)
   )
 }
 
@@ -1322,7 +1333,8 @@ fiscal_financial_loop <- function(iso2, investment_to_gdp) {
   list(
     `netborrowing <- gdp` = list(equation = v("netborrowing"), term = v("gdp")),
     `govdebt <- netborrowing (identity)` = 1,
-    `long_rate <- govdebt` = list(equation = v("long_rate"), term = v("govdebt")),
+    `spread <- govdebt` = list(equation = v("spread"), term = v("govdebt")),
+    `long_rate <- spread (identity)` = 1,
     `investment <- long_rate` = list(equation = v("investment"), term = v("long_rate")),
     `gdp <- investment (identities)` = investment_to_gdp
   )

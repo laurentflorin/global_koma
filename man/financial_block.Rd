@@ -4,35 +4,64 @@
 \alias{financial_block}
 \title{One country's financial block (stage 3b)}
 \usage{
-financial_block(iso2)
+financial_block(iso2, opts = stage2_options())
 }
 \arguments{
 \item{iso2}{Two-letter lowercase ISO country code.}
+
+\item{opts}{A \code{\link[=stage2_options]{stage2_options()}} list; consulted for the policy rate, so the
+US spread is taken against \code{us_policy_rate} when it has its own rule.}
 }
 \value{
-A list with \code{stochastic} and an empty \code{identities}.
+A list with \code{stochastic} and \code{identities}.
 }
 \description{
-Credit, house prices, and the two channels that make them matter:
+Credit, house prices, and a sovereign \strong{spread} that responds to debt:
 }
 \details{
 \if{html}{\out{<div class="sourceCode">}}\preformatted{cc_credit       ~ cc_long_rate + cc_gdp + cc_credit.L(1)
 cc_house_prices ~ cc_credit + cc_long_rate + cc_real_income + cc_house_prices.L(1)
+cc_spread       ~ cc_govdebt + cc_gdp + cc_spread.L(1)
+
+cc_long_rate   == 1*cc_spread + 1*<policy rate>
 }\if{html}{\out{</div>}}
 
-\code{\link[=country_block]{country_block()}} additionally extends investment with \code{cc_credit}, and the
-long rate with \code{cc_govdebt} -- the sovereign spread responding to debt,
-which is the mechanism behind euro-area core-periphery divergence and the
-reason this block is worth its degrees of freedom.
+\code{\link[=country_block]{country_block()}} additionally extends investment with \code{cc_credit}, and
+\strong{drops its stochastic long-rate equation}, which the identity replaces.
 
-\strong{This closes a contemporaneous loop that did not previously exist}:
+\strong{Why the spread and not the level.} The first attempt modelled the level:
+\verb{cc_long_rate ~ cc_prices + <policy rate> + cc_gdp + cc_govdebt + lag}. It
+failed, and the failure is instructive. The long rate's own lag had been
+stable at 0.92-0.94 across three successive systems; the moment \code{cc_govdebt}
+became its fifth regressor at \code{df = 8} it crossed to \strong{1.004} -- explosive
+-- and the policy-rate loading flipped negative in the same step. At that
+point the equation was no longer identified: the lag ran to a unit root and
+absorbed the structural content, leaving the debt coefficient at -0.006 with
+an interval straddling zero. Six further sign checks failed downstream,
+because credit, investment and net borrowing all load on a long rate that had
+become noise.
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{gdp -> netborrowing -> govdebt -> long_rate -> investment -> gdp
-}\if{html}{\out{</div>}}
+Modelling the spread fixes the cause rather than the symptom:
+\itemize{
+\item It \strong{imposes} the policy-rate coefficient at exactly 1 instead of
+estimating it, which is what the term means anyway -- a sovereign yield is
+the risk-free path plus a premium.
+\item A spread is \strong{stationary} where a rate level is not, so the own lag has no
+unit root to run to.
+\item It cuts the competing regressors from five to three, leaving \code{cc_govdebt}
+far more room to be identified.
+\item It costs \strong{nothing} in degrees of freedom: the long rate loses its own lag
+column and the spread gains one.
+}
 
-Every link is within-quarter. A loop whose round-trip gain reaches 1 is
-self-sustaining, and koma constrains no posterior draw to be stationary, so
-the quantity that matters is the \emph{share} of draws at or above 1 rather than
-the average gain -- especially with a near-unit-root stock (\code{cc_govdebt})
-inside the loop. Measure it with \code{\link[=loop_gain]{loop_gain()}} after estimating.
+What is given up is \code{cc_prices} in the long-rate equation, the one channel
+from \emph{domestic} inflation to the sovereign yield. In a monetary union that is
+defensible -- area-wide inflation still reaches the long rate through the
+policy rule's \code{ea_prices} term, and a country's idiosyncratic inflation has
+no strong claim on its risk premium -- but it is a real change and section 8
+of the stage-3b report checks what it cost.
+
+\strong{The loop this closes.} \code{gdp -> netborrowing -> govdebt -> spread -> long_rate -> investment -> gdp}, every link within-quarter. Measure it with
+\code{\link[=loop_gain]{loop_gain()}} and \code{\link[=fiscal_financial_loop]{fiscal_financial_loop()}}; a low gain is only reassuring
+once the per-link means confirm no link is simply absent.
 }

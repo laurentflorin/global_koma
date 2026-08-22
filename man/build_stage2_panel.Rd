@@ -10,7 +10,9 @@ build_stage2_panel(
   dummies = character(),
   labour_countries = character(),
   hicp_weights = NULL,
-  external_countries = character()
+  external_countries = character(),
+  financial_countries = character(),
+  policy_rate = "ea_policy_rate"
 )
 }
 \arguments{

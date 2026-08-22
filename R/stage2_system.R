@@ -216,7 +216,7 @@ stage2_spec <- function(countries, shares, linkage_weights,
     named_blocks(intersect(countries, opts$fiscal_countries %||% character()),
                  "_fiscal", fiscal_block),
     named_blocks(intersect(countries, opts$financial_countries %||% character()),
-                 "_financial", financial_block),
+                 "_financial", function(cc) financial_block(cc, opts)),
     list(monetary = monetary_block(), ea_aggregates = ea_aggregate_block(linkage_weights$ea))
   )
 
@@ -414,13 +414,18 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   } else {
     character()
   }
-  import_price_terms <- if (has_external) v("terms_of_trade") else character()
+  # Imports get NO price term. Terms of trade was the fourth specification
+  # tried and the fourth to fail: at -0.91 it implies +0.91 on import prices,
+  # the same positive sign as the direct term (+0.70), the domestic-price pair
+  # (+0.80) and the lagged form (+0.40). Within a quarter German import volumes
+  # and import prices both track global demand and this equation has no
+  # world-activity control to separate them. Terms of trade stays in the system
+  # for the current account, where it is correctly signed.
   real_income_terms <- if (has_labour) v("real_income") else character()
   # The financial block routes credit into investment, and debt into the
   # sovereign spread. de_prices is KEPT in long_rate: dropping it would remove
   # the existing inflation channel for no saving, since both are endogenous.
   credit_terms <- if (has_financial) v("credit") else character()
-  debt_terms <- if (has_financial && has_fiscal) v("govdebt") else character()
 
   stochastic <- list()
   stochastic[[v("consumption")]] <- list(
@@ -435,7 +440,7 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
     lags = own_lag(v("exports"))
   )
   stochastic[[v("imports")]] <- list(
-    terms = c(v("domestic_demand"), import_price_terms, extra, v("imports")),
+    terms = c(v("domestic_demand"), extra, v("imports")),
     lags = own_lag(v("imports"))
   )
   # A labour-block country defines `prices` as an identity over its energy and
@@ -446,10 +451,17 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
       terms = c(fx, "oil_price", extra, v("prices")), lags = own_lag(v("prices"))
     )
   }
-  stochastic[[v("long_rate")]] <- list(
-    terms = c(v("prices"), policy_rate, v("gdp"), debt_terms, v("long_rate")),
-    lags = own_lag(v("long_rate"))
-  )
+  # A financial-block country's long rate becomes an IDENTITY over its spread
+  # and the policy rate (see financial_block()), so it must not also be a
+  # stochastic equation here. Everything that loads on <iso2>_long_rate --
+  # investment, credit, house prices, net borrowing -- keeps doing so; it is
+  # now an identity-defined variable rather than an estimated one.
+  if (!has_financial) {
+    stochastic[[v("long_rate")]] <- list(
+      terms = c(v("prices"), policy_rate, v("gdp"), v("long_rate")),
+      lags = own_lag(v("long_rate"))
+    )
+  }
   if (is_us && isTRUE(opts$policy_rule)) {
     stochastic[["us_policy_rate"]] <- list(
       terms = c("us_prices", "us_gdp", "us_policy_rate"),
@@ -836,37 +848,69 @@ fiscal_block <- function(iso2) {
 
 #' One country's financial block (stage 3b)
 #'
-#' Credit, house prices, and the two channels that make them matter:
+#' Credit, house prices, and a sovereign **spread** that responds to debt:
 #'
 #' ```
 #' cc_credit       ~ cc_long_rate + cc_gdp + cc_credit.L(1)
 #' cc_house_prices ~ cc_credit + cc_long_rate + cc_real_income + cc_house_prices.L(1)
+#' cc_spread       ~ cc_govdebt + cc_gdp + cc_spread.L(1)
+#'
+#' cc_long_rate   == 1*cc_spread + 1*<policy rate>
 #' ```
 #'
-#' [country_block()] additionally extends investment with `cc_credit`, and the
-#' long rate with `cc_govdebt` -- the sovereign spread responding to debt,
-#' which is the mechanism behind euro-area core-periphery divergence and the
-#' reason this block is worth its degrees of freedom.
+#' [country_block()] additionally extends investment with `cc_credit`, and
+#' **drops its stochastic long-rate equation**, which the identity replaces.
 #'
-#' **This closes a contemporaneous loop that did not previously exist**:
+#' **Why the spread and not the level.** The first attempt modelled the level:
+#' `cc_long_rate ~ cc_prices + <policy rate> + cc_gdp + cc_govdebt + lag`. It
+#' failed, and the failure is instructive. The long rate's own lag had been
+#' stable at 0.92-0.94 across three successive systems; the moment `cc_govdebt`
+#' became its fifth regressor at `df = 8` it crossed to **1.004** -- explosive
+#' -- and the policy-rate loading flipped negative in the same step. At that
+#' point the equation was no longer identified: the lag ran to a unit root and
+#' absorbed the structural content, leaving the debt coefficient at -0.006 with
+#' an interval straddling zero. Six further sign checks failed downstream,
+#' because credit, investment and net borrowing all load on a long rate that had
+#' become noise.
 #'
-#' ```
-#' gdp -> netborrowing -> govdebt -> long_rate -> investment -> gdp
-#' ```
+#' Modelling the spread fixes the cause rather than the symptom:
 #'
-#' Every link is within-quarter. A loop whose round-trip gain reaches 1 is
-#' self-sustaining, and koma constrains no posterior draw to be stationary, so
-#' the quantity that matters is the *share* of draws at or above 1 rather than
-#' the average gain -- especially with a near-unit-root stock (`cc_govdebt`)
-#' inside the loop. Measure it with [loop_gain()] after estimating.
+#' - It **imposes** the policy-rate coefficient at exactly 1 instead of
+#'   estimating it, which is what the term means anyway -- a sovereign yield is
+#'   the risk-free path plus a premium.
+#' - A spread is **stationary** where a rate level is not, so the own lag has no
+#'   unit root to run to.
+#' - It cuts the competing regressors from five to three, leaving `cc_govdebt`
+#'   far more room to be identified.
+#' - It costs **nothing** in degrees of freedom: the long rate loses its own lag
+#'   column and the spread gains one.
+#'
+#' What is given up is `cc_prices` in the long-rate equation, the one channel
+#' from *domestic* inflation to the sovereign yield. In a monetary union that is
+#' defensible -- area-wide inflation still reaches the long rate through the
+#' policy rule's `ea_prices` term, and a country's idiosyncratic inflation has
+#' no strong claim on its risk premium -- but it is a real change and section 8
+#' of the stage-3b report checks what it cost.
+#'
+#' **The loop this closes.** `gdp -> netborrowing -> govdebt -> spread ->
+#' long_rate -> investment -> gdp`, every link within-quarter. Measure it with
+#' [loop_gain()] and [fiscal_financial_loop()]; a low gain is only reassuring
+#' once the per-link means confirm no link is simply absent.
 #'
 #' @param iso2 Two-letter lowercase ISO country code.
-#' @return A list with `stochastic` and an empty `identities`.
+#' @param opts A [stage2_options()] list; consulted for the policy rate, so the
+#'   US spread is taken against `us_policy_rate` when it has its own rule.
+#' @return A list with `stochastic` and `identities`.
 #' @export
-financial_block <- function(iso2) {
+financial_block <- function(iso2, opts = stage2_options()) {
   iso2 <- tolower(iso2)
   v <- function(concept) country_var(iso2, concept)
   own_lag <- function(name) stats::setNames(list("1"), name)
+  policy_rate <- if (identical(iso2, "us") && isTRUE(opts$policy_rule)) {
+    "us_policy_rate"
+  } else {
+    "ea_policy_rate"
+  }
 
   stochastic <- list()
   stochastic[[v("credit")]] <- list(
@@ -876,8 +920,14 @@ financial_block <- function(iso2) {
     terms = c(v("credit"), v("long_rate"), v("real_income"), v("house_prices")),
     lags = own_lag(v("house_prices"))
   )
+  stochastic[[v("spread")]] <- list(
+    terms = c(v("govdebt"), v("gdp"), v("spread")), lags = own_lag(v("spread"))
+  )
 
-  list(stochastic = stochastic, identities = list())
+  identities <- list()
+  identities[[v("long_rate")]] <- stats::setNames(c(1, 1), c(v("spread"), policy_rate))
+
+  list(stochastic = stochastic, identities = identities)
 }
 
 #' The shared euro-area monetary policy rule
@@ -1063,7 +1113,9 @@ build_stage2_system <- function(spec, tau = NULL) {
 build_stage2_panel <- function(panel, linkage_weights, dummies = character(),
                                labour_countries = character(),
                                hicp_weights = NULL,
-                               external_countries = character()) {
+                               external_countries = character(),
+                               financial_countries = character(),
+                               policy_rate = "ea_policy_rate") {
   out <- panel
 
   for (nm in dummies) {
@@ -1126,6 +1178,30 @@ build_stage2_panel <- function(panel, linkage_weights, dummies = character(),
     )
     out[[v("terms_of_trade")]] <- chain_weighted_index(
       out, stats::setNames(c(1, -1), c(v("export_prices"), v("import_prices")))
+    )
+  }
+
+  # Stage 3b financial block. The spread is a difference of two RATE series, so
+  # chain_weighted_index() cannot build it -- that helper chains growth rates of
+  # level series and aborts on a rate component. Both sides are already in
+  # percentage points and koma passes rate/none through untouched, so the
+  # identity `long_rate == spread + policy_rate` is a literal subtraction here.
+  for (cc in tolower(financial_countries)) {
+    v <- function(concept) country_var(cc, concept)
+    lr <- out[[v("long_rate")]]
+    pr <- out[[policy_rate]]
+    if (is.null(lr) || is.null(pr)) {
+      cli::cli_abort("Cannot build {.val {v('spread')}}: panel lacks {.val {v('long_rate')}} or {.val {policy_rate}}.")
+    }
+    start <- max(stats::tsp(lr)[1], stats::tsp(pr)[1])
+    end <- min(stats::tsp(lr)[2], stats::tsp(pr)[2])
+    a <- stats::window(lr, start = start, end = end)
+    b <- stats::window(pr, start = start, end = end)
+    out[[v("spread")]] <- koma::as_ets(
+      stats::ts(as.numeric(a) - as.numeric(b),
+                start = stats::start(a), frequency = stats::frequency(a)),
+      series_type = "rate", method = "none",
+      country = toupper(cc), source = "derived"
     )
   }
 
