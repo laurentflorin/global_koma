@@ -1,0 +1,473 @@
+---
+title: "Stage 3a: the German labour market and disaggregated prices"
+subtitle: "A wage–price loop and a second cross-country channel — what the data allowed, what the identification assessment found, and which coefficient came out wrong"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage3a_labour_prices.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir3a <- file.path("data", "cache", "stage3a")
+fit_a <- readRDS(file.path(dir3a, "fit_a_tuned.rds"))
+untuned <- readRDS(file.path(dir3a, "fit_a.rds"))
+hicp <- readRDS(file.path(dir3a, "hicp_weights.rds"))
+panel3a <- readRDS(file.path(dir3a, "panel_stage2.rds"))
+base_panel <- readRDS(file.path(dir3a, "panel.rds"))
+stage2b <- readRDS(file.path("data", "cache", "stage2b", "full_tuned.rds"))
+
+sys_eq <- fit_a$sys_eq
+coefs <- coefficient_table(fit_a$fit)
+signs <- sign_checks(coefs, "de", labour = TRUE)
+acceptance <- check_acceptance_rates(fit_a$fit)
+lag_stab <- check_lag_stability(coefs)
+loop <- wage_price_loop_gain(fit_a$fit, "de", hicp$weights[["nonenergy_prices"]])
+collin <- block_collinearity(panel3a, sys_eq, stage2b_dates())
+
+n_stoch <- length(sys_eq$stochastic_equations)
+n_id <- length(sys_eq$identities)
+k <- length(sys_eq$total_exogenous_variables)
+Tn <- estimation_length(panel3a, stage2b_dates())
+```
+
+## 1. What was built, and why it looks like this
+
+Stage 2b linked eleven economies through **one** channel: trade-weighted
+foreign demand over partners' GDP. Stage 3a adds a second — price
+competitiveness — and gives Germany a labour block so that wages, unit
+labour costs and prices form a loop rather than a chain.
+
+Germany's block, as estimated (`covid_*` dummies elided):
+
+```
+de_consumption      ~ de_gdp + de_real_income + de_consumption.L(1)
+de_investment       ~ de_gdp + de_long_rate + de_investment.L(1)
+de_exports          ~ de_foreign_demand + de_export_prices + de_foreign_prices + de_exports.L(1)
+de_imports          ~ de_domestic_demand + de_import_prices + de_imports.L(1)
+de_long_rate        ~ de_prices + ea_policy_rate + de_gdp + de_long_rate.L(1)
+de_employment       ~ de_gdp + de_employment.L(1)
+de_unemployment     ~ de_gdp + de_unemployment.L(1)
+de_wages            ~ de_unemployment + de_prices + de_wages.L(1)
+de_nonenergy_prices ~ de_ulc + de_import_prices + de_unemployment + de_nonenergy_prices.L(1)
+de_energy_prices    ~ oil_price + eur_usd + de_energy_prices.L(1)
+de_import_prices    ~ eur_usd + oil_price + de_foreign_prices + de_import_prices.L(1)
+de_export_prices    ~ de_ulc + de_foreign_prices + de_export_prices.L(1)
+
+de_gdp             == <expenditure shares>
+de_domestic_demand == <expenditure shares>
+de_foreign_demand  == <trade-weighted partners' gdp + row_gdp>
+de_productivity    == de_gdp - de_employment
+de_ulc             == de_wages - de_productivity
+de_prices          == 0.891*de_nonenergy_prices + 0.109*de_energy_prices
+de_real_income     == de_wages + de_employment - de_prices
+de_foreign_prices  == <trade-weighted partners' export_prices>   [exogenous in phase A]
+```
+
+Three things in that listing differ from the block as originally specified.
+Each is a data finding, not a preference.
+
+### 1.1 `de_wages` is a wage *rate*, because otherwise the identities are wrong
+
+EA-MD/QD publishes `WS`, "Wages and salaries" in current prices — a
+whole-economy wage **bill**, not a wage rate. Used directly it breaks the
+block in two places: `real_income == wages + employment - prices` would
+double-count employment (the bill is already rate × employment), and a wage
+Phillips curve run on the bill would largely re-estimate Okun's law.
+
+`de_wages` is therefore `WS / TEMP`, labour income per worker. That makes
+the whole block internally exact: `ulc == wages - productivity` telescopes
+through `productivity == gdp - employment` to `WS - GDP`, nominal wage bill
+over real output — the textbook definition of unit labour costs. This
+matters because EA-MD/QD carries **no whole-economy ULC series at all**,
+only seven sectoral ones, so ULC has to be derived either way; deriving it
+this way makes it consistent with the rest of the block by construction.
+
+The stated assumption: `WS` covers employees while `TEMP` counts total
+employment, so this imputes employee compensation to the self-employed.
+That is the standard construction for compensation per worker, and it is
+preferred to `WS / EMP` because mixing employment concepts between `wages`
+and `employment` would break the exactness above.
+
+### 1.2 The price identity splits energy from non-energy, not core from energy
+
+The specified identity was `prices == 0.85*core + 0.15*energy`. It cannot be
+made exact: HICP "core" excludes energy **and** food, so core plus energy
+covers only about 81% of the German basket and the missing food weight would
+have to be renormalised away — silently attributing food inflation to core,
+inside the very loop the block exists to model.
+
+Eurostat's `NRG` and `TOT_X_NRG` do partition the basket. Verified against
+`prc_hicp_inw` for every year from 1996 to 2025, they sum to `CP00` = 1000
+exactly, with no residual. The identity uses those, and the weights come
+from the data rather than the example:
+
+```{r hicp-weights}
+kable(data.frame(
+  component = c("non-energy (TOT_X_NRG)", "energy (NRG)"),
+  weight = round(as.numeric(hicp$weights[c("nonenergy_prices", "energy_prices")]), 4),
+  specified = c(0.85, 0.15)
+), caption = sprintf(
+  "HICP weights for Germany, averaged over %d-%d (Eurostat prc_hicp_inw). Exact partition: %s.",
+  min(hicp$years), max(hicp$years), hicp$exact
+))
+```
+
+The energy weight is **`r round(hicp$weights[["energy_prices"]], 3)`**, not
+the 0.15 assumed — a 4-point difference in the weight on the most volatile
+component of the basket.
+
+Weights are re-based annually, so a fixed identity weight is an
+approximation. Over this window the German energy weight ranges from 88.4 to
+125.5 per mille; the largest single-year departure from the average used
+here is **`r round(hicp$max_deviation, 4)`** in weight units. That is the
+size of the approximation, stated rather than buried.
+
+Because "core" no longer appears in the identity, the block uses a new
+concept `nonenergy_prices` rather than redefining the existing
+`core_prices`. Nothing was silently repurposed; `de_core_prices` is still in
+the panel, still `HICPNEF`, and is now simply unused by any equation.
+
+### 1.3 The price variables feed back into trade volumes
+
+As originally specified, `de_export_prices` appeared on no other equation's
+right-hand side inside a German-only system — it would have been estimated
+and then transmitted nothing, the same terminal-variable pathology
+`CLAUDE.md` already records for `long_rate`. Exports therefore take a
+relative-price pair (own and competitors'), and imports take their own
+price. Section 5.1 is about what that asymmetry did to the imports equation.
+
+## 2. Degrees of freedom: what fits and what does not
+
+```{r df-table}
+kable(data.frame(
+  system = c("stage 2b", "stage 3a phase A", "stage 3a phase B", "full block, all 11"),
+  stochastic = c(68, 74, 84, 134),
+  identities = c(35, 39, 40, 90),
+  k = c(76, 83, 92, 142),
+  df = c(98 - 76, 98 - 83, 98 - 92, 98 - 142),
+  status = c("estimated", "estimated (this report)", "planned", "impossible")
+), caption = "k = 1 + one lag column per stochastic equation + exogenous variables; T = 98.")
+```
+
+The last row is the important one. Rolling this block out to all eleven
+countries needs 142 predetermined columns against 98 observations — not
+slow, not badly conditioned, but **arithmetically impossible**: koma
+projects every equation on the full `k`-column `x_matrix` on every draw and
+draws `Omega` from `riwish(T - k, .)`. Even three countries would leave
+`df ≈ 4`. The block is a German pilot in the strict sense that the
+architecture cannot support it everywhere.
+
+This report covers **phase A** (`k = `r k``, `T = `r Tn``, `df = `r Tn - k``),
+where `de_foreign_prices` is an exogenous series constructed from partners'
+export-price data. Phase B makes it endogenous by giving the other ten
+countries a one-equation export-price satellite, at `df = 6`.
+
+## 3. Identification
+
+`koma::model_identification()` checks the classical order and rank
+conditions per stochastic equation, symbolically, and **aborts** on failure.
+`stage2_preflight()` repeats it across ten seeds, because the function fills
+free coefficients with `rnorm` draws and a single pass proves little.
+
+```{r preflight}
+kable(fit_a$preflight, row.names = FALSE, caption = "stage2_preflight(), phase A.")
+```
+
+**No equation is under-identified.** The order condition requires each
+equation to exclude at least `n_endogenous - 1` = `r length(sys_eq$endogenous_variables) - 1`
+variables; the stacked `[Gamma; B]` has
+`r length(sys_eq$endogenous_variables) + length(sys_eq$predetermined_variables)`
+rows and no equation includes more than five regressors, so every equation
+excludes on the order of 200. Adding endogenous variables raises the bar for
+every equation but adds rows faster than it raises it. Rank is the binding
+condition and it passes on all ten seeds.
+
+Two caveats on that result, neither of which the check itself would show:
+
+- koma's `gamma_vectorization()` locates parameters with an **unanchored**
+  `grep`, so `"gamma1_6"` also matches `"gamma1_60"`. With
+  `r length(sys_eq$endogenous_variables)` endogenous variables, index
+  collisions are possible. Treat a pass as necessary, not sufficient.
+- Identification is symbolic: it sees which variables are *excluded*, never
+  how correlated the *included* ones are. That is a different question, and
+  it is the one asked next.
+
+### 3.1 Collinearity: the `ulc` / `unemployment` question, answered
+
+The specific concern was that `de_nonenergy_prices` takes both `de_ulc` and
+`de_unemployment`, while `de_ulc == de_wages - de_productivity` and
+`de_wages` responds to unemployment — so ULC is partly a function of
+unemployment by construction. That would be weak identification (imprecise,
+trading-off coefficients), not rank failure.
+
+Measured directly from the panel, in the rate space koma estimates in:
+
+```{r collinearity}
+c2 <- collin[!grepl("^covid_", collin$term), ]
+kable(head(c2[, c("equation", "term", "vif", "max_abs_cor", "worst_partner")], 12),
+      row.names = FALSE, digits = 3,
+      caption = "Variance inflation factors, worst first. Flagged above 10.")
+```
+
+**The concern does not materialise.** `de_ulc` has a VIF of
+`r round(c2$vif[c2$equation == "de_nonenergy_prices" & c2$term == "de_ulc"], 2)`
+and `de_unemployment` `r round(c2$vif[c2$equation == "de_nonenergy_prices" & c2$term == "de_unemployment"], 2)`
+in the price equation, with a correlation of
+`r round(c2$max_abs_cor[c2$equation == "de_nonenergy_prices" & c2$term == "de_ulc"], 3)`
+between them. Nothing in the block exceeds a VIF of
+`r round(max(c2$vif), 2)`, well under the conventional threshold of 10.
+
+The weakest spot is elsewhere: `de_export_prices` and `de_foreign_prices`
+in the exports equation correlate at
+`r round(c2$max_abs_cor[c2$equation == "de_exports" & c2$term == "de_export_prices"], 3)`.
+Both are price indices in a common inflation environment, so separating an
+own-price from a competitor-price effect is the least well-identified thing
+the block asks for. Their estimated coefficients are nearly equal and
+opposite, which is what a relative price should look like, but the credible
+intervals are correspondingly wide.
+
+Note also that had `de_wages` and `de_ulc` *both* entered the price equation
+— as the original sketch suggested — that would be algebraically identical
+to including `de_wages` and `de_productivity`. Legitimate and full rank, but
+it should then be written that way.
+
+## 4. Sampler behaviour
+
+### 4.1 Acceptance rates
+
+```{r acceptance}
+new_eqs <- c("de_employment", "de_unemployment", "de_wages", "de_nonenergy_prices",
+             "de_energy_prices", "de_import_prices", "de_export_prices")
+kable(acceptance[acceptance$equation %in% new_eqs, ], row.names = FALSE, digits = 3,
+      caption = "The seven new behavioural equations, after tau tuning.")
+```
+
+`de_energy_prices` and `de_import_prices` show `has_mh_step = FALSE` and an
+`NA` rate. That is correct, not a failure: in phase A every regressor in
+both equations (`oil_price`, `eur_usd`, and the exogenous
+`de_foreign_prices`) is exogenous, so neither has a contemporaneous
+endogenous regressor, koma gives them no Metropolis step, and
+`check_acceptance_rates()` never flags them. **This changes in phase B**,
+when `de_foreign_prices` becomes endogenous and `de_import_prices` acquires
+a Metropolis step for the first time.
+
+An untuned stage-3a fit flagged
+`r sum(check_acceptance_rates(untuned$fit)$flagged)` equations against a
+tuned stage-2b baseline of zero — but only three of those were new
+equations, and the rest were pre-existing equations pushed just over 60% by
+the system-wide change in the residual covariance. Acceptance rates are not
+a per-equation property in a simultaneous system: adding equations anywhere
+moves every equation's rate. Re-tuning from the same doubling rule stage 2b
+used (`tune_tau_system()`) is what the table above reflects; attributing the
+untuned flags to the labour block would have been wrong.
+
+### 4.2 The wage–price loop is not explosive
+
+Stage 3a introduces a contemporaneous feedback loop that no earlier stage
+had: `wages → ulc → nonenergy_prices → prices → wages`. Its round-trip gain
+is `beta(nonenergy ← ulc) × w_nonenergy × beta(wages ← prices)`, and a draw
+with gain at or above 1 is one where a wage rise more than pays for itself
+through prices. koma constrains no draw to be stationary, so what matters is
+the share of the posterior above 1, not the average.
+
+```{r loop-gain}
+kable(data.frame(
+  statistic = c("mean", "median", "5th pct", "95th pct", "share |gain| >= 1"),
+  value = c(loop$mean, loop$median, loop$q05, loop$q95, loop$share_ge_1)
+), digits = 5, caption = "Posterior distribution of the wage-price loop gain.")
+```
+
+The gain is centred near zero and **no draw** reaches 1. The loop exists but
+is weak, and it does not add to the explosive-draw problem documented in
+`R/spillovers.R`.
+
+### 4.3 Own-lag persistence
+
+```{r lag-stability}
+kable(head(lag_stab, 8), row.names = FALSE, digits = 3,
+      caption = "Most persistent own lags. Flagged at |coefficient| >= 1.")
+```
+
+Nothing is flagged, but `de_unemployment` sits **exactly at the boundary**:
+its own-lag coefficient is
+`r round(lag_stab$estimate[lag_stab$equation == "de_unemployment"], 4)`
+with a credible interval reaching
+`r round(lag_stab$ci_high[lag_stab$equation == "de_unemployment"], 3)`.
+That is a unit root in all but name: the equation is a random walk with a
+GDP term, so an unemployment shock never dies out. For a rate modelled in
+levels (`series_type = "rate"`, `method = "none"`) this is common and not by
+itself wrong — the pre-existing `ea_policy_rate` and several `long_rate`
+equations sit at 0.96-0.98 for the same reason — but it does mean the Okun
+channel in this fit transmits GDP to a *permanently* shifted unemployment
+level, and anything reading unemployment at long horizons should treat that
+as a modelling artefact rather than a finding.
+
+### 4.4 Precision: the block is estimable, but not sharply
+
+```{r new-coefs}
+new_terms <- coefs[coefs$equation %in% new_eqs & !grepl("^covid_|^constant$", coefs$term), ]
+new_terms$spans_zero <- new_terms$ci_low < 0 & new_terms$ci_high > 0
+kable(new_terms, row.names = FALSE, digits = 3,
+      caption = "Every coefficient in the seven new equations.")
+```
+
+`r sum(new_terms$spans_zero)` of `r nrow(new_terms)` coefficients in the new
+equations have credible intervals spanning zero. The signs are right, but at
+`df = `r Tn - k`` the magnitudes are not sharply identified — most visibly
+the wage-indexation term `de_wages ← de_prices`
+(`r round(coefs$estimate[coefs$equation == "de_wages" & coefs$term == "de_prices"], 3)`,
+interval
+[`r round(coefs$ci_low[coefs$equation == "de_wages" & coefs$term == "de_prices"], 2)`,
+`r round(coefs$ci_high[coefs$equation == "de_wages" & coefs$term == "de_prices"], 2)`]),
+which is the return leg of the wage-price loop and is why the loop gain in
+4.2 is so close to zero. The loop is present in the structure and weak in
+the estimates; do not read the near-zero gain as evidence that wage-price
+feedback is *absent* in the German economy, only that this window and this
+specification do not pin it down.
+
+## 5. Coefficient plausibility
+
+```{r signs}
+kable(signs, row.names = FALSE, digits = 4,
+      caption = "Sign checks. Posterior means only; a check that could not be evaluated counts as a failure.")
+```
+
+`r sum(signs$ok)` of `r nrow(signs)` pass. The block's central economic
+claims all hold:
+
+- **The wage Phillips curve has the right sign.** `de_wages ← de_unemployment`
+  = `r round(signs$estimate[signs$check == "wage_phillips_curve_negative"], 4)`.
+  This was the designated red flag, and it is not raised.
+- The price Phillips curve is also negative, ULC pass-through into
+  non-energy prices is positive, and Okun's law holds in both the employment
+  and unemployment equations.
+- Both euro-appreciation rules pass with the correct (negative) sign, which
+  is worth noting because `eur_usd` is quoted USD per EUR — a rise is a euro
+  appreciation, and the intuitive sign is backwards.
+- Exports fall in their own price and rise in competitors', nearly
+  symmetrically, which is what makes the new competitiveness channel behave
+  like a relative price rather than a price level.
+
+### 5.1 Implausible result: imports rise in their own price
+
+```{r imports-fail}
+kable(coefs[coefs$equation == "de_imports" & !grepl("^covid_", coefs$term), ],
+      row.names = FALSE, digits = 3,
+      caption = "The imports equation.")
+```
+
+`de_imports ← de_import_prices` is
+**`r round(signs$estimate[signs$check == "imports_fall_in_own_price"], 3)`**,
+positive, when import demand should fall as imports get more expensive. The
+credible interval excludes zero, so this is not noise that can be waved
+through — it is a robustly wrong-signed coefficient.
+
+**Diagnosis: a specification asymmetry introduced with the relative-price
+terms, not a data or estimation problem.** Exports received a *pair* —
+`de_export_prices` and `de_foreign_prices` — so the equation can form a
+genuine relative price, and the estimates bear that out: they come back
+nearly equal and opposite. Imports received only `de_import_prices`, with no
+domestic-price counterpart. There is nothing in that equation for the import
+price to be relative *to*, so the coefficient is not measuring a
+relative-price elasticity at all. What it can pick up instead is the common
+component: quarters when imported goods are expensive are quarters when
+world demand is strong, and German import volumes are high for reasons the
+equation does not otherwise contain.
+
+The symmetric fix costs nothing in degrees of freedom, since `de_prices` is
+already endogenous:
+
+```
+de_imports ~ de_domestic_demand + de_import_prices + de_prices + de_imports.L(1)
+```
+
+This is a departure from the block as specified, so it is reported here
+rather than applied silently. It is the natural completion of the
+relative-price treatment that was approved for exports, and it is the first
+thing to try before reading anything into the import channel.
+
+Until then: **the import-price elasticity in this fit should not be used**,
+and any spillover routed through German import demand inherits the problem.
+The export side, which does have a relative-price pair, is unaffected.
+
+## 6. Verification
+
+Every constructed identity reproduces its own definition in rate space to
+machine precision — the check that catches a silently corrupted identity,
+since koma has no identity-consistency check of its own:
+
+```{r identity-exactness}
+# Compare in RATE space, using the ts koma::rate() itself returns: it drops
+# the first observation and any trailing NA, so re-dating it by hand shifts a
+# series by a quarter and makes an exact identity look broken.
+maxdiff <- function(lhs, rhs, w) {
+  m <- stats::na.omit(do.call(cbind, lapply(c(lhs, rhs), function(n) koma::rate(panel3a[[n]]))))
+  max(abs(m[, 1] - as.numeric(m[, -1, drop = FALSE] %*% w)))
+}
+wts <- hicp$weights
+fpw <- foreign_price_weights(fit_a$linkage_weights, "de")
+kable(data.frame(
+  identity = c("productivity == gdp - employment", "ulc == wages - productivity",
+               "prices == w1*nonenergy + w2*energy", "real_income == wages + employment - prices",
+               "foreign_prices == trade-weighted partners"),
+  max_abs_deviation = c(
+    maxdiff("de_productivity", c("de_gdp", "de_employment"), c(1, -1)),
+    maxdiff("de_ulc", c("de_wages", "de_productivity"), c(1, -1)),
+    maxdiff("de_prices", c("de_nonenergy_prices", "de_energy_prices"),
+            c(wts[["nonenergy_prices"]], wts[["energy_prices"]])),
+    maxdiff("de_real_income", c("de_wages", "de_employment", "de_prices"), c(1, 1, -1)),
+    maxdiff("de_foreign_prices", names(fpw), as.numeric(fpw))
+  )
+), caption = "Identity reproduction in rate space.")
+```
+
+`de_prices` is built from the sub-indices rather than taken from observed
+headline HICP, deliberately. Observed HICP satisfies a *fixed*-weight
+identity only approximately, because the real weights are re-based every
+year, and koma would have enforced the identity anyway — silently. The gap
+between the constructed series and observed headline HICP is the size of
+that approximation:
+
+```{r prices-vs-observed}
+m <- stats::na.omit(cbind(koma::rate(panel3a$de_prices), koma::rate(base_panel$de_prices)))
+kable(data.frame(
+  statistic = c("max |difference|, pp", "mean |difference|, pp", "correlation"),
+  value = c(max(abs(m[, 1] - m[, 2])), mean(abs(m[, 1] - m[, 2])), stats::cor(m[, 1], m[, 2]))
+), digits = 4, caption = "Constructed de_prices vs observed headline HICP, quarterly growth.")
+```
+
+## 7. Where this leaves the block
+
+What works: the identities are exact, the system is identified on every
+seed, the labour block's economics come out with the right signs including
+the wage Phillips curve, the collinearity concern that motivated the whole
+identification assessment does not materialise, and the new wage–price loop
+is weak enough that no posterior draw is self-sustaining.
+
+What does not: the imports equation, for the reason diagnosed in 5.1, with a
+concrete fix to try.
+
+What to watch in phase B: `df` falls from `r Tn - k` to 6, well below stage
+2b's only known-good operating point of 22. `de_import_prices` gains a
+Metropolis step for the first time, so its acceptance rate becomes
+meaningful and will need tuning. And the rest-of-world substitution below
+gets more load-bearing.
+
+One assumption carries more weight than its footnote suggests. Germany's
+foreign-price index is renormalised over modelled partners only, because
+there is no rest-of-world export-price series — and the weight this
+reallocates is **`r round(attr(fpw, "row_weight_dropped"), 3)`**,
+over half of Germany's trade weight. Foreign *demand* keeps that share on
+`row_gdp` and accounts for the whole world; foreign *prices* cannot. The
+index therefore assumes the unmodelled half of the world prices like the
+modelled half. That is not a rounding detail, and it bounds how much of the
+competitiveness channel this system can actually see.

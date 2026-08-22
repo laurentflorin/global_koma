@@ -298,6 +298,77 @@ This specifically means, for the EA-MD/QD port in `data_eamdqd.R`:
   appearing in the *investment* equation that actually closes the loop.
   Check reachability on `sys_eq$character_gamma_matrix` rather than assuming.
 
+## Stage 3a: labour market and disaggregated prices (`stage2_system.R`)
+
+`labour_block()` gives one country seven behavioural equations and five
+identities on top of its `country_block()`, adding a wage–price loop and a
+price-competitiveness channel. It is **Germany-only and cannot be rolled
+out**: the full block costs six net predetermined columns per country, so
+all eleven would need `k = 142` against `T = 98`. Phase A (`de_foreign_prices`
+exogenous) is `k = 83, df = 15`; phase B (partners get
+`export_price_block()`, foreign prices become an identity) is `k = 92,
+df = 6`. See `reports/stage3a_labour_prices.qmd`.
+
+- **EA-MD/QD's `WS` is a wage *bill*, not a wage rate**, and every stage-3a
+  identity is wrong if you use it directly: `real_income == wages +
+  employment - prices` double-counts employment, and a wage Phillips curve
+  on the bill mostly re-estimates Okun's law. `derived_wage_rate()` divides
+  by `TEMP`. With that, `ulc == wages - productivity` telescopes through
+  `productivity == gdp - employment` to `WS - GDP` — nominal wage bill over
+  real output, the textbook ULC. This matters because EA-MD/QD has **no
+  whole-economy ULC series at all**, only seven sectoral ones.
+- **HICP core + energy does not partition the basket; non-energy + energy
+  does.** Core (`HICPNEF`/`TOT_X_NRG_FOOD`) excludes energy *and* food, so
+  core plus energy is ~81% of the German basket and the rest would have to
+  be renormalised away, silently attributing food inflation to core. Verified
+  against `prc_hicp_inw`: `NRG + TOT_X_NRG == CP00 == 1000` exactly, every
+  year 1996–2025. `hicp_weights()` returns 0.891/0.109 for Germany — not the
+  0.85/0.15 one would guess. Weights are re-based annually, so the fixed
+  identity weight is an approximation; `max_deviation` reports its size.
+- **`align_panel()` takes the *earliest* end across the whole panel**, so one
+  short series silently truncates every other — including the exogenous ones
+  that must reach past the forecast start, which shortens the forecast
+  horizon rather than erroring. Eurostat publishes `nonenergy_prices` a
+  quarter behind EA-MD/QD, which would have pulled a 2026Q1 panel back to
+  2025Q4. Pass an explicit `end` with `extend = TRUE` to pad instead.
+- **`de_prices` becomes an identity but is also independently observed.**
+  Build the LHS with `chain_weighted_index()` from the sub-indices, never
+  from observed headline HICP: observed HICP satisfies a *fixed*-weight
+  identity only approximately, and koma has no identity-consistency check,
+  so it would enforce a false identity silently. Same reasoning as
+  `<iso2>_foreign_demand`. Note `chain_weighted_index()` sums
+  `diff(log(x)) * w` **without renormalising**, so ±1 weights give exact
+  differences — which is what makes the productivity/ULC/real-income
+  identities reproduce to ~1e-13.
+- **Acceptance rates are not a per-equation property in a simultaneous
+  system.** Adding the stage-3a block pushed 26 *pre-existing* equations
+  just over 60%, because the sampler draws a system-wide residual
+  covariance. Reporting those as stage-3a failures would misattribute them;
+  re-tune with `tune_tau_system()` (the system-level analogue of
+  `tune_tau()`, same doubling rule) before comparing against a tuned
+  baseline.
+- **`koma::rate()` already returns a correctly-dated `ts`** — it drops the
+  first observation and any trailing `NA`. Re-dating its result by hand
+  (`ts(as.numeric(rate(x)), end = end(x))`) shifts series that have trailing
+  NAs by a quarter and makes an exact identity look broken. Compare
+  identities by `cbind()`-ing the objects `rate()` returns.
+- **`paste0(character(0), "_x")` is `"_x"`, not `character(0)`.** Building a
+  named block list with `setNames(lapply(ccs, ...), paste0(ccs, suffix))`
+  therefore aborts when `ccs` is empty. Guard the empty case.
+- **A country's `foreign_prices` index drops the `row_gdp` residual and
+  renormalises**, because there is no rest-of-world export-price series. For
+  Germany that reallocates **0.572** — over half the trade weight — so the
+  index assumes the unmodelled half of the world prices like the modelled
+  half. `foreign_price_weights()` records the dropped weight in a
+  `row_weight_dropped` attribute; report it rather than treating the index
+  as complete.
+- **An equation with no contemporaneous endogenous regressor gets no
+  Metropolis step**, so `count_accepted` is `NA` and it must never be
+  flagged. In phase A that is `<iso2>_energy_prices` *and*
+  `<iso2>_import_prices` (its only non-exogenous regressor,
+  `foreign_prices`, is still exogenous). Phase B gives `import_prices` a
+  Metropolis step for the first time.
+
 ## Spillover / conditional-forecast analysis (`spillovers.R`)
 
 koma has **no impulse-response function**. A spillover or shock response is
@@ -381,9 +452,11 @@ likewise still shows 6 `not implemented` errors, all from
 `test-scoring.R` and `test-stage3_blocks.R`.
 
 `stage2_system.R` implements **stage 2a** (the two-country DE + FR pilot of
-the linkage mechanism) and **stage 2b** (all eleven economies: 68 stochastic
-equations and 35 identities in one `system_of_equations()`). See
-`reports/stage2a_pilot.qmd` and `reports/stage2b_full_system.qmd`.
+the linkage mechanism), **stage 2b** (all eleven economies: 68 stochastic
+equations and 35 identities in one `system_of_equations()`) and **stage 3a**
+(the German labour and disaggregated-price block, `labour_block()`). See
+`reports/stage2a_pilot.qmd`, `reports/stage2b_full_system.qmd` and
+`reports/stage3a_labour_prices.qmd`.
 
 Stage 2b needs its **own** estimation window — `stage2b_dates()`, ending
 2024Q4 — because the stage-1/2a window does not leave enough observations
