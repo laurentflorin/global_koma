@@ -379,10 +379,21 @@ coefficient_table <- function(fit, ci_low = 5, ci_up = 95) {
 #'   `estimate = NA` and `ok = FALSE` -- a check that could not be evaluated
 #'   is not a check that passed.
 #' @export
-sign_checks <- function(coef_table, iso2, labour = FALSE) {
+sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
+                        fiscal = FALSE, financial = FALSE) {
   iso2 <- tolower(iso2)
   rules <- base_sign_rules(iso2)
   if (isTRUE(labour)) rules <- c(rules, stage3a_sign_rules(iso2))
+  # Under the external block exports load on the competitiveness difference
+  # rather than the two separate prices, so those two stage-3a rules no longer
+  # have terms to evaluate. Drop them rather than report permanent failures.
+  if (isTRUE(external)) {
+    superseded <- c("exports_fall_in_own_price", "exports_rise_in_competitor_price")
+    rules <- Filter(function(r) !r$check %in% superseded, rules)
+    rules <- c(rules, external_sign_rules(iso2))
+  }
+  if (isTRUE(fiscal)) rules <- c(rules, fiscal_sign_rules(iso2))
+  if (isTRUE(financial)) rules <- c(rules, financial_sign_rules(iso2))
 
   find_estimate <- function(eq, term) {
     row <- coef_table[coef_table$equation == eq & coef_table$term == term, ]
@@ -849,6 +860,90 @@ check_identification <- function(sys_eq) {
   )
 }
 
+#' Sign rules for the stage-3b external block
+#'
+#' `de_imports <- de_terms_of_trade` is the one to watch: it is the fourth
+#' specification tried for getting an import price into the volume equation,
+#' after three failed in stage 3a. Terms of trade up means imports are cheap
+#' relative to exports, so the expected sign is **positive** -- the opposite of
+#' the bare own-price term, which is exactly why it is worth testing.
+#'
+#' `de_exports <- de_competitiveness` replaces the two separate export-price
+#' rules: competitiveness is own price minus competitors', so exports should
+#' fall in it.
+#' @keywords internal
+external_sign_rules <- function(iso2) {
+  v <- function(concept) country_var(iso2, concept)
+  rule <- function(check, equation, term, expected, test) {
+    list(check = check, equation = equation, term = term, expected = expected, test = test)
+  }
+  list(
+    rule("exports_fall_in_competitiveness", v("exports"), v("competitiveness"), "< 0",
+         function(x) x < 0),
+    rule("imports_rise_in_terms_of_trade", v("imports"), v("terms_of_trade"), "> 0",
+         function(x) x > 0),
+    rule("current_account_rises_with_exports", v("current_account"), v("exports"), "> 0",
+         function(x) x > 0),
+    rule("current_account_falls_with_imports", v("current_account"), v("imports"), "< 0",
+         function(x) x < 0)
+  )
+}
+
+#' Sign rules for the stage-3b fiscal block
+#'
+#' Two claims, both testable:
+#'
+#' - **Automatic stabilisers**: net borrowing falls when output grows, because
+#'   revenue is procyclical and transfers countercyclical. Negative.
+#' - **Debt service**: a higher long rate raises the borrowing requirement.
+#'   Positive. This is the flow side of the snowball.
+#'
+#' Government consumption's own rules are omitted deliberately: both its
+#' regressors are lagged, so there is no contemporaneous sign to check, and its
+#' own-lag persistence is [check_lag_stability()]'s business.
+#' @keywords internal
+fiscal_sign_rules <- function(iso2) {
+  v <- function(concept) country_var(iso2, concept)
+  rule <- function(check, equation, term, expected, test) {
+    list(check = check, equation = equation, term = term, expected = expected, test = test)
+  }
+  list(
+    rule("automatic_stabilisers_negative", v("netborrowing"), v("gdp"), "< 0",
+         function(x) x < 0),
+    rule("debt_service_raises_borrowing", v("netborrowing"), v("long_rate"), "> 0",
+         function(x) x > 0)
+  )
+}
+
+#' Sign rules for the stage-3b financial block
+#'
+#' `de_long_rate <- de_govdebt` is the headline: the sovereign spread widening
+#' with the debt ratio is the mechanism behind core-periphery divergence, and
+#' the whole reason the fiscal block earns its degrees of freedom. A
+#' non-positive coefficient means the channel this block exists to build is not
+#' there.
+#' @keywords internal
+financial_sign_rules <- function(iso2) {
+  v <- function(concept) country_var(iso2, concept)
+  rule <- function(check, equation, term, expected, test) {
+    list(check = check, equation = equation, term = term, expected = expected, test = test)
+  }
+  list(
+    rule("credit_falls_in_long_rate", v("credit"), v("long_rate"), "< 0", function(x) x < 0),
+    rule("credit_rises_with_output", v("credit"), v("gdp"), "> 0", function(x) x > 0),
+    rule("house_prices_rise_with_credit", v("house_prices"), v("credit"), "> 0",
+         function(x) x > 0),
+    rule("house_prices_fall_in_long_rate", v("house_prices"), v("long_rate"), "< 0",
+         function(x) x < 0),
+    rule("house_prices_rise_with_real_income", v("house_prices"), v("real_income"), "> 0",
+         function(x) x > 0),
+    rule("investment_rises_with_credit", v("investment"), v("credit"), "> 0",
+         function(x) x > 0),
+    rule("sovereign_spread_widens_with_debt", v("long_rate"), v("govdebt"), "> 0",
+         function(x) x > 0)
+  )
+}
+
 # --------------------------------------------------------------------------
 # Stage-3a diagnostics: lag stability, regressor collinearity, and the
 # wage-price loop gain. See reports/stage3a_labour_prices.qmd.
@@ -1149,5 +1244,86 @@ tune_tau_system <- function(spec, panel, dates, band = c(0.2, 0.6), max_iter = 3
     tau = if (length(tau) > 0) unlist(tau) else stats::setNames(numeric(0), character(0)),
     history = do.call(rbind, history),
     converged = nrow(flagged) == 0
+  )
+}
+
+#' Posterior gain of an arbitrary contemporaneous loop
+#'
+#' The general form of [wage_price_loop_gain()]. A contemporaneous cycle in the
+#' gamma matrix is solvable only if `(I - Gamma)` is invertible, and a draw
+#' whose round-trip gain reaches 1 is one where a shock more than pays for
+#' itself going round the loop -- self-sustaining. koma constrains no draw to be
+#' stationary, so the quantity that matters is the **share of the posterior at
+#' or above 1**, not the average gain.
+#'
+#' Stage 3b adds a loop that did not exist before:
+#'
+#' ```
+#' gdp -> netborrowing -> govdebt -> long_rate -> investment -> gdp
+#' ```
+#'
+#' with a near-unit-root stock (`govdebt`) inside it, in a system whose largest
+#' own lag is already 0.9999. That combination is the most likely way this stage
+#' destabilises, which is why it gets measured rather than assumed.
+#'
+#' @param fit A `koma::koma_estimate`.
+#' @param path A named list defining the cycle. Each element is either
+#'   `list(equation =, term =)` for an estimated link, whose posterior draws are
+#'   read with [gamma_draws()], or a bare numeric for a known identity weight
+#'   (a `+/-1` accounting link, or an identity's fixed share). The gain is the
+#'   product across the whole path.
+#'
+#' @return A list with `draws` (per-draw gain), `mean`, `median`, `q05`, `q95`,
+#'   `share_ge_1`, and `links` (each link's own posterior mean, so a loop that
+#'   is large can be attributed to the link responsible).
+#' @export
+loop_gain <- function(fit, path) {
+  if (length(path) == 0) {
+    cli::cli_abort("{.arg path} is empty; a loop needs at least one link.")
+  }
+  draws <- lapply(path, function(link) {
+    if (is.numeric(link)) return(link)
+    if (!is.list(link) || !all(c("equation", "term") %in% names(link))) {
+      cli::cli_abort("Each {.arg path} element must be a number or {.code list(equation =, term =)}.")
+    }
+    gamma_draws(fit, link$equation, link$term)
+  })
+
+  gain <- Reduce(`*`, draws)
+  link_means <- vapply(draws, function(d) mean(d), numeric(1))
+  names(link_means) <- names(path) %||% seq_along(path)
+
+  list(
+    draws = gain,
+    mean = mean(gain), median = stats::median(gain),
+    q05 = unname(stats::quantile(gain, 0.05)),
+    q95 = unname(stats::quantile(gain, 0.95)),
+    share_ge_1 = mean(abs(gain) >= 1),
+    links = link_means
+  )
+}
+
+#' The stage-3b fiscal-financial loop, as a [loop_gain()] path
+#'
+#' `gdp -> netborrowing -> govdebt -> long_rate -> investment -> gdp`. Two links
+#' are identity weights rather than estimated coefficients: `govdebt` takes net
+#' borrowing with weight 1 (the accumulation identity), and investment reaches
+#' GDP through the domestic-demand and GDP identities, whose weights come from
+#' `expenditure_shares()` and must be supplied.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @param investment_to_gdp The product of the domestic-demand weight on
+#'   investment and the GDP weight on domestic demand, from
+#'   [expenditure_shares()].
+#' @return A `path` list for [loop_gain()].
+#' @export
+fiscal_financial_loop <- function(iso2, investment_to_gdp) {
+  v <- function(concept) country_var(iso2, concept)
+  list(
+    `netborrowing <- gdp` = list(equation = v("netborrowing"), term = v("gdp")),
+    `govdebt <- netborrowing (identity)` = 1,
+    `long_rate <- govdebt` = list(equation = v("long_rate"), term = v("govdebt")),
+    `investment <- long_rate` = list(equation = v("investment"), term = v("long_rate")),
+    `gdp <- investment (identities)` = investment_to_gdp
   )
 }

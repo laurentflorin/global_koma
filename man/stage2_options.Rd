@@ -12,7 +12,10 @@ stage2_options(
   labour_countries = character(),
   export_price_countries = character(),
   hicp_weights = NULL,
-  foreign_price_weights = NULL
+  foreign_price_weights = NULL,
+  external_countries = character(),
+  fiscal_countries = character(),
+  financial_countries = character()
 )
 }
 \arguments{

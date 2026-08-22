@@ -211,6 +211,12 @@ stage2_spec <- function(countries, shares, linkage_weights,
       labour_block(cc, opts$hicp_weights[[cc]], opts$foreign_price_weights[[cc]], opts)
     }),
     named_blocks(export_price_countries, "_export_prices", export_price_block),
+    named_blocks(intersect(countries, opts$external_countries %||% character()),
+                 "_external", external_block),
+    named_blocks(intersect(countries, opts$fiscal_countries %||% character()),
+                 "_fiscal", fiscal_block),
+    named_blocks(intersect(countries, opts$financial_countries %||% character()),
+                 "_financial", financial_block),
     list(monetary = monetary_block(), ea_aggregates = ea_aggregate_block(linkage_weights$ea))
   )
 
@@ -282,7 +288,10 @@ stage2_options <- function(include_government = TRUE,
                            labour_countries = character(),
                            export_price_countries = character(),
                            hicp_weights = NULL,
-                           foreign_price_weights = NULL) {
+                           foreign_price_weights = NULL,
+                           external_countries = character(),
+                           fiscal_countries = character(),
+                           financial_countries = character()) {
   overlap <- intersect(labour_countries, export_price_countries)
   if (length(overlap) > 0) {
     cli::cli_abort(c(
@@ -290,6 +299,19 @@ stage2_options <- function(include_government = TRUE,
       "i" = "A labour-block country already defines {.field export_prices}; two blocks cannot define the same variable."
     ))
   }
+  # Each stage-3b block builds on the labour block: external needs its trade
+  # price variables, financial needs real_income and (for the debt channel) the
+  # fiscal block. Catching this here beats a confusing "missing series" abort.
+  for (nm in c("external_countries", "fiscal_countries", "financial_countries")) {
+    stray <- setdiff(get(nm), labour_countries)
+    if (length(stray) > 0) {
+      cli::cli_abort(c(
+        "{.arg {nm}} names {.val {stray}}, which {?is/are} not {?a labour country/labour countries}.",
+        "i" = "The stage-3b blocks extend the stage-3a labour block; add the country there first."
+      ))
+    }
+  }
+
   missing_weights <- setdiff(labour_countries, names(hicp_weights %||% list()))
   if (length(missing_weights) > 0) {
     cli::cli_abort(c(
@@ -313,7 +335,10 @@ stage2_options <- function(include_government = TRUE,
     labour_countries = labour_countries,
     export_price_countries = export_price_countries,
     hicp_weights = hicp_weights,
-    foreign_price_weights = foreign_price_weights
+    foreign_price_weights = foreign_price_weights,
+    external_countries = external_countries,
+    fiscal_countries = fiscal_countries,
+    financial_countries = financial_countries
   )
 }
 
@@ -357,6 +382,9 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   fx <- if (iso2 %in% names(fx_overrides)) unname(fx_overrides[[iso2]]) else "eur_usd"
   policy_rate <- if (is_us && isTRUE(opts$policy_rule)) "us_policy_rate" else "ea_policy_rate"
   has_labour <- iso2 %in% (opts$labour_countries %||% character())
+  has_external <- iso2 %in% (opts$external_countries %||% character())
+  has_fiscal <- iso2 %in% (opts$fiscal_countries %||% character())
+  has_financial <- iso2 %in% (opts$financial_countries %||% character())
 
   # With the labour block on, the price variables must reach trade volumes or
   # they are estimated and then transmit nothing -- the terminal-variable
@@ -376,22 +404,38 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   # from zero -- so there is no elasticity underneath to recover, only a
   # predetermined column to pay for. The price block reaches trade through
   # exports only, which is the side that identifies.
-  export_price_terms <- if (has_labour) c(v("export_prices"), v("foreign_prices")) else character()
+  # Under the external block the two separate export-price terms collapse into
+  # the competitiveness difference, and imports gain terms of trade -- the
+  # relative price that stage 3a's four failed specifications were reaching for.
+  export_price_terms <- if (has_external) {
+    v("competitiveness")
+  } else if (has_labour) {
+    c(v("export_prices"), v("foreign_prices"))
+  } else {
+    character()
+  }
+  import_price_terms <- if (has_external) v("terms_of_trade") else character()
   real_income_terms <- if (has_labour) v("real_income") else character()
+  # The financial block routes credit into investment, and debt into the
+  # sovereign spread. de_prices is KEPT in long_rate: dropping it would remove
+  # the existing inflation channel for no saving, since both are endogenous.
+  credit_terms <- if (has_financial) v("credit") else character()
+  debt_terms <- if (has_financial && has_fiscal) v("govdebt") else character()
 
   stochastic <- list()
   stochastic[[v("consumption")]] <- list(
     terms = c(v("gdp"), real_income_terms, extra, v("consumption")), lags = own_lag(v("consumption"))
   )
   stochastic[[v("investment")]] <- list(
-    terms = c(v("gdp"), v("long_rate"), extra, v("investment")), lags = own_lag(v("investment"))
+    terms = c(v("gdp"), v("long_rate"), credit_terms, extra, v("investment")),
+    lags = own_lag(v("investment"))
   )
   stochastic[[v("exports")]] <- list(
     terms = c(v("foreign_demand"), export_price_terms, extra, v("exports")),
     lags = own_lag(v("exports"))
   )
   stochastic[[v("imports")]] <- list(
-    terms = c(v("domestic_demand"), extra, v("imports")),
+    terms = c(v("domestic_demand"), import_price_terms, extra, v("imports")),
     lags = own_lag(v("imports"))
   )
   # A labour-block country defines `prices` as an identity over its energy and
@@ -403,7 +447,7 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
     )
   }
   stochastic[[v("long_rate")]] <- list(
-    terms = c(v("prices"), policy_rate, v("gdp"), v("long_rate")),
+    terms = c(v("prices"), policy_rate, v("gdp"), debt_terms, v("long_rate")),
     lags = own_lag(v("long_rate"))
   )
   if (is_us && isTRUE(opts$policy_rule)) {
@@ -413,8 +457,17 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
     )
   }
 
+  # include_government is per-country: a country with a fiscal block gives
+  # <iso2>_government its own equation, so it is endogenous and free. Turning it
+  # on globally would put ten OTHER countries' government back into their
+  # domestic-demand identities as EXOGENOUS variables, costing ten columns of k.
+  keep_government <- if (is.character(opts$include_government)) {
+    iso2 %in% opts$include_government
+  } else {
+    isTRUE(opts$include_government)
+  }
   dd <- shares$domestic_demand
-  if (!isTRUE(opts$include_government)) {
+  if (!keep_government) {
     dd <- dd[setdiff(names(dd), v("government"))]
     # Renormalise: the raw C and I shares sum to ~0.8, and leaving them so
     # would make the identity under-predict domestic-demand growth by the
@@ -650,6 +703,181 @@ labour_block <- function(iso2, hicp_weights, foreign_price_weights = NULL,
   }
 
   list(stochastic = stochastic, identities = identities)
+}
+
+#' One country's external block (stage 3b)
+#'
+#' Turns the two trade-price variables the labour block already estimates into
+#' genuine **relative** prices, and adds a current account:
+#'
+#' ```
+#' cc_current_account ~ cc_exports + cc_imports + cc_terms_of_trade + cc_current_account.L(1)
+#'
+#' cc_competitiveness == 1*cc_export_prices - 1*cc_foreign_prices
+#' cc_terms_of_trade  == 1*cc_export_prices - 1*cc_import_prices
+#' ```
+#'
+#' The matching change is in [country_block()], where exports swap their two
+#' separate price terms for `cc_competitiveness`, and imports pick up
+#' `cc_terms_of_trade`.
+#'
+#' **Why a competitiveness *difference* rather than two free coefficients.**
+#' Stage 3a estimated the two separately and got -0.92 on the own price and
+#' +1.26 on competitors', with both intervals wide and spanning zero -- the
+#' data does not reject equal-and-opposite, and it does not identify them
+#' apart either. Imposing the restriction trades two poorly-identified
+#' coefficients for one, which is the direction that helps at these degrees of
+#' freedom.
+#'
+#' **Terms of trade is how the import price gets back into imports.** Stage 3a
+#' removed `cc_import_prices` from the volume equation after four
+#' specifications failed: contemporaneously it was wrong-signed and collapsed
+#' the domestic-demand elasticity from 0.38 to 0.08, and lagging it left
+#' nothing distinguishable from zero. Terms of trade is a different quantity --
+#' a relative price of exports against imports, not a bare own price -- and it
+#' is the one specification not yet tested. Expected sign is **positive**:
+#' terms of trade up means imports are cheap relative to exports, so import
+#' volumes rise.
+#'
+#' Both identities are pure differences of `level`/`diff_log` series, so they
+#' cost **no** degree of freedom -- no predetermined column, no exogenous
+#' column, just one endogenous variable each.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @return A list with `stochastic` and `identities`.
+#' @export
+external_block <- function(iso2) {
+  iso2 <- tolower(iso2)
+  v <- function(concept) country_var(iso2, concept)
+  own_lag <- function(name) stats::setNames(list("1"), name)
+
+  stochastic <- list()
+  stochastic[[v("current_account")]] <- list(
+    terms = c(v("exports"), v("imports"), v("terms_of_trade"), v("current_account")),
+    lags = own_lag(v("current_account"))
+  )
+
+  identities <- list()
+  identities[[v("competitiveness")]] <- stats::setNames(
+    c(1, -1), c(v("export_prices"), v("foreign_prices"))
+  )
+  identities[[v("terms_of_trade")]] <- stats::setNames(
+    c(1, -1), c(v("export_prices"), v("import_prices"))
+  )
+
+  list(stochastic = stochastic, identities = identities)
+}
+
+#' One country's fiscal block (stage 3b)
+#'
+#' Government consumption, a debt stock that accumulates, and the flow that
+#' drives it:
+#'
+#' ```
+#' cc_government   ~ cc_government.L(1) + cc_gdp.L(1)
+#' cc_netborrowing ~ cc_gdp + cc_long_rate + cc_netborrowing.L(1)
+#'
+#' cc_govdebt == 1*cc_govdebt.L(1) + 1*cc_netborrowing
+#' ```
+#'
+#' plus `cc_government` returning to the domestic-demand identity, which is
+#' handled by [stage2_options()]'s per-country `include_government`.
+#'
+#' **This is a reduced fiscal block, and the reduction is forced by data.**
+#' The full version -- revenue and expenditure equations with
+#' `deficit == expenditure - revenue` -- needs Eurostat `gov_10q_ggnfa`, whose
+#' German series begin **2002Q1**. `T` is system-wide, so pulling them in
+#' shortens the estimation window for *every* equation from 98 to 90 while `k`
+#' rises, taking the residual degrees of freedom to **zero**. Maastricht debt
+#' (`gov_10q_ggdebt`) is clean from 2000Q1, so the block is built on that
+#' instead and net borrowing is derived from it (see [derived_netborrowing()],
+#' which also explains why that variable is not the headline deficit).
+#'
+#' **The accumulation identity carries a lagged term**, which koma supports --
+#' its own Klein vignette ships one -- but which costs a column of `k` and
+#' required a fix to [stage2_exogenous_variables()]. Because net borrowing is
+#' derived as the first difference of the debt ratio, the carry weight is
+#' exactly 1 and the identity holds to machine precision; koma's injected
+#' weights collapse to a single scalar and could not have expressed a
+#' time-varying snowball factor.
+#'
+#' **`cc_government` has no Metropolis step.** Both its regressors are lagged,
+#' so its gamma block is empty, `count_accepted` is `NA`, and
+#' [check_acceptance_rates()] must not flag it. That is deliberate: government
+#' consumption is a policy variable, and making it respond to *contemporaneous*
+#' output would build in a within-quarter automatic stabiliser this data cannot
+#' identify.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @return A list with `stochastic` and `identities`.
+#' @export
+fiscal_block <- function(iso2) {
+  iso2 <- tolower(iso2)
+  v <- function(concept) country_var(iso2, concept)
+  own_lag <- function(name) stats::setNames(list("1"), name)
+
+  stochastic <- list()
+  stochastic[[v("government")]] <- list(
+    terms = c(v("government"), v("gdp")),
+    lags = stats::setNames(list("1", "1"), c(v("government"), v("gdp")))
+  )
+  stochastic[[v("netborrowing")]] <- list(
+    terms = c(v("gdp"), v("long_rate"), v("netborrowing")),
+    lags = own_lag(v("netborrowing"))
+  )
+
+  identities <- list()
+  identities[[v("govdebt")]] <- stats::setNames(
+    c(1, 1), c(paste0(v("govdebt"), ".L(1)"), v("netborrowing"))
+  )
+
+  list(stochastic = stochastic, identities = identities)
+}
+
+#' One country's financial block (stage 3b)
+#'
+#' Credit, house prices, and the two channels that make them matter:
+#'
+#' ```
+#' cc_credit       ~ cc_long_rate + cc_gdp + cc_credit.L(1)
+#' cc_house_prices ~ cc_credit + cc_long_rate + cc_real_income + cc_house_prices.L(1)
+#' ```
+#'
+#' [country_block()] additionally extends investment with `cc_credit`, and the
+#' long rate with `cc_govdebt` -- the sovereign spread responding to debt,
+#' which is the mechanism behind euro-area core-periphery divergence and the
+#' reason this block is worth its degrees of freedom.
+#'
+#' **This closes a contemporaneous loop that did not previously exist**:
+#'
+#' ```
+#' gdp -> netborrowing -> govdebt -> long_rate -> investment -> gdp
+#' ```
+#'
+#' Every link is within-quarter. A loop whose round-trip gain reaches 1 is
+#' self-sustaining, and koma constrains no posterior draw to be stationary, so
+#' the quantity that matters is the *share* of draws at or above 1 rather than
+#' the average gain -- especially with a near-unit-root stock (`cc_govdebt`)
+#' inside the loop. Measure it with [loop_gain()] after estimating.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @return A list with `stochastic` and an empty `identities`.
+#' @export
+financial_block <- function(iso2) {
+  iso2 <- tolower(iso2)
+  v <- function(concept) country_var(iso2, concept)
+  own_lag <- function(name) stats::setNames(list("1"), name)
+
+  stochastic <- list()
+  stochastic[[v("credit")]] <- list(
+    terms = c(v("long_rate"), v("gdp"), v("credit")), lags = own_lag(v("credit"))
+  )
+  stochastic[[v("house_prices")]] <- list(
+    terms = c(v("credit"), v("long_rate"), v("real_income"), v("house_prices")),
+    lags = own_lag(v("house_prices"))
+  )
+
+  list(stochastic = stochastic, identities = list())
 }
 
 #' The shared euro-area monetary policy rule

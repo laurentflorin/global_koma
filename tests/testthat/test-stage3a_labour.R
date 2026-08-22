@@ -29,9 +29,18 @@ test_that("derived_wage_rate aborts rather than returning a partial series", {
 
 test_that("resolve_stage3a_concepts handles FALSE, TRUE and a subset", {
   expect_equal(resolve_stage3a_concepts(FALSE), character())
-  expect_setequal(resolve_stage3a_concepts(TRUE), stage3a_concepts)
+  # TRUE means every extended concept, stage 3a and 3b alike.
+  expect_setequal(resolve_stage3a_concepts(TRUE), c(stage3a_concepts, stage3b_concepts))
   expect_equal(resolve_stage3a_concepts("export_prices"), "export_prices")
-  expect_error(resolve_stage3a_concepts("nonsense_prices"), "Unknown stage-3a concept")
+  expect_error(resolve_stage3a_concepts("nonsense_prices"), "Unknown extended concept")
+})
+
+test_that("resolve_stage3a_concepts refuses netborrowing without govdebt", {
+  # netborrowing is the first difference of govdebt; asking for it alone would
+  # fail later with a confusing NULL rather than here.
+  expect_error(resolve_stage3a_concepts("netborrowing"), "derived from")
+  expect_equal(resolve_stage3a_concepts(c("govdebt", "netborrowing")),
+               c("govdebt", "netborrowing"))
 })
 
 # --- align_panel(extend = ) ----------------------------------------------

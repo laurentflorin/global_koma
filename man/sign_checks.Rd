@@ -4,7 +4,14 @@
 \alias{sign_checks}
 \title{Plausibility (sign) checks on a country's coefficients}
 \usage{
-sign_checks(coef_table, iso2, labour = FALSE)
+sign_checks(
+  coef_table,
+  iso2,
+  labour = FALSE,
+  external = FALSE,
+  fiscal = FALSE,
+  financial = FALSE
+)
 }
 \arguments{
 \item{coef_table}{A \code{data.frame} from \code{\link[=coefficient_table]{coefficient_table()}}.}

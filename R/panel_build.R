@@ -68,6 +68,35 @@ stage3a_concepts <- c(
   stage3a_derived_concepts
 )
 
+#' Stage-3b external, fiscal and financial concepts
+#'
+#' Split by source in the same three ways as `stage3a_*`:
+#'
+#' - `stage3b_eamdqd_codes` -- already in the downloaded vintage.
+#'   `house_prices` is BIS residential property prices; note the codebook's
+#'   unit for it (`MLNe`) is **wrong**, inherited from a typo in the upstream
+#'   PDF -- the data is an index, 2010 = 100. Absent for Greece and Portugal,
+#'   which constrains rollout but not the German pilot.
+#' - `stage3b_eurostat_concepts` -- fetched, see [eurostat_govdebt()] and
+#'   [eurostat_current_account()].
+#' - `stage3b_derived_concepts` -- computed, see [derived_netborrowing()] and
+#'   [derived_credit()]. `netborrowing` depends on `govdebt`, so the two are
+#'   built in that order.
+#' @keywords internal
+stage3b_eamdqd_codes <- c(house_prices = "hprc")
+
+#' @keywords internal
+stage3b_eurostat_concepts <- c(govdebt = "GD", current_account = "CA")
+
+#' @keywords internal
+stage3b_derived_concepts <- c("netborrowing", "credit")
+
+#' @keywords internal
+stage3b_concepts <- c(
+  names(stage3b_eamdqd_codes), names(stage3b_eurostat_concepts),
+  stage3b_derived_concepts
+)
+
 #' Target variable set: project concept -> FRED series id
 #' @keywords internal
 fred_concept_series <- c(
@@ -98,7 +127,13 @@ concept_method <- c(
   # indices and two deflators. None is already a rate.
   employment = "diff_log", wages = "diff_log", energy_prices = "diff_log",
   nonenergy_prices = "diff_log", import_prices = "diff_log",
-  export_prices = "diff_log"
+  export_prices = "diff_log",
+  # stage 3b. house_prices and credit are strictly-positive stocks/indices.
+  # govdebt is a ratio already in percent; netborrowing and current_account
+  # are SIGNED ratios -- diff_log on a series that crosses zero gives NaN,
+  # which koma reports as an "internal NA" pointing at the wrong problem.
+  house_prices = "diff_log", credit = "diff_log",
+  govdebt = "none", netborrowing = "none", current_account = "none"
 )
 
 #' koma `series_type` for each target concept
@@ -125,7 +160,12 @@ concept_series_type <- c(
   # them appears in a stage-3a identity, and chain_weighted_index() aborts
   # on a component that is not series_type = "level".
   employment = "level", wages = "level", energy_prices = "level",
-  nonenergy_prices = "level", import_prices = "level", export_prices = "level"
+  nonenergy_prices = "level", import_prices = "level", export_prices = "level",
+  # stage 3b -- the three ratios are rates: koma takes their numbers as-is,
+  # which is what makes the debt accumulation identity an exact linear
+  # relation in percentage points rather than a statement about growth.
+  house_prices = "level", credit = "level",
+  govdebt = "rate", netborrowing = "rate", current_account = "rate"
 )
 
 # --------------------------------------------------------------------------
@@ -189,6 +229,85 @@ eurostat_deflator <- function(geo, na_item) {
     geo = geo, freq = "Q", unit = "PD15_EUR", s_adj = "SCA", na_item = na_item
   ), time_format = "date", cache_dir = eurostat_cache_dir())
   eurostat_to_ts(d)
+}
+
+#' Fetch general government consolidated gross debt from Eurostat
+#'
+#' The stage-3b `govdebt` concept: Maastricht debt (`gov_10q_ggdebt`,
+#' `na_item = "GD"`), taken directly as **percentage of GDP**.
+#'
+#' **Why Maastricht debt and not EA-MD/QD's `GGLB`.** The vintage already on
+#' disk carries `GGLB`, general government *total financial liabilities*,
+#' which is a market-value measure including equity and trade credit --
+#' 3.06tn for Germany against Maastricht's 2.90tn. `GD` is the consolidated
+#' face-value definition every fiscal rule and every sovereign-spread study
+#' uses, and it is the one whose ratio to GDP is a recognisable number.
+#'
+#' **Why `PC_GDP` and not a level.** A debt *level* would be
+#' `series_type = "level", method = "diff_log"`, which makes the stock-flow
+#' accumulation identity a statement about growth rates -- nonsense. As a
+#' ratio tagged `rate`/`none` koma passes the numbers through untouched, so
+#' `govdebt == 1*govdebt.L(1) + 1*netborrowing` is an exact linear relation
+#' in percentage points. See [derived_netborrowing()].
+#'
+#' Verified (2026-08 vintage): 2000Q1-2026Q1 for all eleven economies, no
+#' internal `NA`s, 57.6-81.0% for Germany.
+#'
+#' @param geo Eurostat geo code.
+#' @return A quarterly `ts`, percent of GDP.
+#' @keywords internal
+eurostat_govdebt <- function(geo) {
+  d <- eurostat::get_eurostat("gov_10q_ggdebt", filters = list(
+    geo = geo, sector = "S13", na_item = "GD", unit = "PC_GDP"
+  ), time_format = "date", cache_dir = eurostat_cache_dir())
+  eurostat_to_ts(d)
+}
+
+#' Fetch the current-account balance from Eurostat, as a share of GDP
+#'
+#' The stage-3b `current_account` concept: `bop_c6_q`, `bop_item = "CA"`,
+#' `stk_flow = "BAL"`, against the rest of the world.
+#'
+#' **A balance crosses zero, so it cannot be `diff_log`.** Germany's current
+#' account is negative in 7 of the 100 quarters in the estimation window.
+#' Tagged `level`/`diff_log`, `log()` of those quarters is `NaN` and koma
+#' aborts with `"time series contains internal NAs"` -- a message pointing at
+#' the wrong problem entirely. It is therefore carried as a ratio to nominal
+#' GDP, `rate`/`none`.
+#'
+#' **The ratio is built from four-quarter rolling sums**, not quarter on
+#' quarter. `bop_c6_q` has no `s_adj` dimension -- the balances are published
+#' **unadjusted only** -- while every other series in this panel is
+#' seasonally adjusted. A rolling annual sum over a rolling annual
+#' denominator is both the conventional presentation of a current-account
+#' ratio and a seasonal filter that needs no model, which is why it is
+#' preferred here to adjusting the raw series.
+#'
+#' @param geo Eurostat geo code.
+#' @return A quarterly `ts`, percent of GDP, four-quarter rolling.
+#' @keywords internal
+eurostat_current_account <- function(geo) {
+  d <- eurostat::get_eurostat("bop_c6_q", filters = list(
+    geo = geo, partner = "WRL_REST", bop_item = "CA", stk_flow = "BAL",
+    currency = "MIO_EUR", sector10 = "S1", sectpart = "S1"
+  ), time_format = "date", cache_dir = eurostat_cache_dir())
+  ca <- eurostat_to_ts(d)
+  gdp <- eurostat_nominal_gdp(geo)
+
+  roll4 <- function(x) {
+    v <- as.numeric(x)
+    s <- stats::filter(v, rep(1, 4), sides = 1)
+    stats::ts(as.numeric(s), start = stats::start(x), frequency = stats::frequency(x))
+  }
+  ca4 <- roll4(ca)
+  gdp4 <- roll4(gdp)
+  start <- max(stats::tsp(ca4)[1], stats::tsp(gdp4)[1])
+  end <- min(stats::tsp(ca4)[2], stats::tsp(gdp4)[2])
+  a <- stats::window(ca4, start = start, end = end)
+  b <- stats::window(gdp4, start = start, end = end)
+  stats::ts(100 * as.numeric(a) / as.numeric(b),
+    start = stats::start(a), frequency = stats::frequency(a)
+  )
 }
 
 #' Fetch a HICP index from Eurostat (`prc_hicp_midx`)
@@ -379,6 +498,47 @@ build_ea_country_panel <- function(iso2, eamdqd, stage3a = FALSE) {
     )
   }
 
+  # -- stage 3b --------------------------------------------------------------
+  for (concept in intersect(names(stage3b_eamdqd_codes), wanted)) {
+    src_name <- paste0(tolower(code), "_", stage3b_eamdqd_codes[[concept]])
+    series <- raw[[src_name]]
+    if (is.null(series) || all(is.na(as.numeric(series)))) {
+      cli::cli_abort(c(
+        "EA-MD/QD is missing {.val {concept}} ({.val {toupper(src_name)}}) for {.val {toupper(iso2)}}.",
+        "i" = "{.val house_prices} is absent for Greece and Portugal in this vintage."
+      ))
+    }
+    out[[country_var(iso2, concept)]] <- koma::as_ets(
+      series,
+      series_type = concept_series_type[[concept]],
+      method = concept_method[[concept]],
+      country = toupper(iso2), source = "eamdqd"
+    )
+  }
+
+  for (concept in intersect(names(stage3b_eurostat_concepts), wanted)) {
+    series <- switch(concept,
+      govdebt = eurostat_govdebt(code),
+      current_account = eurostat_current_account(code),
+      cli::cli_abort("No fetcher for stage-3b concept {.val {concept}}.")
+    )
+    out[[country_var(iso2, concept)]] <- koma::as_ets(
+      series,
+      series_type = concept_series_type[[concept]],
+      method = concept_method[[concept]],
+      country = toupper(iso2), source = "eurostat"
+    )
+  }
+
+  # Order matters: netborrowing is the first difference of govdebt.
+  if ("netborrowing" %in% wanted) {
+    out[[country_var(iso2, "netborrowing")]] <-
+      derived_netborrowing(out[[country_var(iso2, "govdebt")]], iso2)
+  }
+  if ("credit" %in% wanted) {
+    out[[country_var(iso2, "credit")]] <- derived_credit(raw, code, iso2)
+  }
+
   out
 }
 
@@ -390,16 +550,25 @@ build_ea_country_panel <- function(iso2, eamdqd, stage3a = FALSE) {
 #' confusing `NULL` further down.
 #' @keywords internal
 resolve_stage3a_concepts <- function(stage3a) {
+  available <- c(stage3a_concepts, stage3b_concepts)
   if (isFALSE(stage3a) || is.null(stage3a)) return(character())
-  if (isTRUE(stage3a)) return(stage3a_concepts)
+  if (isTRUE(stage3a)) return(available)
   if (!is.character(stage3a)) {
     cli::cli_abort("{.arg stage3a} must be {.code TRUE}, {.code FALSE}, or a character vector of concepts.")
   }
-  unknown <- setdiff(stage3a, stage3a_concepts)
+  unknown <- setdiff(stage3a, available)
   if (length(unknown) > 0) {
     cli::cli_abort(c(
-      "Unknown stage-3a concept{?s}: {.val {unknown}}.",
-      "i" = "Available: {.val {stage3a_concepts}}."
+      "Unknown extended concept{?s}: {.val {unknown}}.",
+      "i" = "Available: {.val {available}}."
+    ))
+  }
+  # netborrowing is the first difference of govdebt, so asking for it without
+  # govdebt would fail later with a confusing NULL rather than here.
+  if ("netborrowing" %in% stage3a && !"govdebt" %in% stage3a) {
+    cli::cli_abort(c(
+      "{.val netborrowing} is derived from {.val govdebt}.",
+      "i" = "Request {.val govdebt} alongside it."
     ))
   }
   stage3a
@@ -572,6 +741,105 @@ derived_wage_rate <- function(wage_bill, employment, iso2) {
     stats::ts(as.numeric(b) / as.numeric(e),
       start = stats::start(b), frequency = stats::frequency(b)
     ),
+    series_type = "level", method = "diff_log",
+    country = toupper(iso2), source = "derived"
+  )
+}
+
+#' Derive net borrowing as the change in the debt ratio
+#'
+#' The flow that drives the stage-3b debt accumulation identity
+#' `govdebt == 1*govdebt.L(1) + 1*netborrowing`. Deriving it as the first
+#' difference of the debt ratio makes that identity hold to machine precision
+#' by construction, which is the whole point: koma's injected weights are
+#' **not** time-varying (`weights.R` annualises the series, lags it a year and
+#' keeps the last value -- one scalar for the entire sample and forecast), so
+#' the `(1+i)/(1+g)` snowball factor that a debt-to-GDP law of motion needs
+#' cannot be expressed as a weight. Folding it into the flow instead sets the
+#' carry weight to exactly 1 and sidesteps the limitation.
+#'
+#' **State plainly what this variable is.** It is the change in the debt
+#' ratio, which equals the headline deficit-to-GDP *plus* the
+#' growth-denominator effect *plus* stock-flow adjustments. It is not the
+#' Maastricht deficit and must not be reported as one. The honest reading of
+#' a coefficient on it is "how the debt ratio moves", not "how the deficit
+#' moves". Germany's actual revenue and expenditure would give the true
+#' decomposition, but they only begin 2002Q1 and pulling them in costs the
+#' whole system eight quarters of estimation window -- enough on its own to
+#' take the residual degrees of freedom to zero.
+#'
+#' Signed by construction (the ratio falls as well as rises), hence
+#' `series_type = "rate", method = "none"`.
+#'
+#' @param govdebt The debt-to-GDP ratio, as from [eurostat_govdebt()].
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @return A `koma_ts` rate series, change in the debt ratio in percentage
+#'   points. One observation shorter than `govdebt` at the front.
+#' @keywords internal
+derived_netborrowing <- function(govdebt, iso2) {
+  if (is.null(govdebt)) {
+    cli::cli_abort("Cannot derive {.val {country_var(iso2, 'netborrowing')}} without {.field govdebt}.")
+  }
+  d <- diff(as.numeric(govdebt))
+  koma::as_ets(
+    stats::ts(d,
+      start = advance_periods(
+        num_to_period(stats::tsp(govdebt)[1], stats::frequency(govdebt)), 1,
+        stats::frequency(govdebt)
+      ),
+      frequency = stats::frequency(govdebt)
+    ),
+    series_type = "rate", method = "none",
+    country = toupper(iso2), source = "derived"
+  )
+}
+
+#' Derive private credit from EA-MD/QD loan components
+#'
+#' Credit to the private sector, as the sum of long- and short-term **loans**
+#' owed by non-financial corporations and households.
+#'
+#' **Loans, not total liabilities.** `NFCLB` and `HHLB` are *total financial
+#' liabilities*, which for corporations includes shares and other equity --
+#' that is a balance-sheet aggregate, not credit, and it moves with the stock
+#' market. The `.LLN`/`.SLN` sub-components are the actual loan stocks.
+#'
+#' **Why not ECB BSI.** The obvious alternative, MFI loans to the private
+#' sector, is one clean series with a standard definition -- but its country
+#' breakdowns begin 2003Q1, which would cost twelve quarters of a window that
+#' starts in 2000Q1. The EA-MD/QD components span the whole window.
+#'
+#' **A transformation override, stated because it is one.**
+#' `eamdqd_variable_map()` derives `method` mechanically from the EA-MD/QD
+#' `TR` code, and `HHLB.LLN` carries `TR = 3` for Germany (and most of the
+#' euro area), which the rule maps to `method = "none"`. On a stock in
+#' millions of euro that is meaningless as an estimation input -- koma would
+#' model the raw level inside a growth-rate system. The sum is therefore
+#' tagged `diff_log` by hand. This is exactly the "needs a per-series
+#' judgement call" case `data_eamdqd.R` warns about.
+#'
+#' @param raw The country's raw EA-MD/QD panel, from `eamdqd_panel()`.
+#' @param code The EA-MD/QD country code (`"DE"`, `"EL"` for Greece).
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @return A `koma_ts` level series, total private loans in millions of euro.
+#' @keywords internal
+derived_credit <- function(raw, code, iso2) {
+  parts <- c("nfclb_lln", "nfclb_sln", "hhlb_lln", "hhlb_sln")
+  names(parts) <- parts
+  series <- lapply(parts, function(p) raw[[paste0(tolower(code), "_", p)]])
+  missing <- names(series)[vapply(series, is.null, logical(1))]
+  if (length(missing) > 0) {
+    cli::cli_abort(c(
+      "EA-MD/QD is missing {.val {missing}} for {.val {toupper(iso2)}}.",
+      "i" = "Private credit is the sum of the four loan components; a partial sum would be a different concept."
+    ))
+  }
+  start <- max(vapply(series, function(x) stats::tsp(x)[1], numeric(1)))
+  end <- min(vapply(series, function(x) stats::tsp(x)[2], numeric(1)))
+  windowed <- lapply(series, function(x) as.numeric(stats::window(x, start = start, end = end)))
+  total <- Reduce(`+`, windowed)
+  koma::as_ets(
+    stats::ts(total, start = num_to_period(start, 4), frequency = 4),
     series_type = "level", method = "diff_log",
     country = toupper(iso2), source = "derived"
   )
