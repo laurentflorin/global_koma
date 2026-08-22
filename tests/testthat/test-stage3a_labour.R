@@ -346,3 +346,46 @@ test_that("stage2_preflight catches a lagged-name prefix collision", {
   expect_false(row$ok)
   expect_match(row$detail, "de_debt")
 })
+
+test_that("build_stage2_panel constructs the external block's identity series", {
+  # Defining an identity without constructing its LHS series is caught by
+  # stage2_preflight()'s "every variable has a panel series" check -- but only
+  # if the construction exists to be tested. Both are pure price differences.
+  panel <- stage3a_synthetic_panel("de")
+  n <- length(panel$de_gdp)
+  set.seed(11)
+  mk <- function(v) koma::as_ets(stats::ts(v, start = c(2000, 1), frequency = 4),
+                                 series_type = "level", method = "diff_log")
+  panel$de_foreign_prices <- mk(100 + cumsum(stats::rnorm(n, 0.3, 0.4)))
+  lw <- list(foreign_demand = list(de = c(fr_gdp = 0.4, row_gdp = 0.6)), ea = c(de = 1))
+  hw <- c(nonenergy_prices = 0.9, energy_prices = 0.1)
+
+  sp <- build_stage2_panel(panel, lw, labour_countries = "de",
+                           hicp_weights = list(de = hw), external_countries = "de")
+  expect_true(all(c("de_competitiveness", "de_terms_of_trade") %in% names(sp)))
+
+  maxdiff <- function(lhs, rhs, w) {
+    m <- stats::na.omit(do.call(cbind, lapply(c(lhs, rhs), function(x) koma::rate(sp[[x]]))))
+    max(abs(m[, 1] - as.numeric(m[, -1, drop = FALSE] %*% w)))
+  }
+  expect_lt(maxdiff("de_competitiveness",
+                    c("de_export_prices", "de_foreign_prices"), c(1, -1)), 1e-10)
+  expect_lt(maxdiff("de_terms_of_trade",
+                    c("de_export_prices", "de_import_prices"), c(1, -1)), 1e-10)
+
+  # and nothing is built for a country that has no external block
+  plain <- build_stage2_panel(panel, lw, labour_countries = "de", hicp_weights = list(de = hw))
+  expect_false("de_competitiveness" %in% names(plain))
+})
+
+test_that("the stage-3b blocks require the labour block underneath them", {
+  expect_error(
+    stage2_options(labour_countries = character(), external_countries = "de"),
+    "not"
+  )
+  expect_error(
+    stage2_options(labour_countries = "de", fiscal_countries = "fr",
+                   hicp_weights = list(de = c(nonenergy_prices = 0.9, energy_prices = 0.1))),
+    "not"
+  )
+})

@@ -9,7 +9,8 @@ build_stage2_panel(
   linkage_weights,
   dummies = character(),
   labour_countries = character(),
-  hicp_weights = NULL
+  hicp_weights = NULL,
+  external_countries = character()
 )
 }
 \arguments{

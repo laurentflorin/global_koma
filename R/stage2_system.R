@@ -1062,7 +1062,8 @@ build_stage2_system <- function(spec, tau = NULL) {
 #' @export
 build_stage2_panel <- function(panel, linkage_weights, dummies = character(),
                                labour_countries = character(),
-                               hicp_weights = NULL) {
+                               hicp_weights = NULL,
+                               external_countries = character()) {
   out <- panel
 
   for (nm in dummies) {
@@ -1110,6 +1111,21 @@ build_stage2_panel <- function(panel, linkage_weights, dummies = character(),
     # checks that identity against. Same numbers either way.
     out[[v("foreign_prices")]] <- chain_weighted_index(
       out, foreign_price_weights(linkage_weights, cc)
+    )
+  }
+
+  # Stage 3b external block. Both are pure differences of level/diff_log price
+  # series, so chain_weighted_index()'s +/-1 weights reproduce them exactly --
+  # the same construction the stage-3a productivity/ULC identities use.
+  # `foreign_prices` is exogenous in the phase-A design but still a level
+  # series, so it chains like any other component.
+  for (cc in tolower(external_countries)) {
+    v <- function(concept) country_var(cc, concept)
+    out[[v("competitiveness")]] <- chain_weighted_index(
+      out, stats::setNames(c(1, -1), c(v("export_prices"), v("foreign_prices")))
+    )
+    out[[v("terms_of_trade")]] <- chain_weighted_index(
+      out, stats::setNames(c(1, -1), c(v("export_prices"), v("import_prices")))
     )
   }
 
