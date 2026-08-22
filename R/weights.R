@@ -533,6 +533,107 @@ chain_weighted_index <- function(panel, weights, base = 100) {
   )
 }
 
+#' HICP energy / non-energy weights, from Eurostat's published basket
+#'
+#' The weights for the stage-3a `<iso2>_prices` identity, taken **from the
+#' data** rather than assumed: Eurostat `prc_hicp_inw` publishes the official
+#' HICP item weights in per mille of the basket, re-set every year.
+#'
+#' **Why this split and not core/energy.** `NRG` and `TOT_X_NRG` partition
+#' the basket exactly -- verified against the 2026-08 vintage, they sum to
+#' `CP00` = 1000 in **every** year from 1996 to 2025, for Germany, with no
+#' residual. The narrower "core" aggregate this project already carries
+#' (`core_prices`, COICOP `TOT_X_NRG_FOOD`) does *not*: core plus energy
+#' leaves food, alcohol and tobacco unaccounted for -- about 19% of the
+#' German basket -- so a core/energy identity cannot be made exact, only
+#' renormalised, which silently attributes food inflation to core. The
+#' identity therefore uses non-energy, and `core_prices` is kept only as an
+#' unmodelled cross-check.
+#'
+#' **The fixed-weight approximation, stated because it is one.** koma
+#' identity weights are constants, but HICP weights are re-based annually.
+#' Over 2000-2024 the German energy weight ranges from 88.4 to 125.5 per
+#' mille (8.8%-12.6%) around a mean of 108.7. Averaging over the estimation
+#' window is the honest fixed-weight choice; `max_deviation` in the result
+#' reports how far any single year departs from it, so the size of the
+#' approximation is visible rather than buried. For reference, a "0.85/0.15"
+#' guess would have been wrong by roughly 4 percentage points on energy --
+#' which is why this is fetched.
+#'
+#' @param geo Eurostat geo code (`"DE"`; `"EL"` for Greece -- see
+#'   `iso2_to_eamdqd`, the EU statistical convention, not ISO).
+#' @param dates A koma `dates` list; weights are averaged over
+#'   `dates$estimation`. `NULL` averages over every year available.
+#'
+#' @return A list with `weights` (named numeric, `nonenergy_prices` and
+#'   `energy_prices`, summing to 1), `years` (the years averaged over),
+#'   `max_deviation` (largest absolute year-to-mean gap in the energy
+#'   weight, in weight units) and `exact` (whether the two components summed
+#'   to `CP00` in every year averaged over -- `FALSE` means Eurostat's own
+#'   parts did not partition the basket and the weights were renormalised).
+#' @export
+hicp_weights <- function(geo, dates = NULL) {
+  d <- eurostat::get_eurostat("prc_hicp_inw", filters = list(
+    geo = geo, coicop = c("CP00", "TOT_X_NRG", "NRG")
+  ), time_format = "date", cache_dir = eurostat_cache_dir())
+  d <- as.data.frame(d)
+  if (nrow(d) == 0) {
+    cli::cli_abort("Eurostat {.val prc_hicp_inw} returned no rows for {.val {geo}}.")
+  }
+  d$year <- as.integer(format(d$time, "%Y"))
+
+  if (!is.null(dates)) {
+    span <- dates$estimation$start[1]:dates$estimation$end[1]
+    d <- d[d$year %in% span, ]
+    if (nrow(d) == 0) {
+      cli::cli_abort("Eurostat {.val prc_hicp_inw} has no weights for {.val {geo}} in {.val {range(span)}}.")
+    }
+  }
+
+  pull <- function(code) {
+    x <- d[d$coicop == code, c("year", "values")]
+    stats::setNames(x$values[order(x$year)], sort(x$year))
+  }
+  nrg <- pull("NRG")
+  xnrg <- pull("TOT_X_NRG")
+  total <- pull("CP00")
+
+  years <- intersect(names(nrg), names(xnrg))
+  if (length(years) == 0) {
+    cli::cli_abort("No year has both {.val NRG} and {.val TOT_X_NRG} weights for {.val {geo}}.")
+  }
+  nrg <- nrg[years]
+  xnrg <- xnrg[years]
+
+  # Do the two parts actually partition the basket? If Eurostat ever changes
+  # the aggregate definitions this silently stops holding, so check rather
+  # than assume -- a renormalised weight is still usable, a wrong one is not.
+  exact <- TRUE
+  if (length(intersect(years, names(total))) == length(years)) {
+    exact <- isTRUE(all.equal(unname(nrg + xnrg), unname(total[years]), tolerance = 1e-6))
+  }
+  if (!exact) {
+    cli::cli_warn(c(
+      "!" = "{.val NRG} + {.val TOT_X_NRG} does not equal {.val CP00} for {.val {geo}} in every year.",
+      "i" = "Weights renormalised to sum to 1; the {.field prices} identity is an approximation."
+    ))
+  }
+
+  mean_nrg <- mean(nrg)
+  mean_xnrg <- mean(xnrg)
+  denom <- mean_nrg + mean_xnrg
+
+  list(
+    weights = c(
+      nonenergy_prices = unname(mean_xnrg / denom),
+      energy_prices = unname(mean_nrg / denom)
+    ),
+    years = as.integer(years),
+    max_deviation = unname(max(abs(nrg - mean_nrg)) / denom),
+    exact = exact
+  )
+}
+
 #' Build a koma identity equation from country weights
 #'
 #' Convenience wrapper around [identity_equation()] that turns a

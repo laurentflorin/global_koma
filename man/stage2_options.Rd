@@ -8,7 +8,11 @@ stage2_options(
   include_government = TRUE,
   extra_regressors = character(),
   policy_rule = FALSE,
-  fx = character()
+  fx = character(),
+  labour_countries = character(),
+  export_price_countries = character(),
+  hicp_weights = NULL,
+  foreign_price_weights = NULL
 )
 }
 \arguments{
@@ -33,6 +37,33 @@ equation, moving that variable from exogenous to endogenous.}
 countries that should not use the default \code{eur_usd}. Stage 1 and 2a gave
 the US \code{us_exchange_rate}; stage 2b's three-variable exogenous spec puts
 it back on \code{eur_usd}.}
+
+\item{labour_countries}{Character vector of ISO-2 codes that carry the
+stage-3a labour and disaggregated-price block (see \code{\link[=labour_block]{labour_block()}}).
+For a country named here, \code{\link[=country_block]{country_block()}} changes in exactly two ways:
+its \verb{<iso2>_prices} \strong{stochastic} equation is dropped, because
+\code{labour_block()} redefines \code{prices} as an identity over the energy and
+non-energy sub-indices, and its exports and imports equations gain
+relative-price terms so the new price variables actually transmit to
+trade volumes. Empty by default, so stage 2a and 2b are unchanged.}
+
+\item{export_price_countries}{Character vector of ISO-2 codes that get the
+minimal satellite equation \verb{<iso2>_export_prices ~ <iso2>_prices + <iso2>_export_prices.L(1)} and nothing else. This is stage 3a phase B:
+it is what makes a \emph{partner's} export price endogenous, so
+\code{de_foreign_prices} can be a genuine identity rather than an exogenous
+series. Countries in \code{labour_countries} already get a richer
+export-price equation and must not appear here.}
+
+\item{hicp_weights}{Named list, \verb{iso2 -> named numeric vector}, one entry
+per labour country, each the \code{weights} element of \code{\link[=hicp_weights]{hicp_weights()}}.
+Required whenever \code{labour_countries} is non-empty -- there is
+deliberately no default, because a guessed HICP split is exactly the
+kind of hidden decision the identity must not contain.}
+
+\item{foreign_price_weights}{Named list, \verb{iso2 -> named numeric vector}
+from \code{\link[=foreign_price_weights]{foreign_price_weights()}}, for labour countries whose
+\verb{<iso2>_foreign_prices} should be an \strong{identity} (phase B). Omit an
+entry to leave that country's foreign prices exogenous (phase A).}
 }
 \value{
 A list of options for \code{\link[=country_block]{country_block()}}.

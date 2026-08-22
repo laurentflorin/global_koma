@@ -4,7 +4,7 @@
 \alias{build_country_panel}
 \title{Build one country's panel}
 \usage{
-build_country_panel(iso2, eamdqd = NULL)
+build_country_panel(iso2, eamdqd = NULL, stage3a = FALSE)
 }
 \arguments{
 \item{iso2}{Two-letter lowercase ISO country code. One of

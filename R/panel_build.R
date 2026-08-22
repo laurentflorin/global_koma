@@ -36,6 +36,38 @@ eamdqd_concept_codes <- c(
   core_prices = "hicpnef", unemployment = "unetot", long_rate = "ltirt"
 )
 
+#' Stage-3a labour and disaggregated-price concepts
+#'
+#' Fetched only for the countries named in `labour_countries` (see
+#' [build_global_panel()]), because each one costs a download and the
+#' stage-3a block is a Germany-only pilot. Split three ways by source:
+#'
+#' - `stage3a_eamdqd_codes` come straight from the EA-MD/QD vintage that
+#'   [build_ea_country_panel()] already downloads and currently discards.
+#'   Note the energy HICP code is `HICPNG`, **not** `HICPNRG`.
+#' - `stage3a_eurostat_concepts` have no EA-MD/QD counterpart at all:
+#'   `nonenergy_prices` because EA-MD/QD carries only the narrower
+#'   ex-energy-*and*-food aggregate (`HICPNEF`, this project's
+#'   `core_prices`), and the two trade deflators because EA-MD/QD has no
+#'   import or export price series of any kind.
+#' - `wages` is **derived**, not fetched -- see [derived_wage_rate()].
+#' @keywords internal
+stage3a_eamdqd_codes <- c(employment = "temp", energy_prices = "hicpng")
+
+#' @keywords internal
+stage3a_eurostat_concepts <- c(
+  nonenergy_prices = "TOT_X_NRG", import_prices = "P7", export_prices = "P6"
+)
+
+#' @keywords internal
+stage3a_derived_concepts <- c("wages")
+
+#' @keywords internal
+stage3a_concepts <- c(
+  names(stage3a_eamdqd_codes), names(stage3a_eurostat_concepts),
+  stage3a_derived_concepts
+)
+
 #' Target variable set: project concept -> FRED series id
 #' @keywords internal
 fred_concept_series <- c(
@@ -60,7 +92,13 @@ concept_method <- c(
   gdp = "diff_log", consumption = "diff_log", investment = "diff_log",
   government = "diff_log", exports = "diff_log", imports = "diff_log",
   prices = "diff_log", core_prices = "diff_log",
-  unemployment = "none", long_rate = "none"
+  unemployment = "none", long_rate = "none",
+  # stage 3a. All six are levels or indices koma differences itself: an
+  # employment headcount, a wage rate in euro per worker, three price
+  # indices and two deflators. None is already a rate.
+  employment = "diff_log", wages = "diff_log", energy_prices = "diff_log",
+  nonenergy_prices = "diff_log", import_prices = "diff_log",
+  export_prices = "diff_log"
 )
 
 #' koma `series_type` for each target concept
@@ -82,7 +120,12 @@ concept_series_type <- c(
   gdp = "level", consumption = "level", investment = "level",
   government = "level", exports = "level", imports = "level",
   prices = "level", core_prices = "level",
-  unemployment = "rate", long_rate = "rate"
+  unemployment = "rate", long_rate = "rate",
+  # stage 3a -- all levels/indices, see concept_method above. Every one of
+  # them appears in a stage-3a identity, and chain_weighted_index() aborts
+  # on a component that is not series_type = "level".
+  employment = "level", wages = "level", energy_prices = "level",
+  nonenergy_prices = "level", import_prices = "level", export_prices = "level"
 )
 
 # --------------------------------------------------------------------------
@@ -117,11 +160,43 @@ eurostat_gdp_component <- function(geo, na_item) {
   eurostat_to_ts(d)
 }
 
+#' Fetch a national-accounts implicit deflator from Eurostat (`namq_10_gdp`)
+#'
+#' The import- and export-price series for the stage-3a block. EA-MD/QD has
+#' no import or export price series of any kind, so unlike every other
+#' country concept this one has no EA-MD/QD path and Eurostat is the primary
+#' source rather than a fallback.
+#'
+#' `unit = "PD15_EUR"` is Eurostat's own implicit deflator (2015 = 100),
+#' i.e. the ratio of the current-price to the chain-linked-volume series,
+#' computed upstream. Taking it directly rather than dividing `CP_MEUR` by
+#' `CLV15_MEUR` here avoids re-deriving a number Eurostat already publishes,
+#' and avoids the chain-linking subtlety that the ratio of two chain-linked
+#' aggregates is not itself a clean price index.
+#'
+#' Verified spans (2026-08 vintage): 1991Q1-2026Q1 for DE, 1995Q1 or 1996Q1
+#' onward for the other nine EA countries, with **no internal `NA`s** in any
+#' of them -- comfortably covering the 2000Q1-2024Q4 estimation window.
+#'
+#' @param geo Eurostat geo code.
+#' @param na_item `"P6"` (exports) or `"P7"` (imports).
+#'
+#' @return A quarterly `ts`, index 2015 = 100, seasonally and calendar
+#'   adjusted.
+#' @keywords internal
+eurostat_deflator <- function(geo, na_item) {
+  d <- eurostat::get_eurostat("namq_10_gdp", filters = list(
+    geo = geo, freq = "Q", unit = "PD15_EUR", s_adj = "SCA", na_item = na_item
+  ), time_format = "date", cache_dir = eurostat_cache_dir())
+  eurostat_to_ts(d)
+}
+
 #' Fetch a HICP index from Eurostat (`prc_hicp_midx`)
 #'
 #' @param geo Eurostat geo code.
-#' @param coicop `"CP00"` (headline) or `"TOT_X_NRG_FOOD"` (core: excludes
-#'   energy, food, alcohol and tobacco).
+#' @param coicop `"CP00"` (headline), `"TOT_X_NRG_FOOD"` (core: excludes
+#'   energy, food, alcohol and tobacco), or `"TOT_X_NRG"` (excludes energy
+#'   only -- the stage-3a `nonenergy_prices` concept).
 #'
 #' @return A monthly `ts` (index, 2015=100), aggregated to quarterly by
 #'   [eamdqd_aggregate_quarterly()].
@@ -223,12 +298,19 @@ ecb_quarterly_series <- function(key) {
 #'
 #' @param iso2 Lowercase ISO-2 code, one of `ea_countries`.
 #' @param eamdqd An `eamdqd_vintage`, as returned by [fetch_eamdqd()].
+#' @param stage3a Which stage-3a concepts to add on top of the base set:
+#'   `FALSE` (none, the default, so the existing pipeline is unchanged),
+#'   `TRUE` (all of `stage3a_concepts`), or a character vector naming a
+#'   subset. The subset form matters: stage 3a phase B needs
+#'   `export_prices` from every partner to make Germany's foreign-price
+#'   index endogenous, but needs nothing else from them, and fetching all
+#'   six concepts for eleven countries would mean ~50 downloads nobody reads.
 #'
 #' @return A named list of `koma_ts`, one per target concept plus
 #'   `domestic_demand` (the identity `consumption + investment +
 #'   government`, computed here rather than fetched).
 #' @keywords internal
-build_ea_country_panel <- function(iso2, eamdqd) {
+build_ea_country_panel <- function(iso2, eamdqd, stage3a = FALSE) {
   code <- iso2_to_eamdqd[[iso2]]
   if (is.null(code)) {
     cli::cli_abort("{.val {iso2}} is not one of the modelled EA countries: {.val {ea_countries}}.")
@@ -256,7 +338,71 @@ build_ea_country_panel <- function(iso2, eamdqd) {
   }
 
   out[[country_var(iso2, "domestic_demand")]] <- gdp_identity_component(out, iso2)
+
+  wanted <- resolve_stage3a_concepts(stage3a)
+
+  for (concept in intersect(names(stage3a_eamdqd_codes), wanted)) {
+    src_name <- paste0(tolower(code), "_", stage3a_eamdqd_codes[[concept]])
+    series <- raw[[src_name]]
+    if (is.null(series) || all(is.na(as.numeric(series)))) {
+      cli::cli_abort(c(
+        "EA-MD/QD is missing {.val {concept}} ({.val {toupper(src_name)}}) for {.val {toupper(iso2)}}.",
+        "i" = "No Eurostat fallback is defined for the stage-3a EA-MD/QD concepts."
+      ))
+    }
+    out[[country_var(iso2, concept)]] <- koma::as_ets(
+      series,
+      series_type = concept_series_type[[concept]],
+      method = concept_method[[concept]],
+      country = toupper(iso2), source = "eamdqd"
+    )
+  }
+
+  for (concept in intersect(names(stage3a_eurostat_concepts), wanted)) {
+    arg <- stage3a_eurostat_concepts[[concept]]
+    series <- if (identical(concept, "nonenergy_prices")) {
+      eurostat_hicp(code, arg)
+    } else {
+      eurostat_deflator(code, arg)
+    }
+    out[[country_var(iso2, concept)]] <- koma::as_ets(
+      series,
+      series_type = concept_series_type[[concept]],
+      method = concept_method[[concept]],
+      country = toupper(iso2), source = "eurostat"
+    )
+  }
+
+  if ("wages" %in% wanted) {
+    out[[country_var(iso2, "wages")]] <- derived_wage_rate(
+      raw[[paste0(tolower(code), "_ws")]], raw[[paste0(tolower(code), "_temp")]], iso2
+    )
+  }
+
   out
+}
+
+#' Normalise a `stage3a` argument to a concept vector
+#'
+#' `FALSE` -> none, `TRUE` -> all of `stage3a_concepts`, a character vector
+#' -> itself, validated. `wages` is derived from `employment`, so asking for
+#' it without `employment` is a caller error worth naming rather than a
+#' confusing `NULL` further down.
+#' @keywords internal
+resolve_stage3a_concepts <- function(stage3a) {
+  if (isFALSE(stage3a) || is.null(stage3a)) return(character())
+  if (isTRUE(stage3a)) return(stage3a_concepts)
+  if (!is.character(stage3a)) {
+    cli::cli_abort("{.arg stage3a} must be {.code TRUE}, {.code FALSE}, or a character vector of concepts.")
+  }
+  unknown <- setdiff(stage3a, stage3a_concepts)
+  if (length(unknown) > 0) {
+    cli::cli_abort(c(
+      "Unknown stage-3a concept{?s}: {.val {unknown}}.",
+      "i" = "Available: {.val {stage3a_concepts}}."
+    ))
+  }
+  stage3a
 }
 
 #' Fetch one concept from Eurostat, logging the fallback
@@ -280,15 +426,41 @@ ea_country_fallback <- function(iso2, eamdqd_code, concept) {
   )
 }
 
+#' Stage-3a US concepts: project concept -> FRED series id
+#'
+#' Deliberately **only** the two trade deflators, not the full stage-3a set.
+#' The United States gets no labour block: it is outside the euro-area price
+#' aggregate, and the block is a Germany-only pilot. What the US does need is
+#' `us_export_prices`, because the US carries a non-trivial weight in
+#' Germany's trade-weighted `de_foreign_prices` index -- omitting it would
+#' silently renormalise Germany's largest non-EA partner out of the price
+#' channel. `us_import_prices` comes along for symmetry at no modelling cost.
+#'
+#' `A020RD3Q086SBEA` / `A021RD3Q086SBEA` are the BEA implicit price
+#' deflators for exports and imports of goods and services (2017 = 100),
+#' the closest FRED equivalent of Eurostat's `PD15_EUR`. The differing base
+#' year is irrelevant: koma models `diff_log`, which is base-invariant.
+#' @keywords internal
+stage3a_fred_series <- c(
+  export_prices = "A020RD3Q086SBEA", import_prices = "A021RD3Q086SBEA"
+)
+
 #' Build the US panel from FRED
+#'
+#' @param start_date Earliest observation to request from FRED.
+#' @param stage3a Logical. Add `stage3a_fred_series` (the two trade
+#'   deflators). `FALSE` by default, matching [build_ea_country_panel()].
 #'
 #' @return A named list of `koma_ts`, one per target concept plus
 #'   `us_domestic_demand`.
 #' @keywords internal
-build_us_panel <- function(start_date = "1995-01-01") {
+build_us_panel <- function(start_date = "1995-01-01", stage3a = FALSE) {
   out <- list()
-  for (concept in names(fred_concept_series)) {
-    d <- fetch_fred_series(fred_concept_series[[concept]], start_date = start_date)
+  series_ids <- fred_concept_series
+  wanted <- intersect(resolve_stage3a_concepts(stage3a), names(stage3a_fred_series))
+  if (length(wanted) > 0) series_ids <- c(series_ids, stage3a_fred_series[wanted])
+  for (concept in names(series_ids)) {
+    d <- fetch_fred_series(series_ids[[concept]], start_date = start_date)
     series <- df_to_quarterly_ts(d)
     out[[country_var("us", concept)]] <- koma::as_ets(
       series,
@@ -339,6 +511,72 @@ gdp_identity_component <- function(panel, iso2) {
   )
 }
 
+#' Derive a wage *rate* from the wage bill and employment
+#'
+#' **This is the correction that makes the stage-3a identities exact, and it
+#' is not optional.** EA-MD/QD's `WS` is "Wages and salaries" in current
+#' prices -- a whole-economy wage **bill**, not a wage rate. The stage-3a
+#' block needs a rate, for two independent reasons:
+#'
+#' - A wage Phillips curve (`<iso2>_wages ~ <iso2>_unemployment + ...`) is a
+#'   statement about the price of labour, not about total labour income. Run
+#'   on the bill it would pick up employment growth and mostly re-estimate
+#'   Okun's law.
+#' - `<iso2>_real_income == <iso2>_wages + <iso2>_employment - <iso2>_prices`
+#'   would **double-count employment** if `wages` were already the bill,
+#'   since the bill is the rate times employment. The identity is only
+#'   correct for a rate.
+#'
+#' With `wages = WS / TEMP` the whole block is internally exact in rate
+#' space: `real_income` recovers the deflated wage bill, and
+#' `ulc == wages - productivity` telescopes through
+#' `productivity == gdp - employment` to `WS - GDP`, the nominal wage bill
+#' over real output -- the textbook definition of unit labour costs. That
+#' matters because EA-MD/QD publishes **no whole-economy ULC series at all**
+#' (only seven sectoral ones), so ULC has to be derived, and deriving it
+#' this way makes it consistent with the rest of the block by construction
+#' rather than by luck.
+#'
+#' **Stated assumption**: `WS` covers employees, `TEMP` counts total
+#' employment including the self-employed, so this imputes employee
+#' compensation to the self-employed. That is the standard construction for
+#' whole-economy compensation per worker, and it is preferred here to the
+#' alternative (`WS / EMP`, employees only) because `TEMP` is the employment
+#' concept the rest of the block uses -- mixing `EMP` into `wages` and
+#' `TEMP` into `employment` would break the exactness above. It is also the
+#' cleaner series: `EMP` carries a TR3 transformation code for the
+#' Netherlands, `TEMP` is TR2 for all eleven countries.
+#'
+#' @param wage_bill The nominal wage bill (EA-MD/QD `WS`), a `ts`.
+#' @param employment Total employment (EA-MD/QD `TEMP`), a `ts`.
+#' @param iso2 Two-letter lowercase ISO country code.
+#'
+#' @return A `koma_ts` level series, wage bill per worker. Windowed to the
+#'   two inputs' overlap -- `WS` runs one quarter shorter than `TEMP` in the
+#'   current vintage, and a ragged edge here is fine (koma fills those) but
+#'   a length mismatch would silently recycle.
+#' @keywords internal
+derived_wage_rate <- function(wage_bill, employment, iso2) {
+  if (is.null(wage_bill) || is.null(employment)) {
+    cli::cli_abort(c(
+      "Cannot derive {.val {country_var(iso2, 'wages')}}.",
+      "x" = "EA-MD/QD is missing {.val WS} or {.val TEMP} for {.val {toupper(iso2)}}.",
+      "i" = "There is no Eurostat fallback for a derived series; add one before modelling this country."
+    ))
+  }
+  common_start <- max(stats::tsp(wage_bill)[1], stats::tsp(employment)[1])
+  common_end <- min(stats::tsp(wage_bill)[2], stats::tsp(employment)[2])
+  b <- stats::window(wage_bill, start = common_start, end = common_end)
+  e <- stats::window(employment, start = common_start, end = common_end)
+  koma::as_ets(
+    stats::ts(as.numeric(b) / as.numeric(e),
+      start = stats::start(b), frequency = stats::frequency(b)
+    ),
+    series_type = "level", method = "diff_log",
+    country = toupper(iso2), source = "derived"
+  )
+}
+
 #' Build one country's panel
 #'
 #' Dispatches to [build_ea_country_panel()] (EA-MD/QD, Eurostat fallback)
@@ -354,10 +592,10 @@ gdp_identity_component <- function(panel, iso2) {
 #'   `investment`, `government`, `exports`, `imports`, `domestic_demand`,
 #'   `prices`, `core_prices`, `unemployment`, `long_rate`.
 #' @export
-build_country_panel <- function(iso2, eamdqd = NULL) {
+build_country_panel <- function(iso2, eamdqd = NULL, stage3a = FALSE) {
   iso2 <- tolower(iso2)
   if (identical(iso2, "us")) {
-    return(build_us_panel())
+    return(build_us_panel(stage3a = stage3a))
   }
   if (!iso2 %in% ea_countries) {
     cli::cli_abort("Unknown country {.val {iso2}}; expected one of {.val {c(ea_countries, 'us')}}.")
@@ -365,7 +603,7 @@ build_country_panel <- function(iso2, eamdqd = NULL) {
   if (is.null(eamdqd)) {
     cli::cli_abort("{.arg eamdqd} is required for EA countries (an {.cls eamdqd_vintage} from {.fn fetch_eamdqd}).")
   }
-  build_ea_country_panel(iso2, eamdqd)
+  build_ea_country_panel(iso2, eamdqd, stage3a = stage3a)
 }
 
 # --------------------------------------------------------------------------
@@ -471,14 +709,37 @@ build_shared_panel <- function(row_weights) {
 #' @param eamdqd An `eamdqd_vintage`, as returned by [fetch_eamdqd()].
 #' @param row_weights Named numeric vector as returned by
 #'   [row_gdp_weights()].
+#' @param stage3a A named list, `iso2 -> stage3a spec`, where each spec is
+#'   `TRUE` (all `stage3a_concepts`) or a character vector naming a subset.
+#'   Empty by default, so the panel is unchanged unless asked for. Stage 3a
+#'   uses `list(de = TRUE, fr = "export_prices", ...)`: Germany carries the
+#'   whole block, every partner contributes only the export price that
+#'   Germany's foreign-price index is built from.
+#'
+#'   **The resulting panel is deliberately ragged across countries**, and
+#'   that is safe: a panel is a named list, not a matrix, so a country simply
+#'   lacking `<iso2>_wages` means no equation can name it.
+#'   `harmonise_panel_attrs()` unions *attributes*, not series, and
+#'   `stage2_preflight()` catches any equation that references a series the
+#'   panel does not have.
 #'
 #' @return A named list of `koma_ts` objects, validated with
 #'   [is_valid_project_name()].
 #' @export
-build_global_panel <- function(countries = modelled_countries, eamdqd = NULL, row_weights) {
+build_global_panel <- function(countries = modelled_countries, eamdqd = NULL, row_weights,
+                               stage3a = list()) {
+  unknown <- setdiff(names(stage3a), countries)
+  if (length(unknown) > 0) {
+    cli::cli_abort(c(
+      "{.arg stage3a} names {?a country/countries} not being built: {.val {unknown}}.",
+      "i" = "Its names must be a subset of {.arg countries}."
+    ))
+  }
   panel <- list()
   for (cc in countries) {
-    panel <- c(panel, build_country_panel(cc, eamdqd = eamdqd))
+    panel <- c(panel, build_country_panel(
+      cc, eamdqd = eamdqd, stage3a = stage3a[[cc]] %||% FALSE
+    ))
   }
   panel <- c(panel, build_shared_panel(row_weights))
 
@@ -500,10 +761,25 @@ build_global_panel <- function(countries = modelled_countries, eamdqd = NULL, ro
 #' @param start,end `c(year, period)` bounds. If omitted, computed as the
 #'   widest common window across every series in `panel` (the latest
 #'   start, the earliest end) -- i.e. the effective common sample.
+#' @param extend Pad a series that does not reach `start`/`end` with `NA`
+#'   instead of leaving it short. `FALSE` by default, which preserves the
+#'   original behaviour exactly.
+#'
+#'   **Why this exists.** With `start`/`end` computed automatically, one
+#'   short series drags the *whole* panel in with it -- and because the
+#'   bound is the earliest end across every series, that silently truncates
+#'   the exogenous series koma needs past the forecast start, quietly
+#'   shortening the forecast horizon rather than erroring. Stage 3a hits
+#'   this: Eurostat publishes `<iso2>_nonenergy_prices` one quarter behind
+#'   the rest of the panel, which would have pulled a 2026Q1 panel back to
+#'   2025Q4. Passing an explicit `end` with `extend = TRUE` keeps the
+#'   established window and leaves the short series with a trailing `NA` --
+#'   a ragged edge, which koma fills itself, rather than a truncation
+#'   nothing would have caught.
 #'
 #' @return The windowed panel, same names as `panel`.
 #' @export
-align_panel <- function(panel, start = NULL, end = NULL) {
+align_panel <- function(panel, start = NULL, end = NULL, extend = FALSE) {
   freqs <- unique(vapply(panel, stats::frequency, numeric(1)))
   if (length(freqs) != 1) {
     cli::cli_abort(c(
@@ -523,7 +799,7 @@ align_panel <- function(panel, start = NULL, end = NULL) {
 
   lapply(panel, function(x) {
     attrs <- get_custom_attrs(x)
-    windowed <- stats::window(x, start = start, end = end)
+    windowed <- stats::window(x, start = start, end = end, extend = extend)
     do.call(koma::as_ets, c(list(windowed), attrs))
   })
 }

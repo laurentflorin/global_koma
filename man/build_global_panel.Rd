@@ -4,7 +4,12 @@
 \alias{build_global_panel}
 \title{Build the full multi-country panel}
 \usage{
-build_global_panel(countries = modelled_countries, eamdqd = NULL, row_weights)
+build_global_panel(
+  countries = modelled_countries,
+  eamdqd = NULL,
+  row_weights,
+  stage3a = list()
+)
 }
 \arguments{
 \item{countries}{Character vector of ISO-2 country codes. Defaults to
@@ -14,6 +19,20 @@ every modelled country (\code{ea_countries} plus \code{"us"}).}
 
 \item{row_weights}{Named numeric vector as returned by
 \code{\link[=row_gdp_weights]{row_gdp_weights()}}.}
+
+\item{stage3a}{A named list, \verb{iso2 -> stage3a spec}, where each spec is
+\code{TRUE} (all \code{stage3a_concepts}) or a character vector naming a subset.
+Empty by default, so the panel is unchanged unless asked for. Stage 3a
+uses \code{list(de = TRUE, fr = "export_prices", ...)}: Germany carries the
+whole block, every partner contributes only the export price that
+Germany's foreign-price index is built from.
+
+\strong{The resulting panel is deliberately ragged across countries}, and
+that is safe: a panel is a named list, not a matrix, so a country simply
+lacking \verb{<iso2>_wages} means no equation can name it.
+\code{harmonise_panel_attrs()} unions \emph{attributes}, not series, and
+\code{stage2_preflight()} catches any equation that references a series the
+panel does not have.}
 }
 \value{
 A named list of \code{koma_ts} objects, validated with

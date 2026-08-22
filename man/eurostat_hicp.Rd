@@ -9,8 +9,9 @@ eurostat_hicp(geo, coicop)
 \arguments{
 \item{geo}{Eurostat geo code.}
 
-\item{coicop}{\code{"CP00"} (headline) or \code{"TOT_X_NRG_FOOD"} (core: excludes
-energy, food, alcohol and tobacco).}
+\item{coicop}{\code{"CP00"} (headline), \code{"TOT_X_NRG_FOOD"} (core: excludes
+energy, food, alcohol and tobacco), or \code{"TOT_X_NRG"} (excludes energy
+only -- the stage-3a \code{nonenergy_prices} concept).}
 }
 \value{
 A monthly \code{ts} (index, 2015=100), aggregated to quarterly by

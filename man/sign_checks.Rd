@@ -2,22 +2,30 @@
 % Please edit documentation in R/diagnostics.R
 \name{sign_checks}
 \alias{sign_checks}
-\title{Plausibility (sign) checks on a country's stage-1 coefficients}
+\title{Plausibility (sign) checks on a country's coefficients}
 \usage{
-sign_checks(coef_table, iso2)
+sign_checks(coef_table, iso2, labour = FALSE)
 }
 \arguments{
 \item{coef_table}{A \code{data.frame} from \code{\link[=coefficient_table]{coefficient_table()}}.}
 
 \item{iso2}{Two-letter lowercase ISO country code.}
+
+\item{labour}{Also apply the stage-3a labour and disaggregated-price
+checks (see \code{\link[=stage3a_sign_rules]{stage3a_sign_rules()}}). \code{FALSE} by default; a country
+without the block has none of those equations and every row would be
+\code{NA}/\code{FALSE}, which reads as fifteen failures rather than "not
+applicable".}
 }
 \value{
 A \code{data.frame} with columns \code{check}, \code{equation}, \code{term},
-\code{estimate}, \code{ok}.
+\code{estimate}, \code{expected}, \code{ok}. A term the fit does not contain gives
+\code{estimate = NA} and \code{ok = FALSE} -- a check that could not be evaluated
+is not a check that passed.
 }
 \description{
-Three checks, all against the coefficient's \strong{posterior mean} --
-flagged, never silently corrected:
+Checks against the coefficient's \strong{posterior mean} -- flagged, never
+silently corrected. The base three:
 }
 \details{
 \itemize{
@@ -30,4 +38,12 @@ on the (shared euro-area, or US) policy rate should be positive --
 the sovereign yield should move with the policy rate, not against
 it.
 }
+
+With \code{labour = TRUE}, eighteen more from \code{\link[=stage3a_sign_rules]{stage3a_sign_rules()}}, covering
+the wage and price Phillips curves, exchange-rate and oil pass-through,
+and the relative-price terms in trade volumes.
+
+Only the posterior \strong{mean} is tested; \code{ci_low}/\code{ci_high} are ignored, so
+a "pass" says the central estimate has the right sign, not that the sign
+is statistically distinguishable from zero.
 }

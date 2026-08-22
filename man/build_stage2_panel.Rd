@@ -4,7 +4,13 @@
 \alias{build_stage2_panel}
 \title{Add the stage-2 derived series to a panel}
 \usage{
-build_stage2_panel(panel, linkage_weights, dummies = character())
+build_stage2_panel(
+  panel,
+  linkage_weights,
+  dummies = character(),
+  labour_countries = character(),
+  hicp_weights = NULL
+)
 }
 \arguments{
 \item{panel}{Named list of \code{koma_ts}, as built by \code{\link[=build_global_panel]{build_global_panel()}}.}

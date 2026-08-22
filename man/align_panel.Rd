@@ -4,7 +4,7 @@
 \alias{align_panel}
 \title{Align a panel to a common frequency and sample}
 \usage{
-align_panel(panel, start = NULL, end = NULL)
+align_panel(panel, start = NULL, end = NULL, extend = FALSE)
 }
 \arguments{
 \item{panel}{A named list of \code{koma_ts} objects.}
@@ -12,6 +12,22 @@ align_panel(panel, start = NULL, end = NULL)
 \item{start, end}{\code{c(year, period)} bounds. If omitted, computed as the
 widest common window across every series in \code{panel} (the latest
 start, the earliest end) -- i.e. the effective common sample.}
+
+\item{extend}{Pad a series that does not reach \code{start}/\code{end} with \code{NA}
+instead of leaving it short. \code{FALSE} by default, which preserves the
+original behaviour exactly.
+
+\strong{Why this exists.} With \code{start}/\code{end} computed automatically, one
+short series drags the \emph{whole} panel in with it -- and because the
+bound is the earliest end across every series, that silently truncates
+the exogenous series koma needs past the forecast start, quietly
+shortening the forecast horizon rather than erroring. Stage 3a hits
+this: Eurostat publishes \verb{<iso2>_nonenergy_prices} one quarter behind
+the rest of the panel, which would have pulled a 2026Q1 panel back to
+2025Q4. Passing an explicit \code{end} with \code{extend = TRUE} keeps the
+established window and leaves the short series with a trailing \code{NA} --
+a ragged edge, which koma fills itself, rather than a truncation
+nothing would have caught.}
 }
 \value{
 The windowed panel, same names as \code{panel}.

@@ -4,12 +4,20 @@
 \alias{build_ea_country_panel}
 \title{Build one EA country's panel from EA-MD/QD, with Eurostat fallback}
 \usage{
-build_ea_country_panel(iso2, eamdqd)
+build_ea_country_panel(iso2, eamdqd, stage3a = FALSE)
 }
 \arguments{
 \item{iso2}{Lowercase ISO-2 code, one of \code{ea_countries}.}
 
 \item{eamdqd}{An \code{eamdqd_vintage}, as returned by \code{\link[=fetch_eamdqd]{fetch_eamdqd()}}.}
+
+\item{stage3a}{Which stage-3a concepts to add on top of the base set:
+\code{FALSE} (none, the default, so the existing pipeline is unchanged),
+\code{TRUE} (all of \code{stage3a_concepts}), or a character vector naming a
+subset. The subset form matters: stage 3a phase B needs
+\code{export_prices} from every partner to make Germany's foreign-price
+index endogenous, but needs nothing else from them, and fetching all
+six concepts for eleven countries would mean ~50 downloads nobody reads.}
 }
 \value{
 A named list of \code{koma_ts}, one per target concept plus

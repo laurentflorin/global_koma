@@ -344,10 +344,10 @@ coefficient_table <- function(fit, ci_low = 5, ci_up = 95) {
   do.call(rbind, rows)
 }
 
-#' Plausibility (sign) checks on a country's stage-1 coefficients
+#' Plausibility (sign) checks on a country's coefficients
 #'
-#' Three checks, all against the coefficient's **posterior mean** --
-#' flagged, never silently corrected:
+#' Checks against the coefficient's **posterior mean** -- flagged, never
+#' silently corrected. The base three:
 #'
 #' - `mpc_in_0_1`: the consumption equation's loading on GDP should be a
 #'   plausible marginal propensity to consume, in `(0, 1)`.
@@ -358,37 +358,127 @@ coefficient_table <- function(fit, ci_low = 5, ci_up = 95) {
 #'   the sovereign yield should move with the policy rate, not against
 #'   it.
 #'
+#' With `labour = TRUE`, eighteen more from [stage3a_sign_rules()], covering
+#' the wage and price Phillips curves, exchange-rate and oil pass-through,
+#' and the relative-price terms in trade volumes.
+#'
+#' Only the posterior **mean** is tested; `ci_low`/`ci_high` are ignored, so
+#' a "pass" says the central estimate has the right sign, not that the sign
+#' is statistically distinguishable from zero.
+#'
 #' @param coef_table A `data.frame` from [coefficient_table()].
 #' @param iso2 Two-letter lowercase ISO country code.
+#' @param labour Also apply the stage-3a labour and disaggregated-price
+#'   checks (see [stage3a_sign_rules()]). `FALSE` by default; a country
+#'   without the block has none of those equations and every row would be
+#'   `NA`/`FALSE`, which reads as fifteen failures rather than "not
+#'   applicable".
 #'
 #' @return A `data.frame` with columns `check`, `equation`, `term`,
-#'   `estimate`, `ok`.
+#'   `estimate`, `expected`, `ok`. A term the fit does not contain gives
+#'   `estimate = NA` and `ok = FALSE` -- a check that could not be evaluated
+#'   is not a check that passed.
 #' @export
-sign_checks <- function(coef_table, iso2) {
+sign_checks <- function(coef_table, iso2, labour = FALSE) {
   iso2 <- tolower(iso2)
-  v <- function(concept) country_var(iso2, concept)
-  policy_var <- if (identical(iso2, "us")) "us_policy_rate" else "ea_policy_rate"
+  rules <- base_sign_rules(iso2)
+  if (isTRUE(labour)) rules <- c(rules, stage3a_sign_rules(iso2))
 
   find_estimate <- function(eq, term) {
     row <- coef_table[coef_table$equation == eq & coef_table$term == term, ]
     if (nrow(row) == 0) NA_real_ else row$estimate[1]
   }
 
-  mpc <- find_estimate(v("consumption"), v("gdp"))
-  import_elasticity <- find_estimate(v("imports"), v("domestic_demand"))
-  rate_loading <- find_estimate(v("long_rate"), policy_var)
+  rows <- lapply(rules, function(r) {
+    est <- find_estimate(r$equation, r$term)
+    data.frame(
+      check = r$check, equation = r$equation, term = r$term,
+      estimate = est, expected = r$expected, ok = isTRUE(r$test(est)),
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, rows)
+  rownames(out) <- NULL
+  out
+}
 
-  data.frame(
-    check = c("mpc_in_0_1", "import_elasticity_positive", "long_rate_loads_on_policy_rate"),
-    equation = c(v("consumption"), v("imports"), v("long_rate")),
-    term = c(v("gdp"), v("domestic_demand"), policy_var),
-    estimate = c(mpc, import_elasticity, rate_loading),
-    ok = c(
-      isTRUE(mpc > 0 && mpc < 1),
-      isTRUE(import_elasticity > 0),
-      isTRUE(rate_loading > 0)
-    ),
-    stringsAsFactors = FALSE
+#' The stage-1/2 sign rules
+#'
+#' One list entry per check: `check`, `equation`, `term`, a human-readable
+#' `expected`, and a `test` predicate. Split out from [sign_checks()] so the
+#' stage-3a rules can extend the set without touching the original three.
+#' @keywords internal
+base_sign_rules <- function(iso2) {
+  v <- function(concept) country_var(iso2, concept)
+  policy_var <- if (identical(iso2, "us")) "us_policy_rate" else "ea_policy_rate"
+  list(
+    list(check = "mpc_in_0_1", equation = v("consumption"), term = v("gdp"),
+         expected = "in (0, 1)", test = function(x) x > 0 && x < 1),
+    list(check = "import_elasticity_positive", equation = v("imports"),
+         term = v("domestic_demand"), expected = "> 0", test = function(x) x > 0),
+    list(check = "long_rate_loads_on_policy_rate", equation = v("long_rate"),
+         term = policy_var, expected = "> 0", test = function(x) x > 0)
+  )
+}
+
+#' Sign rules for the stage-3a labour and price block
+#'
+#' The economics each new coefficient is supposed to embody, written down so
+#' a wrong sign is reported as a failure rather than presented as a finding.
+#' Every one of these is a testable claim about the fitted system, not a
+#' constraint imposed on it -- koma estimates them freely.
+#'
+#' The two that matter most:
+#'
+#' - **`wage_phillips_curve_negative`**: the wage equation's loading on
+#'   unemployment must be negative. A positive coefficient means the fitted
+#'   model says wage growth *rises* when unemployment rises, which inverts
+#'   the mechanism the whole labour block exists to represent. It is a red
+#'   flag, not a result.
+#' - **`price_phillips_curve_negative`**: the same claim on the non-energy
+#'   price equation.
+#'
+#' Note two sign conventions that are easy to get backwards:
+#' `eur_usd` is quoted **USD per EUR**, so a rise is a euro *appreciation*
+#' and must lower euro-denominated import and energy prices -- the expected
+#' sign is negative, not positive. And exports fall in their **own** price
+#' while rising in competitors' (`foreign_prices`), so those two terms in the
+#' same equation carry opposite expected signs.
+#'
+#' Own-lag persistence is checked separately by [check_lag_stability()],
+#' since it is a stability question rather than a sign question.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @return A list of rule entries, as [base_sign_rules()].
+#' @keywords internal
+stage3a_sign_rules <- function(iso2) {
+  v <- function(concept) country_var(iso2, concept)
+  fx <- "eur_usd"
+  pos <- function(x) x > 0
+  neg <- function(x) x < 0
+  rule <- function(check, equation, term, expected, test) {
+    list(check = check, equation = equation, term = term, expected = expected, test = test)
+  }
+  list(
+    rule("okun_employment_positive", v("employment"), v("gdp"), "> 0", pos),
+    rule("okun_unemployment_negative", v("unemployment"), v("gdp"), "< 0", neg),
+    rule("wage_phillips_curve_negative", v("wages"), v("unemployment"), "< 0", neg),
+    rule("wage_price_indexation_in_0_1", v("wages"), v("prices"), "in (0, 1)",
+         function(x) x > 0 && x < 1),
+    rule("ulc_passthrough_positive", v("nonenergy_prices"), v("ulc"), "> 0", pos),
+    rule("import_price_passthrough_positive", v("nonenergy_prices"), v("import_prices"), "> 0", pos),
+    rule("price_phillips_curve_negative", v("nonenergy_prices"), v("unemployment"), "< 0", neg),
+    rule("energy_prices_load_on_oil", v("energy_prices"), "oil_price", "> 0", pos),
+    rule("energy_prices_fall_on_euro_appreciation", v("energy_prices"), fx, "< 0", neg),
+    rule("import_prices_fall_on_euro_appreciation", v("import_prices"), fx, "< 0", neg),
+    rule("import_prices_load_on_oil", v("import_prices"), "oil_price", "> 0", pos),
+    rule("import_prices_load_on_foreign_prices", v("import_prices"), v("foreign_prices"), "> 0", pos),
+    rule("export_prices_load_on_ulc", v("export_prices"), v("ulc"), "> 0", pos),
+    rule("export_prices_load_on_foreign_prices", v("export_prices"), v("foreign_prices"), "> 0", pos),
+    rule("consumption_loads_on_real_income", v("consumption"), v("real_income"), "> 0", pos),
+    rule("exports_fall_in_own_price", v("exports"), v("export_prices"), "< 0", neg),
+    rule("exports_rise_in_competitor_price", v("exports"), v("foreign_prices"), "> 0", pos),
+    rule("imports_fall_in_own_price", v("imports"), v("import_prices"), "< 0", neg)
   )
 }
 
@@ -752,5 +842,308 @@ check_identification <- function(sys_eq) {
     rank_condition = identified,
     row.names = NULL,
     stringsAsFactors = FALSE
+  )
+}
+
+# --------------------------------------------------------------------------
+# Stage-3a diagnostics: lag stability, regressor collinearity, and the
+# wage-price loop gain. See reports/stage3a_labour_prices.qmd.
+# --------------------------------------------------------------------------
+
+#' Posterior draws of one contemporaneous (gamma) coefficient
+#'
+#' `coefficient_table()` gives posterior *summaries*; the loop-gain
+#' diagnostic needs the draws themselves, so that the share of draws in an
+#' explosive region can be counted rather than inferred from a mean.
+#'
+#' koma stores an equation's contemporaneous endogenous coefficients in
+#' `fit$estimates[[eq]]$gamma_jw[[draw]]`, a column vector whose entries line
+#' up, **in row order of the system**, with the non-diagonal non-zero entries
+#' of that equation's column of `sys_eq$character_gamma_matrix` (the entries
+#' rendered `-gammaJ_I`). There is no accessor and no dimnames, so the
+#' position has to be recovered from the character matrix -- doing it by
+#' assuming an order would silently return a different variable's
+#' coefficient.
+#'
+#' @param fit A `koma::koma_estimate`.
+#' @param equation Dependent variable name.
+#' @param term A contemporaneous endogenous regressor in that equation.
+#'
+#' @return Numeric vector, one posterior draw per element.
+#' @export
+gamma_draws <- function(fit, equation, term) {
+  g <- fit$sys_eq$character_gamma_matrix
+  if (!equation %in% colnames(g)) {
+    cli::cli_abort("{.val {equation}} is not an equation in this system.")
+  }
+  col <- g[, equation]
+  # The diagonal "1" is the dependent variable itself and has no drawn
+  # coefficient; everything else non-empty is a gamma parameter.
+  regressors <- rownames(g)[nzchar(col) & col != "0" & col != "1"]
+  pos <- match(term, regressors)
+  if (is.na(pos)) {
+    cli::cli_abort(c(
+      "{.val {term}} is not a contemporaneous endogenous regressor in {.val {equation}}.",
+      "i" = if (length(regressors)) "Available: {.val {regressors}}." else "That equation has none."
+    ))
+  }
+  draws <- fit$estimates[[equation]]$gamma_jw
+  vapply(draws, function(d) as.numeric(d)[pos], numeric(1))
+}
+
+#' Own-lag stability of every equation
+#'
+#' An equation whose own-lag coefficient reaches 1 in absolute value has a
+#' unit or explosive root, and koma's Gibbs sampler places **no stationarity
+#' constraint on draws** -- the sampler will happily return them (see
+#' `R/spillovers.R`, where an increasing share of explosive draws is the
+#' central obstacle to interpreting any forecast difference). Stage 3a adds
+#' seven equations per labour country and cuts the residual degrees of
+#' freedom, both of which make this more likely, so it is worth checking
+#' directly rather than inferring from downstream symptoms.
+#'
+#' @param coef_table A `data.frame` from [coefficient_table()].
+#' @param threshold Absolute value at or above which an own lag is flagged.
+#'
+#' @return A `data.frame` with columns `equation`, `term`, `estimate`,
+#'   `ci_high`, `flagged`, ordered most-persistent first.
+#' @export
+check_lag_stability <- function(coef_table, threshold = 1) {
+  lags <- coef_table[grepl("\\.L\\(1\\)$", coef_table$term), ]
+  own <- lags[sub("\\.L\\(1\\)$", "", lags$term) == lags$equation, ]
+  if (nrow(own) == 0) {
+    return(data.frame(
+      equation = character(0), term = character(0), estimate = numeric(0),
+      ci_high = numeric(0), flagged = logical(0), stringsAsFactors = FALSE
+    ))
+  }
+  out <- data.frame(
+    equation = own$equation, term = own$term, estimate = own$estimate,
+    ci_high = own$ci_high, flagged = abs(own$estimate) >= threshold,
+    stringsAsFactors = FALSE
+  )
+  out[order(-abs(out$estimate)), ]
+}
+
+#' Collinearity among an equation's regressors, before estimating
+#'
+#' The stage-3a price equation takes both `<iso2>_ulc` and
+#' `<iso2>_unemployment`, and ULC is partly a function of unemployment by
+#' construction (`ulc == wages - productivity`, and wages responds to
+#' unemployment). That is **weak identification, not rank failure** -- the
+#' coefficients stay estimable but trade off against each other -- and it
+#' does not show up in `koma::model_identification()`, which is symbolic and
+#' sees only which variables are excluded, never how correlated the included
+#' ones are.
+#'
+#' This measures it directly from the data, in the **rate space koma actually
+#' estimates in** (`koma::rate()`, not levels), so it can be run before
+#' committing to an estimation. A variance inflation factor above ~10 is the
+#' conventional threshold for "this coefficient is not separately identified
+#' in practice".
+#'
+#' @param panel A named list of `koma_ts`, the panel the system will use.
+#' @param sys_eq A `koma_seq`.
+#' @param dates A koma `dates` list; regressors are windowed to
+#'   `dates$estimation`. `NULL` uses each series' full overlap.
+#' @param equations Character vector of equations to check. `NULL` checks
+#'   every stochastic equation with at least two non-lag regressors.
+#'
+#' @return A `data.frame` with columns `equation`, `term`, `vif`,
+#'   `max_abs_cor`, `worst_partner`, `flagged`, ordered worst-first. An
+#'   equation whose regressors are not all in the panel is skipped with a
+#'   warning rather than aborting the whole report.
+#' @export
+block_collinearity <- function(panel, sys_eq, dates = NULL, equations = NULL) {
+  stochastic <- setdiff(sys_eq$endogenous_variables, names(sys_eq$identities))
+  if (is.null(equations)) equations <- stochastic
+  equations <- intersect(equations, stochastic)
+
+  g <- sys_eq$character_gamma_matrix
+  b <- sys_eq$character_beta_matrix
+
+  as_rate <- function(x) {
+    r <- as.numeric(koma::rate(x))
+    stats::ts(r, end = stats::end(x), frequency = stats::frequency(x))
+  }
+
+  rows <- lapply(equations, function(eq) {
+    gcol <- g[, eq]
+    endo <- rownames(g)[nzchar(gcol) & gcol != "0" & gcol != "1"]
+    bcol <- if (eq %in% colnames(b)) b[, eq] else character()
+    exo <- if (length(bcol)) rownames(b)[nzchar(bcol) & bcol != "0"] else character()
+    # Lags and the intercept are not the collinearity question here; the
+    # concern is contemporaneous regressors that duplicate one another.
+    exo <- exo[!grepl("\\.L\\(", exo) & exo != "constant"]
+    terms <- c(endo, exo)
+    if (length(terms) < 2) return(NULL)
+
+    missing <- setdiff(terms, names(panel))
+    if (length(missing) > 0) {
+      cli::cli_warn("Skipping {.val {eq}}: panel has no {.val {missing}}.")
+      return(NULL)
+    }
+
+    series <- lapply(panel[terms], as_rate)
+    if (!is.null(dates)) {
+      series <- lapply(series, function(x) {
+        stats::window(x, start = dates$estimation$start, end = dates$estimation$end,
+                      extend = TRUE)
+      })
+    }
+    m <- stats::na.omit(do.call(cbind, series))
+    colnames(m) <- terms
+    if (nrow(m) <= length(terms) + 1) {
+      cli::cli_warn("Skipping {.val {eq}}: only {nrow(m)} usable observations for {length(terms)} regressors.")
+      return(NULL)
+    }
+
+    cm <- stats::cor(m)
+    vif <- vapply(seq_along(terms), function(i) {
+      fit <- stats::lm.fit(cbind(1, m[, -i, drop = FALSE]), m[, i])
+      rss <- sum(fit$residuals^2)
+      tss <- sum((m[, i] - mean(m[, i]))^2)
+      if (tss <= 0 || rss <= 0) return(Inf)
+      1 / (1 - (1 - rss / tss))
+    }, numeric(1))
+
+    off <- cm
+    diag(off) <- 0
+    data.frame(
+      equation = eq, term = terms, vif = vif,
+      max_abs_cor = apply(abs(off), 1, max),
+      worst_partner = terms[apply(abs(off), 1, which.max)],
+      flagged = vif > 10,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  out <- do.call(rbind, Filter(Negate(is.null), rows))
+  if (is.null(out)) {
+    return(data.frame(
+      equation = character(0), term = character(0), vif = numeric(0),
+      max_abs_cor = numeric(0), worst_partner = character(0),
+      flagged = logical(0), stringsAsFactors = FALSE
+    ))
+  }
+  rownames(out) <- NULL
+  out[order(-out$vif), ]
+}
+
+#' Posterior distribution of the wage-price loop gain
+#'
+#' Stage 3a introduces a **contemporaneous feedback loop** that no earlier
+#' stage had:
+#'
+#' ```
+#' wages -> ulc -> nonenergy_prices -> prices -> wages
+#' ```
+#'
+#' Two of those links are identities with unit weights (`ulc == wages -
+#' productivity`) or known weights (`prices == w_xnrg*nonenergy_prices +
+#' ...`), and two are estimated. The round-trip gain is therefore
+#'
+#' ```
+#' gain = beta(nonenergy_prices <- ulc) * w_xnrg * beta(wages <- prices)
+#' ```
+#'
+#' The system is solvable iff `(I - Gamma)` is invertible, and a draw with
+#' `|gain| >= 1` is one where a wage rise more than pays for itself through
+#' prices -- a self-sustaining spiral. At plausible values the gain is well
+#' below 1, but koma constrains no draw to be stationary, so what matters is
+#' not the mean gain but **the share of the posterior above 1**. That share
+#' is the quantity to watch when the residual degrees of freedom are thin,
+#' and it is the mechanism by which stage 3a could make the explosive-draw
+#' problem in `R/spillovers.R` worse.
+#'
+#' @param fit A `koma::koma_estimate` containing the labour block.
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @param hicp_weight The non-energy weight in the `prices` identity, i.e.
+#'   `hicp_weights(...)$weights[["nonenergy_prices"]]`.
+#'
+#' @return A list with `draws` (the per-draw gain), `mean`, `median`,
+#'   `q05`, `q95`, `share_ge_1` and the two component coefficient vectors.
+#' @export
+wage_price_loop_gain <- function(fit, iso2, hicp_weight) {
+  iso2 <- tolower(iso2)
+  v <- function(concept) country_var(iso2, concept)
+  ulc_passthrough <- gamma_draws(fit, v("nonenergy_prices"), v("ulc"))
+  indexation <- gamma_draws(fit, v("wages"), v("prices"))
+  gain <- ulc_passthrough * hicp_weight * indexation
+  list(
+    draws = gain,
+    mean = mean(gain), median = stats::median(gain),
+    q05 = unname(stats::quantile(gain, 0.05)),
+    q95 = unname(stats::quantile(gain, 0.95)),
+    share_ge_1 = mean(abs(gain) >= 1),
+    ulc_passthrough = ulc_passthrough,
+    indexation = indexation
+  )
+}
+
+#' Tune per-equation `tau` for a whole stage-2/3a system
+#'
+#' The system-level analogue of [tune_tau()], which is stage-1 shaped (it
+#' takes an `iso2` and rebuilds one country's equations). Same doubling rule:
+#' an equation whose Metropolis acceptance rate sits above the band gets its
+#' `tau` doubled, one below gets it halved, and the system is re-estimated.
+#'
+#' **Why a stage-2 system needs this even when its equations are unchanged.**
+#' Acceptance rates are not a per-equation property in a simultaneous system:
+#' the sampler draws a system-wide residual covariance, so adding equations
+#' anywhere shifts every equation's acceptance rate. Stage 2b converged on
+#' `tau = 2.2` for fourteen equations sitting just above 60%; adding the
+#' stage-3a block moves that boundary again and re-tunes from the same rule
+#' rather than inheriting stage 2b's answer. Reporting an untuned stage-3a
+#' fit against a *tuned* stage-2b baseline would blame the labour block for
+#' flags that are really the missing tuning.
+#'
+#' @param spec A merged spec (`list(stochastic, identities)`), as from
+#'   [stage2_spec()].
+#' @param panel A stage-2 panel, as from [build_stage2_panel()].
+#' @param dates A koma `dates` list.
+#' @param band Target acceptance band, matching [check_acceptance_rates()].
+#' @param max_iter Maximum re-estimation rounds.
+#' @param factor Multiplier applied to a flagged equation's `tau`.
+#' @param tau Optional starting `tau` vector, e.g. a previous stage's result.
+#' @param ... Passed to [fit_stage2()] (notably `workers`).
+#'
+#' @return A list with `fit`, `sys_eq`, `tau`, `history` (acceptance rates by
+#'   iteration) and `converged`.
+#' @export
+tune_tau_system <- function(spec, panel, dates, band = c(0.2, 0.6), max_iter = 3,
+                            factor = 2, tau = NULL, ...) {
+  tau <- if (is.null(tau)) list() else as.list(tau)
+  history <- list()
+  fit <- NULL
+  sys_eq <- NULL
+  flagged <- data.frame()
+
+  for (iteration in 0:max_iter) {
+    tau_arg <- if (length(tau) > 0) unlist(tau) else NULL
+    sys_eq <- build_stage2_system(spec, tau = tau_arg)
+    fit <- fit_stage2(sys_eq, panel, dates, ...)
+
+    acceptance <- check_acceptance_rates(fit, band = band)
+    acceptance$iteration <- iteration
+    acceptance$tau <- vapply(acceptance$equation, function(e) tau[[e]] %||% 1.1, numeric(1))
+    history[[length(history) + 1]] <- acceptance
+
+    flagged <- acceptance[acceptance$flagged %in% TRUE, ]
+    cli::cli_inform("tau iteration {iteration}: {nrow(flagged)} equation{?s} outside {band[1]*100}-{band[2]*100}%.")
+    if (nrow(flagged) == 0 || iteration == max_iter) break
+
+    for (i in seq_len(nrow(flagged))) {
+      eq <- flagged$equation[i]
+      current <- tau[[eq]] %||% 1.1
+      tau[[eq]] <- if (flagged$acceptance_rate[i] > band[2]) current * factor else current / factor
+    }
+  }
+
+  list(
+    fit = fit, sys_eq = sys_eq,
+    tau = if (length(tau) > 0) unlist(tau) else stats::setNames(numeric(0), character(0)),
+    history = do.call(rbind, history),
+    converged = nrow(flagged) == 0
   )
 }

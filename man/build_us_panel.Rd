@@ -4,7 +4,13 @@
 \alias{build_us_panel}
 \title{Build the US panel from FRED}
 \usage{
-build_us_panel(start_date = "1995-01-01")
+build_us_panel(start_date = "1995-01-01", stage3a = FALSE)
+}
+\arguments{
+\item{start_date}{Earliest observation to request from FRED.}
+
+\item{stage3a}{Logical. Add \code{stage3a_fred_series} (the two trade
+deflators). \code{FALSE} by default, matching \code{\link[=build_ea_country_panel]{build_ea_country_panel()}}.}
 }
 \value{
 A named list of \code{koma_ts}, one per target concept plus

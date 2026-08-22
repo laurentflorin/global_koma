@@ -243,6 +243,109 @@ list(
     spillover_sanity_checks(spillover_matrix_result, spillover_monetary_diff, countries, stage2b_linkage_weights)
   ),
 
+  # -- stage 3a: the German labour and disaggregated-price block --
+  # Germany gets seven behavioural equations and five identities on top of its
+  # stage-2b block (see labour_block()); every other country contributes only
+  # the export price that Germany's foreign-price index is built from.
+  #
+  # The panel is built separately from `global_panel` because the stage-3a
+  # concepts are fetched per country rather than for all eleven -- and because
+  # Eurostat publishes de_nonenergy_prices a quarter behind everything else,
+  # so it is aligned to the ESTABLISHED window with extend = TRUE. Aligning it
+  # automatically would let that one short series pull the whole panel back to
+  # 2025Q4, silently truncating the exogenous series the forecast needs.
+  tar_target(stage3a_labour_countries, "de"),
+  tar_target(
+    stage3a_panel_spec,
+    c(
+      stats::setNames(rep(list(TRUE), length(stage3a_labour_countries)), stage3a_labour_countries),
+      stats::setNames(
+        rep(list("export_prices"), length(setdiff(countries, stage3a_labour_countries))),
+        setdiff(countries, stage3a_labour_countries)
+      )
+    )
+  ),
+  tar_target(
+    stage3a_global_panel,
+    build_global_panel(countries, eamdqd = eamdqd, row_weights = row_weights,
+                       stage3a = stage3a_panel_spec)
+  ),
+  tar_target(
+    stage3a_panel_raw,
+    fill_internal_gaps(align_panel(
+      stage3a_global_panel,
+      start = num_to_period(stats::tsp(panel[[1]])[1], 4),
+      end = num_to_period(stats::tsp(panel[[1]])[2], 4),
+      extend = TRUE
+    ))
+  ),
+  # The HICP split comes from Eurostat's published basket weights, not from a
+  # guess: NRG and TOT_X_NRG partition it exactly (verified every year since
+  # 1996), so the prices identity is exact rather than renormalised.
+  tar_target(
+    stage3a_hicp_weights,
+    stats::setNames(
+      lapply(stage3a_labour_countries, function(cc) hicp_weights(iso2_to_eamdqd[[cc]], stage2b_dates_target)),
+      stage3a_labour_countries
+    )
+  ),
+  tar_target(stage3a_phase, "a"),
+  tar_target(
+    stage3a_cfg,
+    stage3a_config(
+      stage2b_linkage_weights,
+      lapply(stage3a_hicp_weights, function(w) w$weights),
+      phase = stage3a_phase,
+      labour_countries = stage3a_labour_countries
+    )
+  ),
+  tar_target(
+    stage3a_spec,
+    stage2_spec(
+      countries,
+      stats::setNames(
+        lapply(countries, function(cc) expenditure_shares(panel, cc, stage2b_dates_target)),
+        countries
+      ),
+      stage2b_linkage_weights,
+      opts = stage3a_cfg$opts
+    )
+  ),
+  tar_target(stage3a_sys_eq, build_stage2_system(stage3a_spec)),
+  tar_target(
+    stage3a_panel_target,
+    build_stage2_panel(stage3a_panel_raw, stage2b_linkage_weights,
+                       dummies = stage2b_cfg$dummies,
+                       labour_countries = stage3a_cfg$labour_countries,
+                       hicp_weights = lapply(stage3a_hicp_weights, function(w) w$weights))
+  ),
+  tar_target(
+    stage3a_preflight,
+    stage2_preflight(stage3a_sys_eq, stage3a_panel_target, dates = stage2b_dates_target)
+  ),
+  # Collinearity is measured from the DATA, before estimating: the price
+  # equation takes both ulc and unemployment, and ULC is partly a function of
+  # unemployment by construction. model_identification() is symbolic and
+  # cannot see that -- it is weak identification, not rank failure.
+  tar_target(
+    stage3a_collinearity,
+    block_collinearity(stage3a_panel_target, stage3a_sys_eq, stage2b_dates_target)
+  ),
+  # NOTE: run with OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1, as stage 2b.
+  tar_target(
+    stage3a_fit,
+    fit_stage2(stage3a_sys_eq, stage3a_panel_target, stage2b_dates_target, workers = 8)
+  ),
+  tar_target(stage3a_acceptance, check_acceptance_rates(stage3a_fit)),
+  tar_target(stage3a_coefs, coefficient_table(stage3a_fit)),
+  tar_target(stage3a_signs, sign_checks(stage3a_coefs, "de", labour = TRUE)),
+  tar_target(stage3a_lag_stability, check_lag_stability(stage3a_coefs)),
+  tar_target(
+    stage3a_loop_gain,
+    wage_price_loop_gain(stage3a_fit, "de",
+                         stage3a_hicp_weights[["de"]]$weights[["nonenergy_prices"]])
+  ),
+
   # -- stage 3: regional/global aggregation blocks (see stage3_blocks.R) --
   tar_target(model_blocks, define_blocks(blocks)),
   tar_target(
