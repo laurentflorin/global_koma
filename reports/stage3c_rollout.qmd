@@ -1,0 +1,214 @@
+---
+title: "Stage 3c: rolling the extended blocks across the euro area"
+subtitle: "Why the rollout cannot happen, what the data would have allowed, and whether the extended system is better or merely bigger"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage3c_rollout.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir3c <- file.path("data", "cache", "stage3c")
+dir3b <- file.path("data", "cache", "stage3b")
+
+avail <- readRDS(file.path(dir3c, "availability.rds"))
+frontier <- readRDS(file.path(dir3c, "k_frontier.rds"))
+room <- readRDS(file.path(dir3c, "holdout_room.rds"))
+insample <- readRDS(file.path(dir3c, "insample_rmse.rds"))
+bench <- readRDS(file.path(dir3c, "bench_summary.rds"))
+```
+
+## Summary
+
+The brief was to roll the stage-3 blocks across all eleven economies, expecting
+data availability to be the constraint — Greece and Ireland were flagged as
+likely to fall short.
+
+**Data availability is not the constraint.** Most countries can support most
+blocks. The constraint is the degrees-of-freedom budget, and it binds by
+roughly a factor of two: the system is already at `df = 8` with **one** country
+carrying the blocks, and a second fully-loaded country would need `k = 104`
+against `T = 98`.
+
+The rollout therefore does not happen, and this report is about what was
+learned instead: a country × block availability matrix that would drive the
+rollout if it were affordable, the exact affordability frontier, and — most
+usefully — an answer to whether the extended system is actually better than
+stage 2b, or merely bigger.
+
+It is merely bigger.
+
+## 1. Data availability: country × block
+
+Built by auditing every source series per country: EA-MD/QD codes from the
+vintage on disk, and four Eurostat datasets fetched and checked directly. The
+column that matters most is not "does the series exist" but **"when does it
+start"** — `T` is system-wide, so one late-starting series moves the estimation
+start for every equation in the system. That is what forced the fiscal block's
+redesign in stage 3b.
+
+```{r availability}
+kable(avail[, c("iso2", "labour", "external", "fiscal", "financial")],
+      row.names = FALSE, caption = "Which blocks each country's data can support.")
+```
+
+```{r availability-reasons}
+kable(avail[avail$blocker != "-", c("iso2", "blocker")], row.names = FALSE,
+      caption = "Why a country falls short.")
+```
+
+Reading the matrix:
+
+- **The fiscal block is universally available** — `gov_10q_ggdebt` starts 2000Q1
+  or earlier for all ten euro-area countries with no internal gaps. The 2002Q1
+  problem that forced stage 3b's redesign was specific to `gov_10q_ggnfa`
+  (revenue and expenditure), which the reduced design does not use. Ten of
+  eleven.
+- **The external block is the real data constraint**, not Greece and Ireland
+  alone: Belgium's and the Netherlands' current accounts start 2003, Greece's
+  and Ireland's 2002. Switching the block on for all four would move the whole
+  system's start to 2004Q1 and cost every country sixteen quarters.
+- **The financial block is 7 of 11.** Greece and Portugal have no BIS house
+  price series; Ireland has none of the four loan components used to build
+  private credit. Ireland's EA-MD/QD file is the thinnest of the eleven.
+- **Spain is the one price-block exception**, and cheaply — its non-energy HICP
+  starts 2001Q1, a four-quarter cost.
+- **The United States supports nothing beyond the core.** No FRED series for
+  employment, wages, energy CPI, credit or house prices is currently fetched.
+
+So the brief's expectation was half right: Greece and Ireland do fall short, but
+so do Portugal, Spain, Belgium, the Netherlands and the US, in different blocks
+and for different reasons — and *none of that is what stops the rollout*.
+
+## 2. What stops the rollout: the degrees-of-freedom budget
+
+```{r frontier}
+kable(frontier[, c("configuration", "k", "df", "feasible")], row.names = FALSE,
+      caption = "Measured against the real specification, not estimated. T = 98 throughout.")
+```
+
+Three rows carry the argument:
+
+- **`DE + FR, all blocks` needs `k = 104` against `T = 98`.** A second fully
+  loaded country is not affordable. Each country costs about fourteen columns
+  (labour 7, external 1, fiscal 4, financial 2), so eleven would need roughly
+  `k = 230` — more than twice the observations available.
+- **`DE full + 10 partner export prices` needs `k = 100`.** This is the
+  *cheapest possible* way to satisfy the brief's requirement that the
+  competitiveness channel be active for every country, and it overshoots by two
+  columns.
+- The largest configurations that do fit are `DE full + 7 partner export prices`
+  (`df = 1`) and `DE + FR labour blocks` (`df = 8`) — neither of which is a
+  rollout, and the first of which has no usable degrees of freedom.
+
+### 2.1 The bidirectional price channel degenerates before it becomes affordable
+
+The brief asks for `<iso2>_foreign_prices` as a trade-weighted identity over
+partners' export prices, making the channel two-way. That requires each partner
+to have an *endogenous* export price, i.e. its own labour block. With only a
+subset of countries carrying one, the "trade-weighted index" is renormalised
+over whoever is left:
+
+| labour countries | partners in DE's index | share of DE's modelled trade weight captured |
+|---|---|---|
+| DE, FR | 1 | 15.2% — the index *is* France |
+| DE, FR, IT | 2 | 27.3% |
+| DE, FR, IT, NL | 3 | 44.6% (but `df = -2`) |
+
+And Germany's *modelled* trade weight already excludes a 57% rest-of-world
+residual, so a two-country index captures roughly **6% of Germany's actual
+trade**. The channel becomes affordable only in a form too degenerate to mean
+anything, and meaningful only in a form that does not fit.
+
+The one-way channel — `de_foreign_prices` exogenous, constructed from all eight
+partners' observed export prices — is what stage 3a already built, and it does
+capture the full modelled weight. That remains the honest version of the
+competitiveness channel in this system.
+
+## 3. Is the extended system better, or just bigger?
+
+### 3.1 It cannot be validated out of sample
+
+```{r holdout}
+kable(room, row.names = FALSE,
+      caption = "How much data each system can hold out before k >= T. 'df at that point' is what remains at the maximum hold-out.")
+```
+
+The intended test was a hold-out: estimate both systems on a truncated window,
+score the held-out quarters. **The extended system cannot sit that test.** At a
+2000Q1–2021Q4 estimation window (`T = 86`) stage 2b has `df = 10` and estimates
+fine; the extended system needs `k = 90` and has `df = -4`.
+
+Its maximum possible hold-out is seven quarters, and only by running at `df = 1`.
+A model with no degrees of freedom to spare for validation is a model whose
+generalisation cannot be checked — and that is a property of the extended system
+that stage 2b does not share.
+
+### 3.2 In-sample, it is not better either
+
+Both systems were estimated on the identical 2000Q1–2024Q4 window, so their
+in-sample RMSEs are directly comparable on the equations they share.
+
+```{r insample}
+de <- insample[grepl("^de_", insample$equation), ]
+kable(de[order(de$ratio), c("equation", "rmse_stage2b", "rmse_extended", "ratio")],
+      row.names = FALSE, digits = 4,
+      caption = "German equations -- the only ones the blocks touch. Ratio below 1 favours the extended system.")
+```
+
+```{r insample-summary}
+non <- insample[!grepl("^de_", insample$equation), ]
+kable(data.frame(
+  measure = c("equations where extended fits better", "median RMSE ratio (all shared equations)",
+              "median ratio, non-German equations"),
+  value = c(sprintf("%d of %d (%.0f%%)", sum(insample$better == "extended"), nrow(insample),
+                    100 * mean(insample$better == "extended")),
+            sprintf("%.4f", stats::median(insample$ratio)),
+            sprintf("%.4f", stats::median(non$ratio)))
+), caption = "In-sample fit across all shared equations.")
+```
+
+This is the damning number: the extended system adds nineteen equations and
+fourteen predetermined columns, and the **median equation fits marginally
+worse**. In-sample fit almost always improves when parameters are added — that
+is what parameters do — so a median ratio slightly *above* one, with only 21% of
+equations improving, says the extra structure is not buying fit even where it
+cannot be penalised for complexity.
+
+What it does buy is confined and small: German exports fit about 5% better and
+consumption 2.6% better, partly offset by investment fitting 2% worse. Every
+non-German equation is unchanged, as expected — the blocks do not touch them.
+
+### 3.3 What it costs
+
+```{r bench}
+kable(bench, row.names = FALSE, digits = 4, caption = "System comparison.")
+```
+
+Fourteen degrees of freedom, nineteen equations, and about 36% more runtime.
+Acceptance rates are clean in both after tuning, so the sampler is not the
+problem — the budget is.
+
+### 3.4 The verdict
+
+**Merely bigger.** The extended blocks are worth building as *mechanisms* — the
+wage–price loop, the competitiveness channel and the debt-to-spread link are
+real structures that stage 2b cannot represent at all, and several of them come
+back correctly signed. But as a forecasting system the extension does not pay:
+negligible in-sample gain, a two-percent regression in German investment,
+36% more runtime, and no way to check out-of-sample generalisation because the
+degrees of freedom to do so no longer exist.
+
+The right reading is that this project has reached the limit of what 98
+quarterly observations will support in a single joint system. Further structure
+needs either a longer sample or a smaller system — not a better sampler, and
+not more equations.
