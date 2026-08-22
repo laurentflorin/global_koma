@@ -367,37 +367,71 @@ kable(coefs[coefs$equation == "de_imports" & !grepl("^covid_", coefs$term), ],
 
 `de_imports ← de_import_prices` is
 **`r round(signs$estimate[signs$check == "imports_fall_in_own_price"], 3)`**,
-positive, when import demand should fall as imports get more expensive. The
-credible interval excludes zero, so this is not noise that can be waved
-through — it is a robustly wrong-signed coefficient.
+positive, when import demand should fall as imports get more expensive.
 
-**Diagnosis: a specification asymmetry introduced with the relative-price
-terms, not a data or estimation problem.** Exports received a *pair* —
-`de_export_prices` and `de_foreign_prices` — so the equation can form a
-genuine relative price, and the estimates bear that out: they come back
-nearly equal and opposite. Imports received only `de_import_prices`, with no
-domestic-price counterpart. There is nothing in that equation for the import
-price to be relative *to*, so the coefficient is not measuring a
-relative-price elasticity at all. What it can pick up instead is the common
-component: quarters when imported goods are expensive are quarters when
-world demand is strong, and German import volumes are high for reasons the
-equation does not otherwise contain.
+**A first hypothesis, tested and rejected.** The obvious explanation was a
+specification asymmetry: exports received a relative-price *pair* (own and
+competitors'), while imports received only their own price, with no domestic
+counterpart to be relative *to*. That predicts the fix
+`de_imports ~ de_domestic_demand + de_import_prices + de_prices + ...`,
+which costs no degrees of freedom. It was estimated and it **does not work**
+— the coefficient moves further the wrong way, and the added domestic-price
+term takes the wrong sign too:
 
-The symmetric fix costs nothing in degrees of freedom, since `de_prices` is
-already endogenous:
-
+```{r imports-variants}
+rel <- readRDS(file.path(dir3a, "fit_a_relative.rds"))
+b2b <- readRDS(file.path("data", "cache", "stage2b", "coef_full.rds"))
+pick <- function(ct, term) {
+  x <- ct[ct$equation == "de_imports" & ct$term == term, ]
+  if (nrow(x) == 0) NA_real_ else x$estimate[1]
+}
+crel <- coefficient_table(rel$fit)
+kable(data.frame(
+  specification = c("stage 2b (no price term)", "stage 3a: own price only",
+                    "stage 3a: own price + domestic price"),
+  domestic_demand = c(pick(b2b, "de_domestic_demand"), pick(coefs, "de_domestic_demand"),
+                      pick(crel, "de_domestic_demand")),
+  import_prices = c(NA, pick(coefs, "de_import_prices"), pick(crel, "de_import_prices")),
+  de_prices = c(NA, NA, pick(crel, "de_prices"))
+), digits = 3, caption = "The imports equation across three specifications.")
 ```
-de_imports ~ de_domestic_demand + de_import_prices + de_prices + de_imports.L(1)
-```
 
-This is a departure from the block as specified, so it is reported here
-rather than applied silently. It is the natural completion of the
-relative-price treatment that was approved for exports, and it is the first
-thing to try before reading anything into the import channel.
+**The revised diagnosis is simultaneity, and the table above is the
+evidence.** Three things point the same way:
 
-Until then: **the import-price elasticity in this fit should not be used**,
-and any spillover routed through German import demand inherits the problem.
-The export side, which does have a relative-price pair, is unaffected.
+1. Adding a contemporaneous import price **collapses the demand elasticity**,
+   from `r round(pick(b2b, "de_domestic_demand"), 2)` in stage 2b to
+   `r round(pick(coefs, "de_domestic_demand"), 2)` here and
+   `r round(pick(crel, "de_domestic_demand"), 2)` in the variant. The price
+   term is absorbing the scale variation that domestic demand should be
+   carrying, which is what an omitted common driver looks like.
+2. In the variant the two price coefficients come out as roughly
+   `+0.7 × (import_prices − domestic_prices)` — a *relative* price with the
+   wrong sign, not a mis-specified level. Adding the counterpart did not
+   reveal a relative price; it reproduced the same contamination twice.
+3. `de_import_prices` is itself driven by `oil_price` and `eur_usd` — global
+   variables. The imports equation contains no control for world activity
+   (`row_gdp` and `de_foreign_demand` appear in *exports*, not imports), so
+   within a quarter the import deflator is the best available proxy for a
+   global impulse that also raises German import volumes.
+
+In other words the coefficient is not a demand elasticity at all: it is the
+within-quarter correlation between a commodity-driven deflator and
+commodity-driven volumes, with nothing in the equation to separate them.
+
+Note also that the interval only barely excludes zero
+(`r sprintf("[%.3f, %.3f]", coefs$ci_low[coefs$equation == "de_imports" & coefs$term == "de_import_prices"], coefs$ci_high[coefs$equation == "de_imports" & coefs$term == "de_import_prices"])`),
+so the strength of the wrong-signed result should not be overstated either;
+what is solid is the *pattern* across specifications, not the point estimate.
+
+The remaining test is to lag the import price, breaking the within-quarter
+channel while keeping the variable in the equation. If simultaneity is the
+cause the sign should turn negative.
+
+Until that is settled: **the import-price elasticity in this fit should not
+be used**, and any spillover routed through German import demand inherits
+the problem. The export side, which has a genuine relative-price pair and
+whose coefficients come back nearly equal and opposite, is unaffected.
 
 ## 6. Verification
 
@@ -445,7 +479,93 @@ kable(data.frame(
 ), digits = 4, caption = "Constructed de_prices vs observed headline HICP, quarterly growth.")
 ```
 
-## 7. Where this leaves the block
+## 7. Phase B: closing the loop costs more than it buys
+
+Phase B gives the other ten countries a one-equation export-price satellite,
+which is what makes `de_foreign_prices` a genuine endogenous identity rather
+than a fixed series. It passes preflight — `k = 92`, `T = 98`, `df = 6` — and
+the sampler converges: `tune_tau_system()` settles in three rounds with
+**zero** equations outside the acceptance band.
+
+It should not be used anyway, and the reason is visible in three independent
+measurements.
+
+```{r phase-b}
+fit_b <- readRDS(file.path(dir3a, "fit_b_tuned.rds"))
+coefs_b <- readRDS(file.path(dir3a, "coefs_b.rds"))
+signs_b <- sign_checks(coefs_b, "de", labour = TRUE)
+cmp <- merge(signs[, c("check", "estimate", "ok")], signs_b[, c("check", "estimate", "ok")],
+             by = "check", suffixes = c("_A", "_B"))
+kable(cmp[!cmp$ok_B, ], row.names = FALSE, digits = 4,
+      caption = "Sign checks that fail in phase B.")
+```
+
+**1. Three more signs break, including one in an equation phase B never
+touched.** Phase A passes `r sum(signs$ok)`/`r nrow(signs)`; phase B passes
+`r sum(signs_b$ok)`/`r nrow(signs_b)`. The telling one is
+`long_rate_loads_on_policy_rate`: `de_long_rate ~ de_prices + ea_policy_rate
++ de_gdp` is a stage-2b equation with no labour-block variable in it, and its
+loading on the policy rate goes from
+`r round(signs$estimate[signs$check == "long_rate_loads_on_policy_rate"], 4)`
+to
+`r round(signs_b$estimate[signs_b$check == "long_rate_loads_on_policy_rate"], 4)`
+— a sovereign yield moving *against* the policy rate. Adding ten export-price
+equations elsewhere in the system flipped it.
+
+**2. Precision degrades system-wide, not just where the equations were
+added.**
+
+```{r ci-widths}
+wid <- function(ct) {
+  x <- ct[!grepl("^covid_|^constant$", ct$term), ]
+  mean(x$ci_high - x$ci_low)
+}
+kable(data.frame(
+  phase = c("A (df = 15)", "B (df = 6)"),
+  mean_ci_width = c(wid(coefs), wid(coefs_b))
+), digits = 3, caption = "Mean 90% credible-interval width across all coefficients.")
+```
+
+Intervals are **`r round(wid(coefs_b) / wid(coefs), 2)`x wider** in phase B.
+The coefficients are no longer being pinned down by the data; they are
+drifting, and a sign that flips under that much noise is not evidence about
+the economy.
+
+**3. The wage–price loop develops an explosive tail.**
+
+```{r loop-b}
+loop_b <- wage_price_loop_gain(fit_b$fit, "de", hicp$weights[["nonenergy_prices"]])
+kable(data.frame(
+  phase = c("A (df = 15)", "B (df = 6)"),
+  mean_gain = c(loop$mean, loop_b$mean),
+  q05 = c(loop$q05, loop_b$q05), q95 = c(loop$q95, loop_b$q95),
+  share_ge_1 = c(loop$share_ge_1, loop_b$share_ge_1)
+), digits = 4, caption = "Wage-price loop gain, phase A vs phase B.")
+```
+
+In phase A **no** draw has a self-sustaining wage–price spiral. In phase B
+**`r sprintf("%.1f%%", 100 * loop_b$share_ge_1)`** do. This is precisely the
+mechanism `R/spillovers.R` documents — koma constrains no draw to be
+stationary — arriving through the new loop as soon as the degrees of freedom
+get thin enough.
+
+One phase-B change is genuine and worth recording: `de_import_prices`
+acquires a Metropolis step for the first time (`de_foreign_prices` is now
+endogenous), taking the system from
+`r sum(check_acceptance_rates(fit_a$fit)$has_mh_step)` to
+`r sum(check_acceptance_rates(fit_b$fit)$has_mh_step)` equations with one.
+`de_energy_prices` still has none, correctly — all its regressors remain
+exogenous in both phases.
+
+**Verdict: phase A is the usable artifact.** Phase B closes the
+price-competitiveness loop as designed, and the estimator does not complain
+— which is the point worth remembering. `stage2_preflight()` passed, tau
+converged, no acceptance rate was out of band. Nothing in the pipeline's own
+checks would have stopped this fit from being used. It took comparing
+against phase A to see that a quarter of the system's economic content had
+quietly dissolved.
+
+## 8. Where this leaves the block
 
 What works: the identities are exact, the system is identified on every
 seed, the labour block's economics come out with the right signs including
@@ -456,11 +576,20 @@ is weak enough that no posterior draw is self-sustaining.
 What does not: the imports equation, for the reason diagnosed in 5.1, with a
 concrete fix to try.
 
-What to watch in phase B: `df` falls from `r Tn - k` to 6, well below stage
-2b's only known-good operating point of 22. `de_import_prices` gains a
-Metropolis step for the first time, so its acceptance rate becomes
-meaningful and will need tuning. And the rest-of-world substitution below
-gets more load-bearing.
+What phase B settled: the degrees-of-freedom budget is not a soft
+constraint that trades gracefully against model richness. At `df = 6` the
+system still estimates, still converges, still passes every check the
+pipeline runs — and has lost three economic signs, doubled its interval
+widths and opened an explosive tail. The competitiveness channel can be
+closed, but not on this window.
+
+That makes the earlier arithmetic a firmer conclusion than it first looked.
+The full block cannot be rolled out (`k = 142` vs `T = 98`), and the cheapest
+partial rollout that closes the loop already overshoots. Anything further in
+this direction needs a longer sample or a smaller system, not a better
+sampler: the Eurostat deflators reach back to 1991–1996 and EA-MD/QD to
+2000, so extending the window is a real option worth costing before
+extending the model.
 
 One assumption carries more weight than its footnote suggests. Germany's
 foreign-price index is renormalised over modelled partners only, because
