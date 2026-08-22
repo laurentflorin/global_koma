@@ -251,9 +251,11 @@ stage2_spec <- function(countries, shares, linkage_weights,
 #'   For a country named here, [country_block()] changes in exactly two ways:
 #'   its `<iso2>_prices` **stochastic** equation is dropped, because
 #'   `labour_block()` redefines `prices` as an identity over the energy and
-#'   non-energy sub-indices, and its exports and imports equations gain
-#'   relative-price terms so the new price variables actually transmit to
-#'   trade volumes. Empty by default, so stage 2a and 2b are unchanged.
+#'   non-energy sub-indices, and its exports equation gains a relative-price
+#'   pair so the new price variables actually transmit to trade volumes.
+#'   Imports deliberately gain nothing -- see [country_block()] for the four
+#'   specifications that were tried and rejected. Empty by default, so stage
+#'   2a and 2b are unchanged.
 #' @param export_price_countries Character vector of ISO-2 codes that get the
 #'   minimal satellite equation `<iso2>_export_prices ~ <iso2>_prices +
 #'   <iso2>_export_prices.L(1)` and nothing else. This is stage 3a phase B:
@@ -358,10 +360,23 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
 
   # With the labour block on, the price variables must reach trade volumes or
   # they are estimated and then transmit nothing -- the terminal-variable
-  # pathology CLAUDE.md records for long_rate. Exports fall in own price and
-  # rise in competitors'; imports fall in their own price.
+  # pathology CLAUDE.md records for long_rate. Exports get a relative-price
+  # *pair*: they fall in their own price and rise in competitors'.
+  #
+  # **Imports deliberately get no price term at all.** The obvious symmetric
+  # choice, `<iso2>_import_prices`, was estimated four ways and rejected every
+  # time (see reports/stage3a_labour_prices.qmd Sec. 5.1). Contemporaneously it
+  # comes back with the wrong sign *and* collapses the domestic-demand
+  # elasticity from 0.38 to 0.08, because the import deflator is the only proxy
+  # in that equation for a global impulse that also drives import volumes --
+  # the equation has no world-activity control, `foreign_demand` being on the
+  # export side. Adding a domestic-price counterpart made it worse. Lagging it
+  # restored the demand elasticity exactly (0.386 vs stage 2b's 0.382),
+  # confirming the simultaneity, but left a price coefficient indistinguishable
+  # from zero -- so there is no elasticity underneath to recover, only a
+  # predetermined column to pay for. The price block reaches trade through
+  # exports only, which is the side that identifies.
   export_price_terms <- if (has_labour) c(v("export_prices"), v("foreign_prices")) else character()
-  import_price_terms <- if (has_labour) v("import_prices") else character()
   real_income_terms <- if (has_labour) v("real_income") else character()
 
   stochastic <- list()
@@ -376,7 +391,7 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
     lags = own_lag(v("exports"))
   )
   stochastic[[v("imports")]] <- list(
-    terms = c(v("domestic_demand"), import_price_terms, extra, v("imports")),
+    terms = c(v("domestic_demand"), extra, v("imports")),
     lags = own_lag(v("imports"))
   )
   # A labour-block country defines `prices` as an identity over its energy and

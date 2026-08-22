@@ -477,8 +477,12 @@ stage3a_sign_rules <- function(iso2) {
     rule("export_prices_load_on_foreign_prices", v("export_prices"), v("foreign_prices"), "> 0", pos),
     rule("consumption_loads_on_real_income", v("consumption"), v("real_income"), "> 0", pos),
     rule("exports_fall_in_own_price", v("exports"), v("export_prices"), "< 0", neg),
-    rule("exports_rise_in_competitor_price", v("exports"), v("foreign_prices"), "> 0", pos),
-    rule("imports_fall_in_own_price", v("imports"), v("import_prices"), "< 0", neg)
+    rule("exports_rise_in_competitor_price", v("exports"), v("foreign_prices"), "> 0", pos)
+    # There is deliberately no `imports_fall_in_own_price` rule: the imports
+    # equation carries no price term. It was tried four ways and dropped (see
+    # [country_block()] and the stage-3a report). Keeping the rule would report
+    # a permanent NA/FALSE for a term the specification intentionally omits,
+    # which reads as an unfixed failure rather than a settled decision.
   )
 }
 

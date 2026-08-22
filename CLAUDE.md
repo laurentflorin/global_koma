@@ -368,6 +368,32 @@ df = 6`. See `reports/stage3a_labour_prices.qmd`.
   `<iso2>_import_prices` (its only non-exogenous regressor,
   `foreign_prices`, is still exogenous). Phase B gives `import_prices` a
   Metropolis step for the first time.
+- **`<iso2>_imports` deliberately carries no price term, and adding one back
+  is a known dead end.** Four specifications were estimated: no term
+  (stage 2b), contemporaneous `import_prices`, contemporaneous plus a
+  domestic-price counterpart, and lagged. The contemporaneous term is
+  wrong-signed *and* collapses the domestic-demand elasticity from 0.38 to
+  0.08 — the import deflator is the only proxy in that equation for a global
+  impulse that also drives volumes, since `foreign_demand` sits on the export
+  side. Lagging it restores the elasticity exactly (0.386 vs 0.382) but
+  leaves a price coefficient spanning zero. Import-price pass-through belongs
+  in `<iso2>_nonenergy_prices`, where it is correctly signed; it does not
+  belong in the volume equation.
+- **A wrong sign is often not the first symptom — a neighbouring coefficient
+  moving is.** Three of those four specifications gave a sign check a clean
+  verdict while the demand elasticity next to it was being gutted.
+  `sign_checks()` looks at one coefficient at a time and cannot see that;
+  comparing specifications can. When a new regressor is added to an existing
+  equation, check what happened to the coefficients that were already there.
+- **A bad specification in one equation can masquerade as a systemic
+  problem.** Estimated against the contaminated imports equation above,
+  phase B looked catastrophic — three sign checks lost, including one in a
+  stage-2b equation it never touched. Re-estimated after dropping the
+  offending term, phase B loses only one marginal sign and that flip does not
+  occur. The real `df = 6` penalty is a ~2x widening of every credible
+  interval and a ~1.5% share of wage-price loop draws turning explosive:
+  expensive, but not the collapse the first run implied. Fix known
+  specification errors *before* drawing conclusions about the estimator.
 
 ## Spillover / conditional-forecast analysis (`spillovers.R`)
 

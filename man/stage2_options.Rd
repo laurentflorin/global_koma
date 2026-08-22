@@ -43,9 +43,11 @@ stage-3a labour and disaggregated-price block (see \code{\link[=labour_block]{la
 For a country named here, \code{\link[=country_block]{country_block()}} changes in exactly two ways:
 its \verb{<iso2>_prices} \strong{stochastic} equation is dropped, because
 \code{labour_block()} redefines \code{prices} as an identity over the energy and
-non-energy sub-indices, and its exports and imports equations gain
-relative-price terms so the new price variables actually transmit to
-trade volumes. Empty by default, so stage 2a and 2b are unchanged.}
+non-energy sub-indices, and its exports equation gains a relative-price
+pair so the new price variables actually transmit to trade volumes.
+Imports deliberately gain nothing -- see \code{\link[=country_block]{country_block()}} for the four
+specifications that were tried and rejected. Empty by default, so stage
+2a and 2b are unchanged.}
 
 \item{export_price_countries}{Character vector of ISO-2 codes that get the
 minimal satellite equation \verb{<iso2>_export_prices ~ <iso2>_prices + <iso2>_export_prices.L(1)} and nothing else. This is stage 3a phase B:

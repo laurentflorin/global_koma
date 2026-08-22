@@ -111,7 +111,29 @@ test_that("a labour country loses its stochastic price equation and gains price 
   expect_false("de_prices" %in% names(labour$stochastic))
   expect_true("de_real_income" %in% labour$stochastic$de_consumption$terms)
   expect_true(all(c("de_export_prices", "de_foreign_prices") %in% labour$stochastic$de_exports$terms))
-  expect_true("de_import_prices" %in% labour$stochastic$de_imports$terms)
+})
+
+test_that("the imports equation gains no price term, even for a labour country", {
+  # Tried four ways and rejected: contemporaneously the import price takes the
+  # wrong sign and collapses the domestic-demand elasticity; lagged it restores
+  # the elasticity but is indistinguishable from zero. Imports must therefore
+  # look exactly as they do without the labour block.
+  shares <- list(
+    gdp = c(de_domestic_demand = 0.9, de_exports = 0.4, de_imports = -0.3),
+    domestic_demand = c(de_consumption = 0.6, de_investment = 0.2, de_government = 0.2)
+  )
+  fw <- c(fr_gdp = 0.3, row_gdp = 0.7)
+  opts <- stage2_options(labour_countries = "de",
+                         hicp_weights = list(de = c(nonenergy_prices = 0.9, energy_prices = 0.1)))
+
+  plain <- country_block("de", shares, fw)
+  labour <- country_block("de", shares, fw, opts)
+
+  expect_false("de_import_prices" %in% labour$stochastic$de_imports$terms)
+  expect_equal(labour$stochastic$de_imports$terms, plain$stochastic$de_imports$terms)
+  # and no sign rule is left dangling for a term that is not there
+  expect_false("imports_fall_in_own_price" %in%
+                 vapply(stage3a_sign_rules("de"), function(r) r$check, character(1)))
 })
 
 test_that("stage2_options rejects a country in both block lists", {
