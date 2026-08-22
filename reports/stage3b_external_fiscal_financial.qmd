@@ -1,0 +1,395 @@
+---
+title: "Stage 3b: external, fiscal and financial blocks"
+subtitle: "Three blocks added one at a time — what each cost, which one broke things, and a fourth failed attempt at the import price"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage3b_external_fiscal_financial.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir3a <- file.path("data", "cache", "stage3a")
+dir3b <- file.path("data", "cache", "stage3b")
+
+base <- readRDS(file.path(dir3a, "fit_a_final.rds"))
+steps <- list(external = "fit_external.rds", fiscal = "fit_fiscal.rds",
+              financial = "fit_financial.rds")
+fits <- lapply(steps, function(f) {
+  p <- file.path(dir3b, f)
+  if (file.exists(p)) readRDS(p) else NULL
+})
+fits <- Filter(Negate(is.null), fits)
+
+flags <- list(
+  external = list(labour = TRUE, external = TRUE),
+  fiscal = list(labour = TRUE, external = TRUE, fiscal = TRUE),
+  financial = list(labour = TRUE, external = TRUE, fiscal = TRUE, financial = TRUE)
+)
+
+coefs_of <- function(x) coefficient_table(x$fit)
+ci_width <- function(ct) {
+  y <- ct[!grepl("^covid_|^constant$", ct$term), ]
+  mean(y$ci_high - y$ci_low)
+}
+signs_of <- function(nm) {
+  a <- flags[[nm]]
+  do.call(sign_checks, c(list(coefs_of(fits[[nm]]), "de"), a))
+}
+
+base_coefs <- coefficient_table(base$fit)
+base_signs <- sign_checks(base_coefs, "de", labour = TRUE)
+```
+
+## 1. What each block cost
+
+Blocks were added cumulatively, with the full diagnostic battery after each,
+so it is visible which one degrades what. The baseline is stage 3a phase A.
+
+```{r cost-table}
+rows <- list(data.frame(
+  step = "stage 3a (baseline)",
+  k = length(base$sys_eq$total_exogenous_variables),
+  df = 98 - length(base$sys_eq$total_exogenous_variables),
+  signs = paste0(sum(base_signs$ok), "/", nrow(base_signs)),
+  acceptance_flagged = sum(check_acceptance_rates(base$fit)$flagged),
+  mean_ci_width = ci_width(base_coefs)
+))
+for (nm in names(fits)) {
+  ct <- coefs_of(fits[[nm]]); sc <- signs_of(nm)
+  k <- length(fits[[nm]]$sys_eq$total_exogenous_variables)
+  rows[[length(rows) + 1]] <- data.frame(
+    step = paste("+", nm), k = k, df = 98 - k,
+    signs = paste0(sum(sc$ok), "/", nrow(sc)),
+    acceptance_flagged = sum(check_acceptance_rates(fits[[nm]]$fit)$flagged),
+    mean_ci_width = ci_width(ct)
+  )
+}
+kable(do.call(rbind, rows), row.names = FALSE, digits = 3,
+      caption = "Cumulative cost of each block. T = 98 throughout.")
+```
+
+The degrees-of-freedom arithmetic was predicted before estimating and matched
+exactly. The fiscal block is the expensive one: its accumulation identity
+carries a lagged term, and its government-consumption equation takes a lagged
+GDP term, so it costs four columns where the others cost one and two.
+
+## 2. The fiscal block had to be reduced, and the reason is data, not design
+
+The request specified revenue and expenditure equations with
+`de_deficit == de_expenditure - de_revenue`. That block **cannot be
+estimated**: German quarterly revenue and expenditure (Eurostat
+`gov_10q_ggnfa`) begin **2002Q1**, and `T` is system-wide, so pulling them in
+shortens the estimation window for *every* equation from 98 to 90 while `k`
+rises to 90 — leaving **zero** residual degrees of freedom.
+
+| fiscal variant | k | T | df |
+|---|---|---|---|
+| as specified (revenue + expenditure) | 90 | **90** | **0** |
+| as built (Maastricht debt) | 88 | 98 | 10 |
+
+The block is therefore built on `gov_10q_ggdebt` (`GD`, percent of GDP), which
+is clean 2000Q1–2026Q1 for all eleven economies. What is lost is the
+revenue/expenditure decomposition. What is kept is the mechanism the request
+called out as mattering: debt accumulates, and the sovereign spread responds
+to it.
+
+**`de_netborrowing` is not the headline deficit**, and no coefficient on it
+should be read as a deficit elasticity. It is the quarterly change in the debt
+ratio, which is the deficit *plus* the growth-denominator effect *plus*
+stock-flow adjustments. It is derived that way deliberately: it makes the
+accumulation identity exact by construction (verified below), and it sets the
+carry weight to exactly 1, which matters because koma's injected weights are
+**not** time-varying — they are annualised, lagged a year and collapsed to a
+single scalar — so a genuine `(1+i)/(1+g)` snowball factor could not have been
+expressed as a weight at all.
+
+## 3. Two koma limitations found on the way
+
+Both would have caused silent damage rather than an error.
+
+**A lagged identity could not be built.** koma supports one — its own Klein
+vignette ships `capital_stock == 1.001*capital_stock.L(1) + 0.0002*investment`
+— but `stage2_exogenous_variables()` collected identity component names raw,
+so `de_govdebt.L(1)` was declared exogenous while koma strips the suffix on
+its side and rejects the leftover as "Redundant exogenous variables detected".
+Fixed by stripping `.L(...)`, as the preflight already did.
+
+**Lagged endogenous names must not prefix one another.** koma's
+`construct_phi()` locates a variable's lag columns with an *unanchored*
+`grepl(paste0("^", name), ...)`. With both `de_debt.L(1)` and
+`de_debt_ratio.L(1)` present, the shorter name matches both, the inner loop
+runs twice for the same lag order, and the second pass overwrites the first —
+pointing the companion matrix at the wrong row of B, with no error and no
+warning. The names here (`de_govdebt`, `de_netborrowing`) share no prefix, and
+`stage2_preflight()` gained an eighth check so it cannot be reintroduced.
+
+A third, smaller trap: an identity term written without an explicit weight
+(`b == b.L(1) + d`) is stored with `character(0)` weights — the same silent
+corruption `CLAUDE.md` records for `+ -0.4*x`. `identity_equation()` always
+emits `1*x`, so building identities through it stays safe.
+
+## 4. Block 1 — external
+
+```{r external-detail}
+ct <- coefs_of(fits$external)
+kable(ct[ct$equation %in% c("de_exports", "de_imports", "de_current_account") &
+           !grepl("^covid_|^constant$", ct$term), ],
+      row.names = FALSE, digits = 3, caption = "The external block's equations.")
+```
+
+The competitiveness restriction worked as intended. Stage 3a estimated the two
+export-price terms separately and got −0.92 and +1.26 with both intervals wide
+and spanning zero — the data did not reject equal-and-opposite, and did not
+identify them apart either. Imposing the difference trades two
+poorly-identified coefficients for one, and that one comes back correctly
+signed. The current account's own equation behaves: it rises with exports,
+falls with imports, and improves with the terms of trade.
+
+### 4.1 A fourth failed attempt at the import price
+
+The one substantive failure is `de_imports ← de_terms_of_trade`, and it is the
+fourth specification to fail in the same direction.
+
+```{r imports-four}
+a_con <- readRDS(file.path(dir3a, "coefs_a.rds"))
+a_rel <- coefficient_table(readRDS(file.path(dir3a, "fit_a_relative.rds"))$fit)
+a_lag <- readRDS(file.path(dir3a, "coefs_a_lagged.rds"))
+a_fin <- readRDS(file.path(dir3a, "coefs_a_final.rds"))
+pick <- function(ct, term) {
+  x <- ct[ct$equation == "de_imports" & ct$term == term, ]
+  if (nrow(x) == 0) NA_real_ else x$estimate[1]
+}
+tot <- pick(ct, "de_terms_of_trade")
+kable(data.frame(
+  specification = c("no price term (adopted in 3a)", "own price, contemporaneous",
+                    "own price + domestic price", "own price, lagged",
+                    "inside terms of trade (3b)"),
+  domestic_demand = c(pick(a_fin, "de_domestic_demand"), pick(a_con, "de_domestic_demand"),
+                      pick(a_rel, "de_domestic_demand"), pick(a_lag, "de_domestic_demand"),
+                      pick(ct, "de_domestic_demand")),
+  implied_import_price = c(NA, pick(a_con, "de_import_prices"), pick(a_rel, "de_import_prices"),
+                           pick(a_lag, "de_import_prices.L(1)"), -tot)
+), digits = 3,
+  caption = "Every attempt to give German import volumes a price term. The last row's implied coefficient is -1 times the terms-of-trade coefficient, since ToT enters import prices negatively.")
+```
+
+Terms of trade is `export_prices − import_prices`, so a coefficient of
+`r round(tot, 3)` on it implies **`r sprintf("%+.3f", -tot)`** on import
+prices — the same positive sign as the direct contemporaneous term, and the
+same sign as every other attempt. Four specifications, one contamination:
+within a quarter, German import volumes and German import prices both respond
+to the same global impulse, and the equation contains no control for world
+activity (`foreign_demand` sits on the export side) to separate them.
+
+The terms-of-trade version does damage the demand elasticity less than the bare
+own price did (`r round(pick(ct, "de_domestic_demand"), 3)` against 0.08), so
+it is the least bad of the four — but it is still wrong-signed, and being
+least-bad is not a reason to keep a coefficient that says import demand rises
+when imports get expensive.
+
+**Recommendation: drop the terms-of-trade term from the imports equation**, as
+was done in stage 3a for the direct price. Terms of trade would remain in the
+system for the current-account equation, where it is correctly signed and where
+a relative price genuinely belongs. This is a change to the block as approved,
+so it is reported rather than applied.
+
+## 5. Block 2 — fiscal
+
+```{r fiscal-detail}
+ctf <- coefs_of(fits$fiscal)
+kable(ctf[ctf$equation %in% c("de_netborrowing", "de_government") &
+            !grepl("^covid_", ctf$term), ],
+      row.names = FALSE, digits = 3, caption = "The fiscal block's equations.")
+```
+
+Both fiscal sign rules pass. Net borrowing falls when output grows
+(automatic stabilisers) and rises with the long rate (debt service), though
+both intervals span zero — at this sample length the signs are right and the
+magnitudes are not pinned down.
+
+`de_government` correctly has **no Metropolis step**: both its regressors are
+lagged, so its gamma block is empty and `count_accepted` is `NA`. That is
+deliberate. Letting government consumption respond to *contemporaneous* output
+would build in a within-quarter automatic stabiliser this data cannot
+identify, and would put a policy variable inside the simultaneous block.
+
+### 5.1 The accumulation identity is exact, and does not destabilise the lags
+
+```{r fiscal-identity}
+sp <- fits$fiscal$panel
+m <- stats::na.omit(cbind(koma::rate(sp$de_govdebt),
+                          stats::lag(koma::rate(sp$de_govdebt), -1),
+                          koma::rate(sp$de_netborrowing)))
+lagf <- check_lag_stability(ctf)
+kable(data.frame(
+  check = c("govdebt == govdebt.L(1) + netborrowing, max |residual|",
+            "own lags with |coefficient| >= 1",
+            "largest own lag"),
+  value = c(format(max(abs(m[, 1] - m[, 2] - m[, 3])), digits = 3),
+            as.character(sum(lagf$flagged)),
+            paste0(round(max(abs(lagf$estimate)), 4), " (", lagf$equation[which.max(abs(lagf$estimate))], ")"))
+), caption = "Debt accumulation and lag stability.")
+```
+
+The debt ratio's law of motion holds exactly, and **nothing became explosive**.
+This was the stated worry — a near-unit-root accumulation entering a system
+whose largest own lag was already 0.9999 — and it did not materialise. The
+reason is structural rather than lucky: `de_govdebt` is an *identity* with a
+fixed unit weight, not an estimated equation, so the unit root is imposed
+exactly at 1 and cannot be drawn above it. What could still destabilise the
+system is the *loop* the accumulation sits in, which is section 6's business.
+
+### 5.2 On its own, the fiscal block transmits nothing
+
+```{r fiscal-terminal}
+se <- fits$fiscal$sys_eq
+users <- Filter(function(e) {
+  col <- se$character_gamma_matrix[, e]
+  "de_govdebt" %in% rownames(se$character_gamma_matrix)[nzchar(col) & col != "0" & col != "1"]
+}, se$endogenous_variables)
+kable(data.frame(
+  question = "equations taking de_govdebt contemporaneously, at the fiscal step",
+  answer = if (length(users)) paste(users, collapse = ", ") else "none"
+), caption = "The debt stock is terminal until the financial block arrives.")
+```
+
+This is worth stating plainly because it is the honest reading of the
+per-block table: **the fiscal block is pure cost until the financial block
+lands.** It spends four columns of `k` and widens every credible interval in
+the system by about a quarter, and until `de_long_rate` takes `de_govdebt`
+there is no equation for the debt stock to influence — the same
+terminal-variable pathology `CLAUDE.md` records for `long_rate` in stage 2 and
+for `export_prices` in stage 3a. The two blocks have to be judged together,
+not separately.
+
+## 6. Block 3 — financial: this is the block that breaks things
+
+The question was which block degrades what. The answer is unambiguous.
+
+```{r financial-signs}
+scf <- signs_of("financial")
+kable(scf[!scf$ok, c("check", "equation", "term", "estimate", "expected")],
+      row.names = FALSE, digits = 4,
+      caption = "Every failing sign check after the financial block. External contributed one of these; the other six are new.")
+```
+
+Seven failures against one, credible intervals 55% wider than baseline, and —
+for the first time in this project — **own lags at or above unity**.
+
+### 6.1 The long-rate equation became a random walk and absorbed everything
+
+```{r long-rate-degradation}
+srcs <- list(`stage 3a` = file.path(dir3a, "coefs_a_final.rds"),
+             `+ external` = file.path(dir3b, "coefs_external.rds"),
+             `+ fiscal` = file.path(dir3b, "coefs_fiscal.rds"),
+             `+ financial` = file.path(dir3b, "coefs_financial.rds"))
+tab <- NULL
+for (nm in names(srcs)) {
+  if (!file.exists(srcs[[nm]])) next
+  x <- readRDS(srcs[[nm]]); x <- x[x$equation == "de_long_rate", ]
+  g <- function(t) { v <- x$estimate[x$term == t]; if (!length(v)) NA_real_ else v }
+  tab <- rbind(tab, data.frame(step = nm, own_lag = g("de_long_rate.L(1)"),
+                               policy_rate = g("ea_policy_rate"), prices = g("de_prices"),
+                               gdp = g("de_gdp"), govdebt = g("de_govdebt")))
+}
+kable(tab, row.names = FALSE, digits = 4,
+      caption = "de_long_rate across the sequence. The own lag is stable for three steps, then crosses 1 exactly when de_govdebt is added.")
+```
+
+This is the mechanism of the failure, and it is visible in one row. The
+long-rate own lag sits at 0.92–0.94 for three consecutive systems, then jumps
+to **1.004** — explosive — the moment `de_govdebt` becomes its fifth
+regressor. At the same instant the policy-rate loading flips negative, having
+been positive and stable at 0.045–0.069 throughout.
+
+At `df = 8` the equation is no longer identified. Its own lag runs to a unit
+root and absorbs the structural content, leaving the coefficients that are
+supposed to carry economics scattered around zero. The other failures follow
+from the same place: `debt_service_raises_borrowing` flips because it loads on
+a long rate that has become noise, and `credit` and `investment` inherit it
+through `de_long_rate` too.
+
+### 6.2 The mechanism the fiscal block existed for is not there
+
+```{r spread-on-debt}
+ctf2 <- coefs_of(fits$financial)
+kable(ctf2[ctf2$equation == "de_long_rate" & !grepl("^covid_|^constant$", ctf2$term), ],
+      row.names = FALSE, digits = 4, caption = "The sovereign spread equation.")
+```
+
+`de_long_rate ← de_govdebt` is
+**`r round(ctf2$estimate[ctf2$equation == "de_long_rate" & ctf2$term == "de_govdebt"], 5)`**
+with an interval straddling zero. The sovereign spread does **not** respond to
+the debt ratio in this fit — and that channel was the whole justification for
+spending the fiscal block's four degrees of freedom and 24% of the system's
+precision.
+
+### 6.3 The loop is quiet, but for the wrong reason
+
+```{r loop}
+sh <- fits$financial$shares$de
+w_i2g <- sh$domestic_demand[["de_investment"]] * sh$gdp[["de_domestic_demand"]]
+lg <- loop_gain(fits$financial$fit, fiscal_financial_loop("de", w_i2g))
+kable(data.frame(link = names(lg$links), posterior_mean = unname(lg$links)),
+      row.names = FALSE, digits = 5,
+      caption = sprintf("gdp -> netborrowing -> govdebt -> long_rate -> investment -> gdp. Round-trip gain: mean %.6f, share |gain| >= 1: %.4f",
+                        lg$mean, lg$share_ge_1))
+```
+
+The stated worry was that a near-unit-root debt accumulation inside a
+contemporaneous loop would destabilise the system. It did not: **no posterior
+draw** has a self-sustaining loop. But that is not a clean bill of health — the
+loop is quiet because one of its links is missing. Three of the five links are
+healthy (automatic stabilisers −0.48, the accumulation identity at exactly 1,
+investment falling in the long rate −0.14); the chain breaks at
+`long_rate ← govdebt`, which is ~0. A loop with a severed link cannot resonate.
+
+## 7. Verdict
+
+```{r verdict}
+kable(data.frame(
+  block = c("external", "fiscal", "financial"),
+  cost_df = c(1, 4, 2),
+  verdict = c(
+    "Keep. Competitiveness restriction works; current account behaves. One failure, the fourth import-price attempt.",
+    "Keep only with the financial block. Correct signs, exact identity, no destabilisation -- but +24% CI width and, alone, de_govdebt reaches nothing.",
+    "Do not use as built. Explosive long rate, six new sign failures, +55% CI width, and it fails to deliver the debt-to-spread channel it exists for."
+  )
+), caption = "Per-block verdict.")
+```
+
+**The usable artifact is external + fiscal (`df = 10`)** — with the caveat that
+the fiscal block is an unfinished investment until something consumes
+`de_govdebt`.
+
+**The debt-to-spread channel needs a different specification, not more data.**
+The failure is identification, not measurement: `de_long_rate` carries five
+regressors and a near-unit-root lag at `df = 8`, and the lag wins. The obvious
+next thing to try is to model the **spread** rather than the level —
+
+```
+de_spread    == 1*de_long_rate - 1*ea_policy_rate
+de_spread    ~ de_govdebt + de_gdp + de_spread.L(1)
+```
+
+which imposes the policy-rate coefficient at 1 instead of estimating it,
+removes the unit root (spreads are stationary where levels are not), and leaves
+`de_govdebt` competing against far less. That is the standard way this
+relationship is specified, and it is a cheaper change than anything involving
+more equations. It is untested here and is offered as the next experiment, not
+a result.
+
+**On the import price, now 4 for 4.** Every specification tried — direct,
+with a domestic counterpart, lagged, and inside terms of trade — gives a
+positive import-price coefficient. The recommendation stands: drop the
+terms-of-trade term from `de_imports`, keeping terms of trade in the
+current-account equation where it is correctly signed.

@@ -395,6 +395,57 @@ df = 6`. See `reports/stage3a_labour_prices.qmd`.
   expensive, but not the collapse the first run implied. Fix known
   specification errors *before* drawing conclusions about the estimator.
 
+## Stage 3b: external, fiscal and financial blocks (`stage2_system.R`)
+
+`external_block()`, `fiscal_block()` and `financial_block()` extend a
+labour-block country. Added cumulatively to Germany: `k` 83 -> 84 -> 88 -> 90
+against `T = 98`, so `df` 15 -> 14 -> 10 -> **8**. See
+`reports/stage3b_external_fiscal_financial.qmd`.
+
+- **A lagged term in an identity works, and costs a column of `k`.** koma
+  supports the stock-flow accumulation idiom (`de_govdebt == 1*de_govdebt.L(1)
+  + 1*de_netborrowing`) -- its own Klein vignette ships one. But
+  `stage2_exogenous_variables()` used to declare `de_govdebt.L(1)` exogenous,
+  which koma rejects as "Redundant exogenous variables detected" because it
+  strips the suffix on its side. It now strips `.L(...)` too.
+- **Never write an identity term without an explicit weight.** `b == b.L(1) +
+  d` parses but stores `character(0)` weights -- the same silent corruption as
+  `+ -0.4*x`. `identity_equation()` always emits `1*x`; hand-written strings do
+  not.
+- **No lagged endogenous name may be a string prefix of another.** koma's
+  `construct_phi()` prefix-matches with an unanchored `grepl("^name", ...)`, so
+  with `de_debt.L(1)` and `de_debt_ratio.L(1)` both present the shorter name
+  matches both and the second pass silently overwrites the first's companion-
+  matrix entry -- wrong forecasts, no error. Hence `de_govdebt` /
+  `de_netborrowing`. `stage2_preflight()` now checks this.
+- **koma's injected weights are NOT time-varying.** `(w)*x.L(1)` parses and `w`
+  costs no `k`, but `weights.R` annualises the series, lags it a year and keeps
+  the **last value** -- one scalar for the whole sample and forecast. A debt
+  snowball factor `(1+i)/(1+g)` cannot be expressed this way. Derive the flow
+  so the carry weight is exactly 1 instead.
+- **A signed series tagged `level`/`diff_log` fails misleadingly.** `log()` of a
+  negative gives `NaN`, which koma reports as `"time series contains internal
+  NAs"` -- pointing at gaps, not at the sign. An exact zero is silently
+  replaced by `1e-9`, giving a ~2000% growth rate with no warning. Deficits,
+  balances and net-lending figures must be ratios tagged `rate`/`none`.
+- **The fiscal block cannot include revenue and expenditure.** German
+  `gov_10q_ggnfa` begins 2002Q1 and `T` is system-wide, so pulling them in
+  shortens *every* equation's window from 98 to 90 while `k` rises -- `df = 0`.
+  Build on `gov_10q_ggdebt` (`GD`, `PC_GDP`, clean from 2000Q1) instead, and
+  note that the derived `netborrowing` is the change in the debt ratio, not the
+  headline deficit.
+- **An equation near the identification limit lets its own lag eat everything.**
+  `de_long_rate` held an own lag of 0.92-0.94 across three systems, then crossed
+  to 1.004 -- explosive -- the moment `de_govdebt` became its fifth regressor at
+  `df = 8`, and its policy-rate loading flipped negative at the same instant.
+  The debt-to-spread coefficient came out at -0.006. When a coefficient goes
+  null, check whether the equation's own lag went to a unit root and absorbed
+  it; adding a regressor to an already-full equation can cost more than it buys.
+- **A quiet loop is not necessarily a stable one.** `loop_gain()` on the
+  fiscal-financial cycle showed no explosive draws -- because the
+  `long_rate <- govdebt` link was ~0. Check the per-link means before reading a
+  low gain as reassurance.
+
 ## Spillover / conditional-forecast analysis (`spillovers.R`)
 
 koma has **no impulse-response function**. A spillover or shock response is
