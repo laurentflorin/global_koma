@@ -4,19 +4,30 @@
 \alias{stage2_exogenous_variables}
 \title{Determine the joint system's exogenous variables}
 \usage{
-stage2_exogenous_variables(countries, truly_exogenous)
+stage2_exogenous_variables(spec)
 }
 \arguments{
-\item{countries}{Character vector of ISO-2 country codes.}
-
-\item{truly_exogenous}{Character vector of variables with no equation of
-their own anywhere in the system (e.g. \code{"oil_price"}, \code{"vix"}).}
+\item{spec}{A \code{\link[=stage2_spec]{stage2_spec()}} result.}
 }
 \value{
 A character vector of exogenous variable names.
 }
 \description{
-Every variable referenced on an equation's RHS that is not itself an
-endogenous (country or shared) variable in the system must be declared
-exogenous to \code{koma::system_of_equations()}. This computes that set.
+Exogenous variables are \strong{derived}, not declared: any variable on a
+right-hand side that is not itself the dependent variable of a stochastic
+equation or an identity is exogenous. That keeps the set in sync with the
+spec automatically, so moving a variable from exogenous to endogenous --
+as stage 2 does with \code{ea_policy_rate} -- needs no second edit.
+}
+\details{
+Getting this exactly right matters more than it looks: koma's
+\code{validate_completeness()} is an \strong{exact-set} check. An undeclared
+variable aborts with "Undeclared exogenous variables detected", and a
+declared-but-unused one aborts with "Redundant exogenous variables
+detected". A superset is just as fatal as a subset.
+
+For the DE/FR pilot this returns five names, not the three truly global
+ones: \verb{<iso2>_government} has no equation of its own (fiscal policy is a
+given, as in stage 1) but does appear in the domestic-demand identities,
+so it is exogenous and must be declared.
 }

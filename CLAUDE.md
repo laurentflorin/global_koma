@@ -229,6 +229,124 @@ This specifically means, for the EA-MD/QD port in `data_eamdqd.R`:
   `tar_make(names = "stage1_diagnostics")` to exercise the implemented
   part of the pipeline.
 
+## Linking countries into one system (`stage2_system.R`)
+
+- **Declare every stochastic equation before every identity.** koma assumes
+  this *positionally* in two places: `model_identification()` loops
+  `for (j in seq(1, n_endogenous - n_identities))` over columns, and
+  `estimate_sem()` indexes `y_matrix[, jx]` by the same index. An identity
+  declared anywhere else makes koma check and estimate the **wrong columns**
+  and mislabel the results, with **no error**. This is undocumented — every
+  example koma ships happens to obey it. `build_system_equations()` enforces
+  the ordering; do not hand-assemble the equation vector.
+- **Every endogenous variable needs a series in `ts_data`, identities
+  included.** `koma::estimate()` aborts with "The following series are
+  missing in `ts_data`" — but only at estimation time, after the expensive
+  setup. Stage 2's `<iso2>_foreign_demand`, `ea_gdp` and `ea_prices` have no
+  observed counterpart, so `build_stage2_panel()` constructs them.
+  `stage2_preflight()` catches the whole class of problem up front.
+- **Build an identity's LHS series in rate space, not level space.** koma
+  estimates on growth rates, so an identity is a statement about
+  `diff(log())`, and `log(0.6a + 0.4b) != 0.6*log(a) + 0.4*log(b)`. Use
+  `chain_weighted_index()` (weighted average of growth rates, integrated
+  back to an index), **not** `apply_weights()` (weighted sum of levels).
+  For `de_foreign_demand` the two differ by up to **13.7 percentage points**
+  of quarterly growth; the chained version reproduces its identity to
+  8.5e-14. koma has no identity-consistency check, so a level-space
+  construction fails silently. This does not apply to `<iso2>_gdp`, which is
+  independently observed and whose identity legitimately holds only up to
+  the statistical discrepancy.
+- **Never warm-start a linkage change via `estimate(estimates = )`.**
+  `identify_reestimation_indices()` compares only the symbolic **`B`**
+  matrices; the `Gamma` block is never compared. Every cross-country term is
+  a *contemporaneous endogenous* regressor, i.e. `Gamma`-only, so a warm
+  start silently keeps stale draws of the wrong dimension for exactly the
+  equations that changed. `fit_stage2()` therefore always estimates cold.
+- **`model_identification()` consumes RNG** — it fills free coefficients
+  with `rnorm` draws, so a single pass proves little. `stage2_preflight()`
+  repeats it across seeds. For the same reason two runs of the same system
+  give slightly different acceptance rates.
+- **Exogenous is an exact set.** `validate_completeness()` aborts on an
+  undeclared variable *and* on a declared-but-unused one, so a superset is
+  as fatal as a subset. `stage2_exogenous_variables()` derives it from the
+  spec. Note `<iso2>_government` is exogenous but easy to forget: it has no
+  equation yet appears in the domestic-demand identity.
+- **`k < T` is a hard constraint, and `k` grows fast.** koma projects every
+  equation on the **full** `k`-column `x_matrix` on every draw
+  (`construct_pi_hat_0`, `construct_theta_hat_j` both do
+  `Matrix::solve(t(x) %*% x)`) and draws `Omega` from `riwish(T - k, .)`.
+  With `k = 1 + (one lag per stochastic equation) + (exogenous)`, an
+  eleven-country system reaches `k = 83`; on the stage-1/2a window `T = 78`,
+  and estimation fails twice over — "system is computationally singular" plus
+  "v must be >= dimension of S in rwish()". Stage 2b buys the room with a
+  longer window (2024Q4, `T = 98`), dropping `<iso2>_government`, and COVID
+  dummies, landing at `k = 76`, `df = 22`. `stage2_preflight(dates = )`
+  checks this *before* koma builds anything; always pass `dates`.
+- **Pin BLAS threads when using `workers`.** This R links a **pthread**
+  OpenBLAS, so every process claims all cores for its own thread pool and
+  `future::multicore` forks inherit that. Eight workers produced a **load
+  average of 116 on 16 cores** and a >30x slowdown (a 25-equation step did
+  not finish in twenty minutes, against 41.5s fixed). Run with
+  `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1` **in the environment** — not
+  `Sys.setenv()`, because OpenBLAS sizes its pool at library init. koma's
+  matrices are at most `k x k`, far too small to benefit from threading.
+  `warn_if_blas_threaded()` warns when this is missed.
+- **Making a variable endogenous does not give it a transmission channel.**
+  Promoting `ea_policy_rate` to its own Taylor rule left it reaching only
+  the two `long_rate` equations, which are terminal — the stage-1 "a rate
+  rise cannot move GDP" finding survived unchanged. It is `<iso2>_long_rate`
+  appearing in the *investment* equation that actually closes the loop.
+  Check reachability on `sys_eq$character_gamma_matrix` rather than assuming.
+
+## Spillover / conditional-forecast analysis (`spillovers.R`)
+
+koma has **no impulse-response function**. A spillover or shock response is
+built the only way the API supports it: two `koma::forecast()` calls (one
+unconditional, one with `restrictions = `), differenced.
+
+- **Pair the two calls with common random numbers, via `set.seed()`
+  immediately before each `forecast()` call.** koma's stochastic forecasts
+  are not reproducible call-to-call by default (`conditional_forecast_check()`
+  already documents this: two identical calls gave `de_gdp` means an order
+  of magnitude apart). But a posterior draw's coefficients are read
+  deterministically from `fit$estimates[[eq]]$beta_jw[[i]]` — no RNG — and
+  the only randomness, `forecast_draw()`'s `z_matrix <- matrix(rnorm(...))`,
+  is drawn *before* the restriction branch and consumed identically whether
+  or not a restriction is present. So matching the seed on both calls
+  reproduces the identical innovation draw at index `i` in both, and
+  differencing isolates the shock. Verified: for a variable structurally
+  unrelated to the shocked one, the matched-seed diff was *exactly* zero at
+  every draw; unmatched, the same pair had sd nine orders of magnitude
+  larger. `scenario_diff()` does this automatically; don't call
+  `koma::forecast()` twice by hand.
+- **koma drops failed draws by subsetting the list**, so `fc$forecasts[[i]]`
+  after any drop no longer corresponds to posterior draw `i`. If the
+  baseline and scenario calls drop a *different* set of draws, pairing by
+  list position silently mispairs. `scenario_diff()` aborts if the two calls
+  return different draw counts — never disable that check to "make it work".
+- **`restrictions` only targets `sys_eq$endogenous_variables`.** An
+  exogenous-variable shock (e.g. oil price) has no innovation to condition
+  and cannot use `restrictions` at all — build a whole shocked copy of the
+  fit instead (`shock_exogenous_level()`, or `oil_price_shock()`) and pass
+  it as `scenario_diff()`'s `scenario_fit`. The common-random-numbers
+  argument still holds, since `z_matrix`'s size depends only on `horizon`
+  and the endogenous-variable count, not on `ts_data`'s content.
+- **A `restrictions` value is in the same space `forecast()` operates in**:
+  rate-space (percent `diff_log` growth) for a level/diff_log variable,
+  literal level for a rate/none variable (a policy rate's "+100bp" is just
+  `+1.0`, since level and rate space coincide when `method = "none"`). A
+  "GDP +1%" shock is therefore a **one-quarter growth-rate** impulse
+  (`gdp_demand_shock()`), not a permanent level step — state which
+  convention is in use; the two look identical in the restriction syntax
+  but mean very different things.
+- **koma silently *shortens* the horizon when exogenous data runs out**,
+  rather than erroring — `forecast_draw()` resets `horizon <-
+  nrow(na.omit(forecast_x_matrix))` and only warns. All of this project's
+  exogenous series happen to end exactly at the fit's native forecast end,
+  so asking for a longer horizon without first extending them
+  (`extend_forecast_horizon()`) silently returns fewer quarters than
+  requested, with no error to catch it.
+
 ## FRED API key
 
 The FRED API key lives in `.Renviron` as `FRED_API_KEY`. Copy
@@ -254,11 +372,28 @@ Run both after any change to `R/`, `_targets.R`, or the data pipeline.
 `tar_make()` confirms the pipeline still executes top-to-bottom (or fails
 at the expected, not-yet-implemented step); `devtools::test()` confirms
 the unit tests for whatever you touched now pass. `data_fred.R`,
-`data_eamdqd.R`, `panel_build.R`, `weights.R`, `stage1_models.R`, and the
-acceptance-rate/identification half of `diagnostics.R` are implemented;
-`stage2_system.R`, `stage3_blocks.R`, `scoring.R` and `diagnostics_grid()`
-are not, so `tar_make()` will still error partway through by design — that is expected, not a regression; make sure it errors at the
-*next* unimplemented stub, not an earlier one you touched.
+`data_eamdqd.R`, `panel_build.R`, `weights.R`, `stage1_models.R`,
+`diagnostics.R`, `stage2_system.R` and `spillovers.R` are implemented;
+`stage3_blocks.R` and `scoring.R` are not, so `tar_make()` will still error partway through
+by design — that is expected, not a regression; make sure it errors at the
+*next* unimplemented stub, not an earlier one you touched. `devtools::test()`
+likewise still shows 6 `not implemented` errors, all from
+`test-scoring.R` and `test-stage3_blocks.R`.
+
+`stage2_system.R` implements **stage 2a** (the two-country DE + FR pilot of
+the linkage mechanism) and **stage 2b** (all eleven economies: 68 stochastic
+equations and 35 identities in one `system_of_equations()`). See
+`reports/stage2a_pilot.qmd` and `reports/stage2b_full_system.qmd`.
+
+Stage 2b needs its **own** estimation window — `stage2b_dates()`, ending
+2024Q4 — because the stage-1/2a window does not leave enough observations
+(see the `k < T` note below). It therefore does *not* neutralise COVID by
+conditional fill the way stages 1 and 2a do; it uses dummies instead.
+`stage2_options()` defaults reproduce stage 2a exactly, so every stage-2b
+departure is opt-in and the cached 2a fit keeps reproducing.
+
+Run anything that sets `workers` with `OMP_NUM_THREADS=1
+OPENBLAS_NUM_THREADS=1` in the environment.
 
 Do not fetch real data as part of "proving a change works" unless the
 change is specifically about the fetch layer — most iteration should run

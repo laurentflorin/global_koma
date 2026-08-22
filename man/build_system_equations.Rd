@@ -4,26 +4,29 @@
 \alias{build_system_equations}
 \title{Assemble the joint multi-country equation string}
 \usage{
-build_system_equations(countries, country_specs, shared_concepts, weights)
+build_system_equations(spec, tau = NULL)
 }
 \arguments{
-\item{countries}{Character vector of ISO-2 country codes.}
+\item{spec}{A \code{\link[=stage2_spec]{stage2_spec()}} result.}
 
-\item{country_specs}{Named list of per-country stage-1 specs, keyed by
-\code{iso2} (see \code{\link[=stage1_country_equations]{stage1_country_equations()}}).}
-
-\item{shared_concepts}{Character vector of concepts to aggregate into
-\code{ea_}/\code{world_} variables (see \code{\link[=weighted_identity]{weighted_identity()}}).}
-
-\item{weights}{Named list of \code{\link[=country_weights]{country_weights()}} vectors, one per
-\code{shared_concepts} element.}
+\item{tau}{Optional named numeric vector, dependent variable -> sampler
+\code{tau} override, appended as \verb{[tau = value]}. Same contract as
+\code{\link[=stage1_country_equations]{stage1_country_equations()}}'s argument of the same name.}
 }
 \value{
-A single character vector of equation strings.
+A character vector of equation strings, stochastic first.
 }
 \description{
-Concatenates every country's stage-1 equations (see
-\code{\link[=stage1_country_equations]{stage1_country_equations()}}) with the shared aggregation identities
-(see \code{\link[=weighted_identity]{weighted_identity()}}) into one equation string for
-\code{koma::system_of_equations()}.
+Renders a \code{\link[=stage2_spec]{stage2_spec()}} into koma equation strings via
+\code{\link[=stochastic_equation]{stochastic_equation()}} and \code{\link[=identity_equation]{identity_equation()}}.
+}
+\details{
+\strong{Every stochastic equation is emitted before every identity, and that
+ordering is load-bearing.} koma assumes it positionally in two places:
+\code{model_identification()} loops \verb{for (j in seq(1, n_endogenous - n_identities))} over \emph{columns}, and \code{estimate_sem()} indexes
+\code{y_matrix[, jx]} by the same positional index. An identity declared
+anywhere but last therefore makes koma check and estimate the wrong
+columns, and mislabel the results, \strong{with no error}. Verified against
+koma 0.3.1 source; it is undocumented, but every example koma ships
+obeys it.
 }

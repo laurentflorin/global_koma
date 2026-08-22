@@ -203,3 +203,90 @@ identity_equation <- function(dep, weighted_terms) {
 
   paste0(dep, " == ", rhs)
 }
+
+#' Assemble a koma system from a set of blocks
+#'
+#' The generic system assembler. A **block** is a self-contained group of
+#' equations -- one country, an aggregation identity set, a policy rule --
+#' expressed as `list(stochastic = , identities = )` in exactly the shape
+#' [stage1_spec()] and [stage2_spec()] return. `build_system()` resolves the
+#' blocks, concatenates them, and hands the result to
+#' `koma::system_of_equations()`.
+#'
+#' The point of the block indirection is extension: stage 3 adds a
+#' `world_`-scope aggregation block to the list rather than editing the
+#' country loop. A block is either
+#'
+#' - a plain `list(stochastic = , identities = )`, or
+#' - a **function** `(countries, weights) -> list(stochastic = , identities = )`,
+#'   resolved here so a block can be parameterised by the country set and the
+#'   weight matrices without the caller pre-computing it.
+#'
+#' Two invariants are enforced, both of which koma will not check for you:
+#'
+#' - **Every stochastic equation is emitted before every identity.** koma
+#'   assumes this *positionally*: `model_identification()` loops
+#'   `for (j in seq(1, n_endogenous - n_identities))` over columns, and
+#'   `estimate_sem()` indexes `y_matrix[, jx]` with the same index. An
+#'   identity anywhere else makes koma check and estimate the **wrong
+#'   columns** and mislabel the results, silently. [build_system_equations()]
+#'   does the ordering; this function guarantees blocks cannot defeat it by
+#'   interleaving.
+#' - **No variable is defined twice.** Two blocks both claiming `ea_gdp`
+#'   would otherwise produce a duplicate left-hand side, which koma rejects
+#'   with a message that does not say which block was responsible.
+#'
+#' @param countries Character vector of ISO-2 country codes, passed to any
+#'   block supplied as a function.
+#' @param blocks A list of blocks (see above). Named for error messages.
+#' @param weights Named list of weight objects, passed to any block supplied
+#'   as a function (e.g. `list(foreign_demand = , ea = )`).
+#' @param tau Optional named numeric vector of per-equation sampler `tau`
+#'   overrides, as in [build_system_equations()].
+#'
+#' @return A `koma::koma_seq` object.
+#' @export
+build_system <- function(countries, blocks, weights, tau = NULL) {
+  if (length(blocks) == 0) {
+    cli::cli_abort("{.arg blocks} is empty; a system needs at least one block.")
+  }
+
+  resolved <- lapply(seq_along(blocks), function(i) {
+    block <- blocks[[i]]
+    out <- if (is.function(block)) block(countries, weights) else block
+    if (!is.list(out) || !any(c("stochastic", "identities") %in% names(out))) {
+      label <- names(blocks)[i] %||% as.character(i)
+      cli::cli_abort(
+        "Block {.val {label}} must be a list with {.field stochastic} and/or {.field identities}."
+      )
+    }
+    out
+  })
+  names(resolved) <- names(blocks)
+
+  # unname() before c(): concatenating a *named* list of lists prefixes every
+  # inner name with its outer one ("de.de_gdp"), which silently breaks every
+  # downstream lookup by variable name.
+  stochastic <- do.call(c, c(list(list()), unname(lapply(resolved, function(b) b$stochastic %||% list()))))
+  identities <- do.call(c, c(list(list()), unname(lapply(resolved, function(b) b$identities %||% list()))))
+
+  defined <- c(names(stochastic), names(identities))
+  duplicated_lhs <- unique(defined[duplicated(defined)])
+  if (length(duplicated_lhs) > 0) {
+    owners <- vapply(duplicated_lhs, function(v) {
+      paste(names(resolved)[vapply(resolved, function(b) {
+        v %in% c(names(b$stochastic), names(b$identities))
+      }, logical(1))], collapse = " + ")
+    }, character(1))
+    cli::cli_abort(c(
+      "Two blocks define the same variable.",
+      stats::setNames(paste0(duplicated_lhs, " (from ", owners, ")"), rep("x", length(duplicated_lhs)))
+    ))
+  }
+
+  spec <- list(stochastic = stochastic, identities = identities)
+  koma::system_of_equations(
+    equations = build_system_equations(spec, tau = tau),
+    exogenous_variables = stage2_exogenous_variables(spec)
+  )
+}

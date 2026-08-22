@@ -1,0 +1,359 @@
+---
+title: "Stage 2a: two-country linked pilot"
+subtitle: "Germany and France in one koma system -- proving the linkage mechanism before scaling to eleven"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2a_pilot.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir2a <- file.path("data", "cache", "stage2a")
+pilot <- readRDS(file.path(dir2a, "pilot.rds"))
+tuned <- readRDS(file.path(dir2a, "pilot_tuned.rds"))
+acceptance <- readRDS(file.path(dir2a, "acceptance.rds"))
+tuning <- readRDS(file.path(dir2a, "acceptance_tuning.rds"))
+comparison <- readRDS(file.path(dir2a, "comparison.rds"))
+sys_eq <- pilot$sys_eq
+```
+
+## 1. The system
+
+Everything below is a single `koma::system_of_equations()` call: 21 equations,
+13 stochastic and 8 identities, no external packages and no per-country loop
+over `estimate()`.
+
+```{r equations}
+#| comment: ""
+cat(paste(sys_eq$equations, collapse = ",\n"))
+```
+
+Three things differ from stage 1, and each is deliberate:
+
+1. **Exports are driven by `<iso2>_foreign_demand`**, a fixed-weight identity
+   over the *other country's endogenous GDP*. Stage 1 used the exogenous
+   `row_gdp`, which excludes every modelled economy — so intra-EA export
+   demand was missing entirely.
+2. **`ea_policy_rate` is endogenous**, with a Taylor-type rule over
+   GDP-weighted `ea_gdp` / `ea_prices` identities.
+3. **`<iso2>_long_rate` enters investment.** This is what actually gives the
+   policy rate a route to GDP — see §4.
+
+### Endogenous vs exogenous, as koma parses them
+
+```{r vars}
+kable(data.frame(
+  n = c(length(sys_eq$endogenous_variables), length(sys_eq$stochastic_equations),
+        length(sys_eq$identities), length(sys_eq$exogenous_variables),
+        length(sys_eq$predetermined_variables)),
+  variables = c(
+    paste(sys_eq$endogenous_variables, collapse = ", "),
+    paste(sys_eq$stochastic_equations, collapse = ", "),
+    paste(names(sys_eq$identities), collapse = ", "),
+    paste(sys_eq$exogenous_variables, collapse = ", "),
+    paste(sub("\\.L\\(1\\)", ".L1", sys_eq$predetermined_variables), collapse = ", ")),
+  row.names = c("endogenous", "stochastic equations", "identities",
+                "exogenous", "predetermined")
+), caption = "How koma parses the system. Note identity left-hand sides are endogenous.")
+```
+
+The exogenous set is **five**, not the three truly-global variables. `<iso2>_government`
+has no equation of its own (fiscal policy is a given, as in stage 1) but does
+appear in the domestic-demand identities. koma's `validate_completeness()` is
+an **exact-set** check — an undeclared variable aborts, and so does a
+declared-but-unused one — so this set is neither a subset nor a superset of
+what is used.
+
+### Linkage weights
+
+```{r weights}
+lw <- pilot$linkage_weights
+kable(data.frame(
+  identity = c("de_foreign_demand", "fr_foreign_demand", "ea_gdp / ea_prices"),
+  weights = c(
+    paste(sprintf("%s %.3f", names(lw$foreign_demand$de), lw$foreign_demand$de), collapse = ", "),
+    paste(sprintf("%s %.3f", names(lw$foreign_demand$fr), lw$foreign_demand$fr), collapse = ", "),
+    paste(sprintf("%s %.3f", names(lw$ea), lw$ea), collapse = ", "))
+), caption = "Each modelled partner keeps its true W_trade weight; everything else lumps into row_gdp.")
+```
+
+**Documented approximation.** `build_row_gdp()` excludes all eleven modelled
+economies by construction, so in a two-country pilot the 0.935 weight on
+`row_gdp` is proxying the nine *absent modelled* partners (0.374 of German
+trade) as well as genuine rest-of-world. This shrinks monotonically as
+countries are added — each new country claims its own `W_trade` weight out of
+the `row` residual, and no other weight is rescaled.
+
+The immediate consequence is that **the DE↔FR channel is small by
+construction**: France is only 6.5% of German trade. §5 shows that this is
+exactly what the estimates say.
+
+### The four constructed series
+
+`koma::estimate()` requires a series for *every* endogenous variable, identity-
+defined ones included, and only says so from inside `estimate()`. Four have no
+observed counterpart: `de_foreign_demand`, `fr_foreign_demand`, `ea_gdp`,
+`ea_prices`.
+
+They are built with `chain_weighted_index()`, **not** `apply_weights()`,
+because koma estimates on growth rates: an identity is a statement about
+`diff(log())`, and `log(0.6a + 0.4b) != 0.6*log(a) + 0.4*log(b)`. A level-space
+aggregate would leave the estimator reading one relationship out of the data
+while the identity's `Gamma` column encodes another — silently, since koma
+performs no identity-consistency check. For `de_foreign_demand` the two
+constructions differ by up to **13.7 percentage points** of quarterly growth.
+The chained version reproduces its identity to 8.5e-14.
+
+## 2. Pre-flight
+
+```{r preflight}
+kable(pilot$preflight, caption = "All checks run before committing to estimation.")
+```
+
+`model_identification()` fills free coefficients with `rnorm` draws, so a
+single pass proves very little — it is repeated across 10 seeds, and passes
+the order **and** rank conditions on all of them.
+
+The "identities declared last" check is not cosmetic. koma assumes it
+positionally in two places (`model_identification()` loops
+`for (j in seq(1, n_endogenous - n_identities))` over columns, and
+`estimate_sem()` indexes `y_matrix[, jx]` by the same index), so an identity
+declared anywhere else makes koma estimate the wrong columns and mislabel the
+results **with no error**. This is undocumented; every example koma ships
+obeys it.
+
+## 3. Runtime and acceptance rates
+
+```{r runtime}
+#| results: asis
+cat(sprintf("Estimated in **%.1f s** (%d stochastic equations, %d observations, koma defaults: `ndraws = 2000`, `burnin_ratio = 0.5`, `tau = 1.1`). koma fans out one future per stochastic equation.\n",
+            attr(pilot$fit, "runtime_s"), length(sys_eq$stochastic_equations), nrow(pilot$fit$y_matrix)))
+```
+
+```{r acceptance}
+a <- acceptance
+a$acceptance_rate <- ifelse(is.na(a$acceptance_rate), NA, round(a$acceptance_rate, 4))
+kable(a, caption = "Acceptance rates at the default tau = 1.1. Band is 20-60% (koma:::get_default_acceptance_prob()).")
+```
+
+`de_prices` and `fr_prices` show `NA`: they have **no contemporaneous
+endogenous regressor**, so there is no `gamma` block and no Metropolis step at
+all. They are correctly not flagged.
+
+Four equations sat marginally over the 60% ceiling. One tuning round at
+`tau = 2.2` (koma's rule of thumb: doubling `tau` roughly halves acceptance)
+cleared all four:
+
+```{r tuning}
+t <- tuning
+t$acceptance_rate_before <- round(t$acceptance_rate_before, 4)
+t$acceptance_rate_after <- round(t$acceptance_rate_after, 4)
+kable(t[, c("equation", "tau", "acceptance_rate_before", "flagged_before",
+            "acceptance_rate_after", "flagged_after")],
+      row.names = FALSE,
+      caption = "Before/after one tau round: 4 flagged -> 0.")
+```
+
+Worth noting for its own sake: the nine untouched equations' acceptance rates
+are **bit-identical** before and after, confirming koma's documented claim that
+a per-equation `[tau = ]` override leaves the rest of the system alone.
+
+## 4. Does the policy rate reach GDP?
+
+The stage-1 diagnostics report closed on a structural finding: a policy-rate
+shock could not move GDP, because `long_rate` was a terminal satellite
+equation. Making `ea_policy_rate` endogenous does **not** on its own fix
+that — traced on the contemporaneous `Gamma` graph, a policy rate with no
+investment channel reaches only `de_long_rate` and `fr_long_rate`, and stops.
+
+Adding `<iso2>_long_rate` to the investment equation is what closes the loop:
+
+```{r reachability}
+g <- sys_eq$character_gamma_matrix
+v <- sys_eq$endogenous_variables
+adj <- g != "0" & g != "1"
+diag(adj) <- FALSE
+reachable <- function(from) {
+  seen <- from
+  repeat {
+    nxt <- unique(c(seen, v[which(adj[v %in% seen, , drop = FALSE], arr.ind = TRUE)[, 2]]))
+    if (setequal(nxt, seen)) break
+    seen <- nxt
+  }
+  setdiff(seen, from)
+}
+kable(data.frame(
+  from = c("ea_policy_rate", "de_gdp"),
+  reaches = c(length(reachable("ea_policy_rate")), length(reachable("de_gdp"))),
+  includes_fr_gdp = c("fr_gdp" %in% reachable("ea_policy_rate"), "fr_gdp" %in% reachable("de_gdp")),
+  detail = c(paste(sort(reachable("ea_policy_rate")), collapse = ", "), "(full cycle)")
+), caption = "Contemporaneous reachability on the Gamma matrix.")
+```
+
+The cross-country cycle asked for is present and closed:
+`de_gdp → fr_foreign_demand → fr_exports → fr_gdp → de_foreign_demand →
+de_exports → de_gdp`.
+
+**Is that well-posed?** Yes, and estimation and forecasting stress different
+things:
+
+- **Estimation** is limited-information and equation-by-equation
+  (`draw_parameters_j`). Contemporaneous endogenous regressors are read from
+  the *observed* `y_matrix`; koma never inverts `Gamma` while sampling. A cycle
+  is the ordinary simultaneous-equations case. The binding constraint is
+  identification, checked symbolically before any data is touched — and it
+  passes.
+- **Forecasting** is where a bad loop would bite: the reduced form is
+  `B %*% solve(Gamma)`, so `Gamma` must be invertible. Measured `det(Gamma)`
+  stays in 0.31–1.11 across rate→investment coefficients of −10…+5 and Taylor
+  gains 0…5. The economically-correct *negative* rate→investment sign moves it
+  **away** from singularity, since a negative feedback loop is stabilising.
+
+Had it not been well-posed there would have been three distinct failure modes:
+under-identification aborts up front (cheap, loud); a singular `Gamma` throws a
+bare base-R `solve()` error at forecast time; and a *near*-singular `Gamma`
+throws nothing at all and silently returns explosive forecasts. koma has no
+cycle, stability or eigenvalue check anywhere, so the third is the dangerous
+one. Here the cross-country loop gain is ≈0.369 × 0.065 × 0.291 × 0.139 ≈
+**0.001** — three orders of magnitude from 1.
+
+## 5. Comparison against the stage-1 standalone DE and FR fits
+
+Three of six equations per country are structurally identical to stage 1 and
+three were respecified. Only the identical ones isolate what *joint estimation*
+did, so they are reported separately — treating the others as comparable would
+attribute a respecification to the linkage.
+
+```{r structural}
+kable(data.frame(
+  equation = c("consumption", "imports", "prices", "investment", "exports", "long_rate"),
+  `vs stage 1` = c("identical", "identical", "identical",
+                   "gained <iso2>_long_rate", "row_gdp -> <iso2>_foreign_demand",
+                   "gained <iso2>_gdp"),
+  comparable = c("yes", "yes", "yes", "no", "no", "no"),
+  check.names = FALSE
+), caption = "Which equations can be compared at all.")
+```
+
+### The clean comparison
+
+```{r clean}
+d <- comparison[comparison$structurally_identical, ]
+d <- d[order(d$equation, d$term), ]
+kable(data.frame(
+  equation = d$equation, term = sub("\\.L\\(1\\)", ".L1", d$term),
+  stage1 = sprintf("%.3f [%.2f, %.2f]", d$estimate_s1, d$ci_low_s1, d$ci_high_s1),
+  stage2a = sprintf("%.3f [%.2f, %.2f]", d$estimate_s2, d$ci_low_s2, d$ci_high_s2),
+  delta = round(d$delta, 3),
+  `outside stage-1 90% CI` = ifelse(d$outside_s1_ci, "YES", "-"),
+  check.names = FALSE
+), row.names = FALSE,
+caption = "Structurally identical equations: posterior mean and 90% interval.")
+```
+
+```{r clean-summary}
+#| results: asis
+clean <- comparison[comparison$structurally_identical, ]
+cat(sprintf("**%d of %d** coefficients in the identical equations moved outside their stage-1 90%% interval.\n",
+            sum(clean$outside_s1_ci), nrow(clean)))
+```
+
+### Where they differ, and why
+
+Three distinct patterns, and the mechanism for each is visible in koma's
+sampler rather than inferred:
+
+**`prices` does not move at all** (deltas 0.000–0.006, i.e. Monte Carlo noise).
+It is the one equation with no contemporaneous endogenous regressor, so
+`draw_omega_j` takes its `number_endogenous_in_j == 0` branch, which uses only
+the equation's *own* restricted regressor columns. Nothing about the wider
+system can reach it. This is a useful control: it confirms the differences
+elsewhere are a real estimation effect and not a change of sample, vintage or
+seed handling.
+
+**`consumption` moves slightly** (`de_gdp` +0.007, `fr_gdp` +0.059).
+
+**`imports` moves most** — `de_domestic_demand` 0.059 → 0.743, `fr_domestic_demand`
+1.725 → 2.633.
+
+The mechanism is the **instrument set, not the trade loop**. koma's sampler is
+limited-information, but the `gamma` block of any equation with a
+contemporaneous endogenous regressor is drawn from a target that projects on
+the **full** `x_matrix`. Stage 1 gave Germany 12 columns; stage 2a gives 19:
+
+```{r instruments}
+#| comment: ""
+de1 <- readRDS(file.path("data", "cache", "stage1", "de.rds"))
+cat("added to the projection for every equation:\n  ",
+    paste(sub("\\.L\\(1\\)", ".L1", setdiff(colnames(pilot$fit$x_matrix), colnames(de1$x_matrix))),
+          collapse = ", "), "\n")
+cat("\nestimation sample unchanged: stage 1 n =", nrow(de1$y_matrix),
+    " stage 2a n =", nrow(pilot$fit$y_matrix), "\n")
+```
+
+Imports move most because `<iso2>_domestic_demand` is the most weakly
+identified contemporaneous regressor in the stage-1 system — Germany's stage-1
+estimate was 0.059 with a 90% interval of [−1.05, 1.18], essentially
+uninformative — so it is the coefficient with the most room to move when the
+instrument set widens. Note the interval does not *tighten* (it widens
+slightly, to [−0.53, 2.03]): this is a shift in location, not a gain in
+precision, and the two estimates remain mutually consistent.
+
+**The headline is the null result.** No coefficient in a structurally
+identical equation moved outside its stage-1 90% interval. That is the honest
+reading of a two-country pilot with `w_de_fr = 0.065`: the mechanism works,
+the cycle is closed and identified, and it changes almost nothing yet — which
+is what a loop gain of 0.001 predicts. The linkage becomes economically
+material only as countries are added and the `row_gdp` residual is replaced by
+modelled partners.
+
+### The new coefficients
+
+```{r new}
+ct2 <- readRDS(file.path(dir2a, "coef_stage2a.rds"))
+new_terms <- ct2[ct2$term %in% c("de_foreign_demand", "fr_foreign_demand",
+                                 "de_long_rate", "fr_long_rate", "ea_gdp", "ea_prices") |
+                   ct2$equation == "ea_policy_rate", ]
+kable(data.frame(
+  equation = new_terms$equation, term = new_terms$term,
+  estimate = round(new_terms$estimate, 3),
+  `90% interval` = sprintf("[%.2f, %.2f]", new_terms$ci_low, new_terms$ci_high),
+  check.names = FALSE
+), row.names = FALSE, caption = "Coefficients that exist only in stage 2a.")
+```
+
+All signed as theory expects: export elasticities on foreign demand are
+positive (DE 0.96, FR 1.67); the rate→investment channel is negative in both
+countries (DE −0.111, FR −0.076), though both intervals straddle zero; and the
+Taylor rule loads positively on **both** `ea_prices` (0.268) and `ea_gdp`
+(0.203) with a near-unit-root lag (0.995). The `ea_policy_rate` equation's own
+acceptance rate, 39.3%, sits comfortably mid-band.
+
+## 6. Verdict
+
+The mechanism works. The cross-country contemporaneous cycle is expressible in
+one `system_of_equations()`, is identified on every seed tried, and yields an
+invertible `Gamma` with a large margin. Acceptance rates are in band after one
+tuning round. Every new coefficient is correctly signed.
+
+Two caveats to carry into stage 2b:
+
+- **The pilot's economic content is small.** With France at 6.5% of German
+  trade and 93.5% of German foreign demand riding on a `row_gdp` series that
+  excludes the nine other modelled economies, the linkage cannot do much yet.
+  Nothing here validates the *magnitude* of cross-country transmission — only
+  the mechanism.
+- **The rate→investment channel is not sharply estimated.** Both coefficients
+  are correctly signed but their 90% intervals include zero. The channel exists
+  structurally; whether it is strong enough to make a policy-rate conditional
+  forecast meaningful is a question for the conditional-forecast checks, not
+  this report.

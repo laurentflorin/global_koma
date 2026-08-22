@@ -418,6 +418,121 @@ apply_weights <- function(panel, concept, weights, scope = c("ea", "world")) {
   )
 }
 
+#' Build a level index whose growth rate is a weighted average of others
+#'
+#' The rate-space counterpart to [apply_weights()], and the one to use when
+#' the series being built is the left-hand side of a koma **identity**.
+#'
+#' **Why not [apply_weights()].** koma estimates on growth rates: a series
+#' tagged `method = "diff_log"` is converted by `rate()` to
+#' `100*diff(log(x))` before it reaches the sampler, and an identity like
+#' `ea_gdp == 0.6*de_gdp + 0.4*fr_gdp` is therefore a statement about
+#' *growth rates*, not levels. [apply_weights()] adds the **levels**, and
+#' `log(0.6*a + 0.4*b) != 0.6*log(a) + 0.4*log(b)` -- so its output does not
+#' satisfy the identity once koma differences it. The estimator would then
+#' read one relationship out of the data while the identity's `Gamma` column
+#' encodes another, with no error: koma performs no identity-consistency
+#' check (see CLAUDE.md).
+#'
+#' That mismatch is tolerable for `<iso2>_gdp`, which is an independently
+#' observed series whose identity holds only up to the national-accounts
+#' statistical discrepancy anyway. It is **not** tolerable for a variable
+#' like `<iso2>_foreign_demand` or `ea_gdp`, which has no observed
+#' counterpart and exists only as its identity -- there, any gap is pure
+#' construction error.
+#'
+#' So this builds the weighted average in growth space and integrates back:
+#' `g = sum_i w_i * diff(log(x_i))`, then `index = base * exp(cumsum(g))`.
+#' koma's `level()` inverts `diff_log` as `exp(cumsum(x/100))*100`
+#' (`docs/koma-api.md` §1), so `rate()` of the result reproduces `100*g`
+#' exactly and the identity holds to machine precision.
+#'
+#' Weights are **not** renormalised: they are used as given, so a set that
+#' does not sum to 1 produces an index that is not a weighted average. That
+#' is deliberate -- an identity's weights are a specification choice (see
+#' [identity_equation()]), and silently rescaling them here would desync the
+#' data from the equation string built elsewhere.
+#'
+#' Ragged edges are preserved: leading/trailing periods where any component
+#' is `NA` come back `NA` rather than poisoning the whole chain through
+#' `cumsum()`. An *internal* `NA` is an error, since a chained index cannot
+#' bridge one -- use [fill_internal_gaps()] first.
+#'
+#' @param panel A named list of `koma_ts` objects (see [build_global_panel()]).
+#' @param weights Named numeric vector keyed by **full variable name**
+#'   (e.g. `c(fr_gdp = 0.065, row_gdp = 0.935)`), not by ISO-2 code as in
+#'   [apply_weights()] -- the components of one of these indices need not
+#'   share a concept, or even be country series.
+#' @param base Index value at the first computable observation.
+#'
+#' @return A single `koma_ts` with `series_type = "level"` and
+#'   `method = "diff_log"`, spanning the components' common window.
+#' @export
+chain_weighted_index <- function(panel, weights, base = 100) {
+  if (length(weights) == 0 || is.null(names(weights)) || any(!nzchar(names(weights)))) {
+    cli::cli_abort("{.arg weights} must be a non-empty vector named by variable.")
+  }
+  series_list <- lapply(names(weights), function(v) panel[[v]])
+  missing <- names(weights)[vapply(series_list, is.null, logical(1))]
+  if (length(missing) > 0) {
+    cli::cli_abort("{.arg panel} is missing {.val {missing}}.")
+  }
+
+  # diff_log is meaningless on a series that is already a rate, and on a
+  # non-positive one. Both are caller errors worth naming.
+  types <- vapply(series_list, function(x) attr(x, "series_type") %||% NA_character_, character(1))
+  not_level <- names(weights)[!identical(NA_character_, types) & types != "level"]
+  if (length(not_level) > 0) {
+    cli::cli_abort(c(
+      "{.fn chain_weighted_index} needs {.field series_type} {.val level} components.",
+      "x" = "{.val {not_level}} {?is/are} not."
+    ))
+  }
+  non_positive <- names(weights)[vapply(series_list, function(x) any(x <= 0, na.rm = TRUE), logical(1))]
+  if (length(non_positive) > 0) {
+    cli::cli_abort("{.val {non_positive}} {?has/have} non-positive values; {.fn log} is undefined.")
+  }
+
+  freqs <- unique(vapply(series_list, stats::frequency, numeric(1)))
+  if (length(freqs) != 1) {
+    cli::cli_abort("All series being chained must share one frequency.")
+  }
+  common_start <- max(vapply(series_list, function(x) stats::tsp(x)[1], numeric(1)))
+  common_end <- min(vapply(series_list, function(x) stats::tsp(x)[2], numeric(1)))
+  if (common_start > common_end) {
+    cli::cli_abort("{.arg weights} names series with no overlapping window.")
+  }
+
+  log_levels <- lapply(series_list, function(x) {
+    log(as.numeric(stats::window(x, start = common_start, end = common_end)))
+  })
+  n <- length(log_levels[[1]])
+  growth <- Reduce(`+`, Map(function(l, w) diff(l) * w, log_levels, as.numeric(weights)))
+
+  observed <- which(!is.na(growth))
+  if (length(observed) == 0) {
+    cli::cli_abort("Every period is {.val NA} for at least one component; nothing to chain.")
+  }
+  first <- min(observed)
+  last <- max(observed)
+  if (anyNA(growth[first:last])) {
+    cli::cli_abort(c(
+      "A component has an internal {.val NA}; a chained index cannot bridge one.",
+      "i" = "Run {.fn fill_internal_gaps} on {.arg panel} first."
+    ))
+  }
+
+  index <- rep(NA_real_, n)
+  index[first] <- base
+  index[seq(first + 1L, last + 1L)] <- base * exp(cumsum(growth[first:last]))
+
+  koma::as_ets(
+    stats::ts(index, start = num_to_period(common_start, freqs), frequency = freqs),
+    series_type = "level",
+    method = "diff_log"
+  )
+}
+
 #' Build a koma identity equation from country weights
 #'
 #' Convenience wrapper around [identity_equation()] that turns a

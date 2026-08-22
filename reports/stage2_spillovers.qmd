@@ -1,0 +1,524 @@
+---
+title: "Cross-country spillovers from the eleven-country system"
+subtitle: "Demand, monetary and oil shocks via matched conditional forecasts -- koma has no impulse-response helper, so spillovers are built as forecast differences"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2_spillovers.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+library(ggplot2)
+
+dir_sp <- file.path("data", "cache", "spillovers")
+dir_2b <- file.path("data", "cache", "stage2b")
+
+extension <- readRDS(file.path(dir_sp, "extension.rds"))
+diffs_by_country <- readRDS(file.path(dir_sp, "diffs_by_country.rds"))
+diffs_monetary <- readRDS(file.path(dir_sp, "diffs_monetary.rds"))
+diffs_monetary_1q <- readRDS(file.path(dir_sp, "diffs_monetary_1q.rds"))
+diffs_oil <- readRDS(file.path(dir_sp, "diffs_oil.rds"))
+mat <- readRDS(file.path(dir_sp, "spillover_matrix.rds"))
+sanity <- readRDS(file.path(dir_sp, "sanity.rds"))
+linkage_weights <- readRDS(file.path(dir_sp, "linkage_weights.rds"))
+failed_idx_monetary <- readRDS(file.path(dir_sp, "failed_idx_monetary.rds"))
+
+countries <- modelled_countries
+HORIZON <- 8
+
+response_table <- function(diffs, concept, source_label) {
+  vars <- country_var(countries, concept)
+  d <- diffs[diffs$variable %in% vars, ]
+  d$country <- toupper(sub(paste0("_", concept, "$"), "", d$variable))
+  d <- d[order(d$country, d$horizon), ]
+  d$source <- source_label
+  d
+}
+
+# Every table in this report is keyed off median_diff, not mean_diff -- see
+# section 1.1 on explosive draws for why.
+report_cols <- c("country", "horizon", "median_diff", "ci_low", "ci_high", "explosive_frac")
+```
+
+## 1. Method
+
+koma has no impulse-response function. `scenario_diff()` (`R/spillovers.R`)
+builds one the only way koma's API supports it: run `koma::forecast()`
+**twice** -- once unconditional (the baseline), once with `restrictions = `
+pinning the shocked variable's path -- and difference the two paths.
+
+**Matched draws, not independent ones.** Two identical `koma::forecast()`
+calls on the same fit are not reproducible: they gave `de_gdp` means
+differing by an order of magnitude more than any real scenario effect (see
+`conditional_forecast_check()`'s roxygen). Differencing two independent
+stochastic forecasts would inherit that noise on both legs.
+
+The fix is common random numbers. A posterior draw's coefficients are read
+deterministically from `fit$estimates[[eq]]$beta_jw[[i]]` -- no RNG
+involved. The only randomness is the future-innovation draw inside koma's
+`forecast_draw()`, consumed identically whether or not a restriction is
+present (restrictions only *add* a conditional correction on top). Calling
+`set.seed()` immediately before each top-level `forecast()` call therefore
+reproduces the identical innovation draw at index `i` in both legs.
+**Verified**: for a variable structurally unrelated to the shocked one, the
+matched-seed diff was *exactly* zero at every one of dozens of draws tested;
+an unmatched-seed diff on the same pair had sd nine orders of magnitude
+larger, for a quantity that should be zero (`tests/testthat/test-spillovers.R`).
+
+**Horizon extension.** All four exogenous series stop exactly at the
+system's native forecast end (2026Q1, 5 quarters ahead) -- koma silently
+*shortens* the horizon rather than erroring when asked to forecast further,
+so an unextended request for "8 quarters" would silently deliver 5.
+`extend_forecast_horizon()` extends `row_gdp`, `oil_price` and `eur_usd` by
+carrying forward the **average of their last 4 quarters' growth**; this is a
+trailing-momentum continuation, not a forecast of oil markets or world
+trade, and is stated here as the assumption it is:
+
+```{r extension}
+kable(extension, row.names = FALSE, caption = "How each exogenous series was extended to reach an 8-quarter horizon.")
+```
+
+**Shock definitions.**
+
+- **Demand shocks** (`gdp_demand_shock()`): `<iso2>_gdp`'s growth rate is
+  restricted to baseline **+1 percentage point at horizon 1 only**; GDP
+  evolves endogenously afterward. This is a one-quarter growth-rate impulse,
+  not a permanent level step -- the same rate-space convention
+  `conditional_forecast_check()` already uses for its endogenous scenarios.
+- **Monetary shock** (`policy_rate_shock()`): `ea_policy_rate` restricted to
+  baseline **+100bp for 4 quarters**, then free.
+- **Oil shock** (`oil_price_shock()`): `oil_price`'s **level** scaled
+  **x1.5**, sustained for the whole horizon -- `oil_price` is exogenous, so
+  it cannot be conditioned on via `restrictions` at all (koma's restriction
+  mechanism only targets endogenous variables); this instead builds a whole
+  shocked copy of the fit via `shock_exogenous_level()`.
+
+All scenarios share **one** baseline forecast (computed once, reused via
+`baseline_forecast = `) and the same seed, so every scenario in this report
+is directly comparable to every other.
+
+### 1.1 Explosive posterior draws -- diagnosed, not silently presented
+
+The first pass at this battery reported `mean_diff`/`sd_diff` as the point
+estimate, per [scenario_diff()]'s original design. Those numbers are
+**not usable**: `de_gdp`'s `mean_diff` in response to its own demand shock
+ran `1.0, 3733.6, -8.76e+06, 2.00e+10, -4.46e+13, 9.94e+16, -2.21e+20,
+4.93e+23` from horizon 1 to 8 -- a sign-alternating, order-of-magnitude
+explosion with no economic content.
+
+The cause is real, not a bug in the differencing mechanism: koma's Gibbs
+sampler places **no stationarity constraint** on a draw's coefficients, and
+on a 103-equation system this close to the `k < T` wall (`CLAUDE.md`), a
+non-trivial and *growing* share of posterior draws are dynamically
+explosive -- verified directly on the cached baseline forecast, checking
+`de_gdp` in isolation:
+
+```{r explosive-diagnosis}
+bf <- attr(diffs_by_country$de, "baseline_forecast")
+diag_tbl <- data.frame(
+  horizon = 1:8,
+  pct_draws_gt_100 = sapply(1:8, function(h) {
+    x <- sapply(bf$forecasts, function(m) m[h, "de_gdp"])
+    round(100 * mean(abs(x) > 100), 1)
+  })
+)
+kable(diag_tbl, col.names = c("horizon", "% of draws with |de_gdp| > 100pp"),
+      caption = "Share of posterior draws that are dynamically explosive by horizon (baseline forecast, de_gdp).")
+```
+
+And an explosive draw is explosive **system-wide**: checking every one of
+the 103 endogenous variables at horizon 8 for the same set of draws, a
+draw flagged on `de_gdp` is flagged on 88% of all other variables too --
+this is a property of that draw's implied companion matrix, not something
+specific to GDP or to Germany.
+
+**Fix**: [scenario_diff()] now reports `median_diff` as the point estimate
+(the median is unaffected by a fat right/left tail by construction) and an
+`explosive_frac` diagnostic column -- the share of draws at that
+`(variable, horizon)` where either leg of the forecast exceeds 100 in
+absolute value. `ci_low`/`ci_high` (the empirical 5th/95th percentile) were
+already robust to this and needed no change. Every table below reports
+`median_diff` and `explosive_frac`, never `mean_diff` -- **always check
+`explosive_frac` before trusting a number in this report**; at any horizon
+where it is not small, the median is a summary of a minority of the
+posterior, and the finding should be read as directional at best.
+
+### 1.2 Restriction targets must be anchored to the median, not koma's `$mean`
+
+A second, independent problem surfaced once `median_diff` was in place: even
+the *shocked variable's own* diff at horizon 1 -- where the restriction pins
+an exact value, so the diff should equal `+size` almost exactly -- came out
+wildly off. `de_gdp`'s own-shock `median_diff` at horizon 1 was **-3.3**,
+not +1.
+
+The cause: [gdp_demand_shock()] and [policy_rate_shock()] built their
+restriction target as `koma::forecast()`'s own `$mean` summary at horizon 1,
+plus `size`. `$mean` is an ordinary cross-draw mean and inherits exactly the
+same explosive-draw contamination as section 1.1 -- **in the raw, unshocked
+baseline, before any restriction is even applied**:
+
+```{r mean-median-gap}
+gap_tbl <- data.frame(
+  variable = c("de_gdp", "nl_gdp"),
+  baseline_mean_h1 = c(
+    as.numeric(attr(diffs_by_country$de, "baseline_forecast")$mean$de_gdp)[1],
+    as.numeric(attr(diffs_by_country$nl, "baseline_forecast")$mean$nl_gdp)[1]
+  ),
+  baseline_median_h1 = c(
+    as.numeric(attr(diffs_by_country$de, "baseline_forecast")$median$de_gdp)[1],
+    as.numeric(attr(diffs_by_country$nl, "baseline_forecast")$median$nl_gdp)[1]
+  )
+)
+kable(gap_tbl, digits = 2, row.names = FALSE,
+      caption = "koma's own $mean vs $median forecast summary, horizon 1, RAW baseline (no shock).")
+```
+
+A restriction fixes the scenario's *absolute* value to a single constant
+(`target = baseline_h1 + size`) shared by every draw, so each draw's diff is
+`target - baseline_draw_i` -- an exact affine, order-reversing function of
+that draw's own baseline value. Anchoring `target` to a mean that sits
+20+pp away from the typical (median) draw silently bakes that entire gap
+into every single draw's diff, with nothing about it visible in the
+restriction call itself. Both shock builders now anchor to `baseline_forecast$median` instead
+(`R/spillovers.R`); the whole battery below was recomputed after the fix.
+Because a restriction's diff is an exact affine, order-preserving function
+of each draw's own baseline value (`target - baseline_draw_i`, `target`
+constant), anchoring `target` to the *median* of those same baseline draws
+guarantees `median_diff` at the shocked variable's own restricted horizon
+equals `+size` **exactly** -- verified for every one of the 11 demand
+shocks below (`de_gdp`'s own-shock `median_diff` at horizon 1: **+1.0000**,
+down from -3.3 pre-fix; identically +1.0000 for all other 10 countries'
+own-variable response).
+
+### 1.3 A sustained restriction can make koma's solve outright singular
+
+The 4-quarter monetary shock (section 4) surfaced a third, distinct
+problem: `scenario_diff()` aborted with a **draw-count mismatch** --
+`r length(failed_idx_monetary)` of 1000 baseline draws produced no
+restricted forecast at all, each failing with the same koma-internal
+error:
+
+> `A = R %*% Omega %*% t(R) is singular` -- restricting 4 simultaneous
+> horizons requires inverting a 4x4 matrix built from that draw's own
+> posterior innovation covariance (`Omega`); for a draw whose covariance is
+> rank-deficient there, no valid conditional innovation exists.
+
+This was traced by instrumenting `koma:::forecast_draw()` directly (see
+`R/spillovers.R`'s `scenario_diff()` roxygen, "Draw count mismatches").
+Two things were verified before proceeding:
+
+- All `r length(failed_idx_monetary)` failed draws are a **subset** of the
+  explosive-draw population from section 1.1 (100% overlap, checked against
+  the `|de_gdp| > 100` flag at horizon 8) -- the same badly-behaved draws
+  that blow up unconditionally also fail outright under a demanding joint
+  restriction, rather than a new or different failure mode.
+- A **single-quarter** version of the identical +100bp shock (no joint
+  4-horizon restriction) does **not** trigger this failure at all, and
+  behaves like every other single-quarter shock in this report (explosive
+  share ~5% at horizon 1, growing with horizon exactly as in section 1.1).
+  This isolates the cause to the *joint, sustained* restriction specifically,
+  not to `ea_policy_rate` or to the shock size.
+
+Since koma drops these draws by subsetting a list with no record of which
+original indices they were, `scenario_diff()` cannot realign automatically
+-- doing so silently would be exactly the mispairing its abort exists to
+prevent (see "Alignment guard" in its roxygen). The indices were instead
+independently re-derived (by reproducing koma's per-draw loop under
+`trace()`) and passed explicitly via the new `drop_baseline_draws =`
+argument, which removes exactly those positions from the baseline before
+pairing -- a documented, auditable exception, not a bypass of the check.
+
+## 2. German demand shock
+
+```{r de-shock}
+de_diff <- diffs_by_country$de
+gdp_de <- response_table(de_diff, "gdp", "de")
+prices_de <- response_table(de_diff, "prices", "de")
+```
+
+```{r de-gdp-plot}
+#| fig-width: 9
+#| fig-height: 5
+ggplot(gdp_de, aes(horizon, median_diff, color = country)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_ribbon(data = gdp_de[gdp_de$country == "DE", ],
+              aes(ymin = ci_low, ymax = ci_high), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.7) +
+  labs(title = "GDP response to a +1pp German demand shock (quarter 1 only)",
+       x = "quarter", y = "GDP growth diff, pp", color = NULL) +
+  theme_minimal()
+```
+
+```{r de-table}
+kable(gdp_de[, report_cols],
+      row.names = FALSE, digits = 4, caption = "GDP response by country, quarters 1-8.")
+kable(prices_de[, report_cols],
+      row.names = FALSE, digits = 4, caption = "Prices response by country, quarters 1-8.")
+```
+
+Cumulative 8-quarter Austrian GDP effect (+1.70) actually **exceeds**
+Germany's own (+1.38) -- see section 7.1 for the diagnosis (indirect
+propagation through Austria's large direct weight on Germany, not a defect).
+
+## 3. US demand shock
+
+```{r us-shock}
+us_diff <- diffs_by_country$us
+gdp_us <- response_table(us_diff, "gdp", "us")
+prices_us <- response_table(us_diff, "prices", "us")
+```
+
+```{r us-gdp-plot}
+#| fig-width: 9
+#| fig-height: 5
+ggplot(gdp_us, aes(horizon, median_diff, color = country)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_ribbon(data = gdp_us[gdp_us$country == "US", ],
+              aes(ymin = ci_low, ymax = ci_high), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.7) +
+  labs(title = "GDP response to a +1pp US demand shock (quarter 1 only)",
+       x = "quarter", y = "GDP growth diff, pp", color = NULL) +
+  theme_minimal()
+```
+
+```{r us-exposure}
+exposure <- data.frame(
+  country = toupper(countries),
+  us_weight = sapply(countries, function(cc) {
+    w <- linkage_weights$foreign_demand[[cc]]
+    v <- w[names(w) == "us_gdp"]
+    if (length(v)) unname(v) else NA_real_
+  })
+)
+kable(exposure[order(-exposure$us_weight), ], row.names = FALSE, digits = 3,
+      caption = "Weight each country's foreign_demand identity puts on us_gdp -- the a priori exposure ranking.")
+```
+
+```{r us-table}
+kable(gdp_us[, report_cols],
+      row.names = FALSE, digits = 4, caption = "GDP response by country, quarters 1-8.")
+kable(prices_us[, report_cols],
+      row.names = FALSE, digits = 4, caption = "Prices response by country, quarters 1-8.")
+```
+
+### Implausible result: the ranking does not track exposure
+
+The exposure table above correctly identifies Ireland as by far the most
+US-exposed economy (weight 0.247, more than double Germany/Netherlands'
+0.098) -- the a priori ranking IE > DE &approx; NL holds in the trade
+weights themselves. It does **not** hold in the simulated response:
+cumulative 8-quarter GDP effects rank Greece (+0.42) and Austria (+0.36)
+above Germany (+0.20) and the Netherlands (+0.19), and **Ireland's own
+cumulative effect is negative** (-0.08) despite its outsized exposure.
+
+Two things point to noise rather than a real, inverted transmission
+ranking. First, every country's response is tiny in absolute terms (all
+under 0.5pp cumulative over 8 quarters, versus the 5-95% band's width of
+tens of points even at horizon 1) and **oscillates in sign from horizon 2
+onward** (`ie_gdp`: +0.06, -0.04, -0.02, -0.00, -0.02, -0.02, -0.02, -0.02)
+-- not the smooth, one-signed decay a genuine propagating shock would leave.
+Second, `explosive_frac` for these same cells is already 27-45% by horizon
+3-5, i.e. the median itself is drawn from a shrinking, and increasingly
+non-majority, well-behaved share of the posterior well before horizon 8.
+Given both, this ranking should be read as within the noise floor, not as
+evidence Ireland is atypically insulated from US demand -- a claim this
+battery cannot support with the tiny signal available at this shock size.
+
+## 4. Common monetary shock
+
+`ea_policy_rate` +100bp, sustained for 4 quarters. See 1.3 for how the
+`r length(failed_idx_monetary)` draws where koma's restricted solve is
+exactly singular were identified and excluded.
+
+```{r mon-gdp-plot}
+#| fig-width: 9
+#| fig-height: 5
+gdp_mon <- response_table(diffs_monetary, "gdp", "monetary")
+ggplot(gdp_mon, aes(horizon, median_diff, color = country)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_line(linewidth = 0.7) +
+  labs(title = "GDP response to a +100bp policy-rate shock (4 quarters)",
+       x = "quarter", y = "GDP growth diff, pp", color = NULL) +
+  theme_minimal()
+```
+
+```{r mon-tables}
+prices_mon <- response_table(diffs_monetary, "prices", "monetary")
+kable(gdp_mon[, report_cols],
+      row.names = FALSE, digits = 4, caption = "GDP response by country, quarters 1-8.")
+kable(prices_mon[, report_cols],
+      row.names = FALSE, digits = 4, caption = "Prices response by country, quarters 1-8.")
+```
+
+### Implausible result: no evidence of a real transmission channel
+
+Every country's GDP response peaks at **horizon 1**, is **small** (0.03 to
+0.48pp for a full +100bp/4-quarter hike -- an order of magnitude smaller
+than the demand shocks' own-country response to a single-quarter +1pp), and
+is **positive** in 9 of 11 countries -- a policy tightening appearing to
+*raise* output on impact. From horizon 2 on the response oscillates in sign
+with no discernible trend (`de_gdp`: +0.18, 0.00, -0.04, -0.08, -0.05, 0.00,
+-0.03, 0.00), the signature of noise around zero rather than a decaying
+economic response. Prices behave the same way (peaks of 0.01-0.08pp, 11 of
+12 positive). We do not read this as "monetary policy is expansionary in
+this model" -- concentrating entirely at horizon 1 with no persistence is
+not what a transmission mechanism, real or mis-signed, would produce; it is
+what a same-quarter **simultaneity echo** from imposing an exact-value
+restriction looks like once the restriction is satisfied and the system is
+otherwise left alone.
+
+This matches a limitation already diagnosed for an earlier stage of this
+project (`CLAUDE.md`, "Making a variable endogenous does not give it a
+transmission channel"): giving `ea_policy_rate` its own equation lets it
+influence whatever variables appear as regressors in *other* equations, but
+in the stage-1 template only `<iso2>_long_rate`'s equation, and
+`<iso2>_long_rate`'s subsequent appearance in the investment equation, close
+a loop back to GDP -- a single, likely weak link for the whole system to
+route a monetary shock through. Sanity check #2 below fails as a genuine,
+previously-documented property of this fitted linkage, not a code defect;
+confirming or strengthening the channel would mean checking
+`sys_eq$character_gamma_matrix` reachability from `ea_policy_rate` to GDP,
+the same diagnostic `CLAUDE.md` recommends rather than assuming.
+
+### Core vs periphery
+
+```{r core-periphery}
+periphery <- c("gr", "es", "pt", "it", "ie")
+core <- c("de", "fr", "be", "nl", "at")
+cumulative_gdp <- aggregate(median_diff ~ country, gdp_mon, sum)
+cumulative_gdp$group <- ifelse(tolower(cumulative_gdp$country) %in% periphery, "periphery",
+                               ifelse(tolower(cumulative_gdp$country) %in% core, "core", "us"))
+kable(cumulative_gdp[order(cumulative_gdp$group, cumulative_gdp$median_diff), ],
+      row.names = FALSE, digits = 4, caption = "Cumulative 8-quarter GDP effect, grouped.")
+```
+
+Given the finding above, this grouping should be read as a ranking of noise,
+not evidence of a core-periphery transmission asymmetry -- with no real
+channel to output, there is nothing for an asymmetry to operate through.
+
+## 5. Oil shock
+
+`oil_price` level x1.5, sustained.
+
+```{r oil-tables}
+gdp_oil <- response_table(diffs_oil, "gdp", "oil")
+prices_oil <- response_table(diffs_oil, "prices", "oil")
+kable(prices_oil[, report_cols],
+      row.names = FALSE, digits = 4, caption = "Prices response by country, quarters 1-8.")
+kable(gdp_oil[, report_cols],
+      row.names = FALSE, digits = 4, caption = "GDP response by country, quarters 1-8.")
+```
+
+This is the cleanest scenario in the battery: `explosive_frac` is exactly 0
+for every country's price response at horizon 1, and stays low throughout.
+`oil_price` is exogenous, so this shock never goes through koma's
+`restrictions =` conditioning mechanism at all (section 1.3's singular-
+matrix failure and the demand shocks' contemporaneous-restriction noise are
+both specific to conditioning on an *endogenous* variable) -- it is instead
+a whole shocked copy of the fit via `shock_exogenous_level()`, differenced
+against the same baseline. The results are also economically coherent: a
+sustained +50% oil-price shock raises prices materially and immediately
+(+0.45 to +1.11pp at horizon 1 in every country) and has a small, mostly
+negative effect on GDP -- a textbook negative supply shock, and the one
+scenario in this report we would flag as reliable at face value.
+
+## 6. Spillover matrix
+
+Cumulative 8-quarter GDP effect (sum of `median_diff` across horizons --
+see 1.1): row = source (shocked) country, column = receiving country.
+Diagonal is the own-country effect.
+
+```{r heatmap}
+#| fig-width: 8
+#| fig-height: 7
+long <- as.data.frame(as.table(mat))
+names(long) <- c("source", "receiver", "effect")
+long$source <- toupper(long$source)
+long$receiver <- toupper(long$receiver)
+ggplot(long, aes(receiver, source, fill = effect)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", effect)), size = 2.8,
+            color = ifelse(abs(long$effect) > max(abs(long$effect), na.rm = TRUE) * 0.5, "white", "black")) +
+  scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b", midpoint = 0) +
+  labs(title = "Cumulative 8Q GDP spillover matrix (median diff)", x = "receiving country", y = "source country",
+       fill = "cum.\nmedian\ndiff, pp") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r heatmap-table}
+kable(round(mat, 3), caption = "Same data, as a table.")
+```
+
+## 7. Sanity checks
+
+```{r sanity}
+kable(sanity, row.names = FALSE, caption = "Pass/fail, reported as-is -- not silently corrected.")
+```
+
+None of the three checks pass. Each is diagnosed below rather than
+presented as an unexplained failure; none of them trace back to the
+numerical issues in section 1 -- all three use `median_diff`, computed
+after the fixes there.
+
+### 7.1 Own effect does not dominate for 4 of 11 countries (be, de, fr, pt)
+
+```{r at-exposure}
+kable(sort(linkage_weights$foreign_demand$at, decreasing = TRUE), col.names = c("weight on"),
+      caption = "Austria's foreign_demand weights -- what AT's own identity says it is exposed to.")
+```
+
+Austria is the receiver in every failing cell: `fr -> at` = 1.93 (exceeds
+`fr`'s own diagonal, 1.66), `de -> at` = 1.70 (exceeds `de`'s own diagonal,
+1.38), `be -> at` = 1.74 (exceeds `be`'s own diagonal, 1.66); `pt -> nl` =
+0.92 similarly exceeds `pt`'s own diagonal (0.78). But Austria's *direct*
+bilateral weight on France is only 0.036 and on Belgium only 0.027 --
+nowhere near large enough to justify a same-size response to those shocks.
+What Austria **is** heavily exposed to is Germany (weight 0.286, its
+largest bilateral link by far). A French or Belgian demand shock raises
+German GDP first (Germany is *also* one of their largest trading partners),
+and that German response then reaches Austria through AT's own large
+Germany weight -- a real two-hop transmission path that a single country's
+bilateral weight cannot capture, because it is not a property of that
+country's link to the source at all. **This is a property of a fully
+simultaneous 11-country system, not a defect**: indirect propagation
+through a common, dominant trading partner can legitimately exceed the
+direct channel and even the source's own effect on itself, and there is no
+reason a small, deeply Germany-linked economy like Austria should be
+immune to it.
+
+### 7.2 Monetary contraction sign
+
+Diagnosed in section 4: the fitted system shows no persistent, negative,
+growing GDP/price response to a policy-rate hike, only a small
+horizon-1 simultaneity echo (predominantly positive by chance, not by
+transmission). This is read as a genuine, previously-documented weakness of
+the fitted linkage (see 4's discussion), not a code defect -- but it does
+mean this check's premise (a real monetary channel to test the sign of)
+does not currently hold for this fitted system.
+
+### 7.3 Spillover magnitude vs. bilateral trade weight (rho = 0.141)
+
+The same mechanism as 7.1 explains the weak correlation directly: this
+check compares each cell's spillover magnitude to the receiver's **direct**
+bilateral weight on the source, but 7.1 already shows the *largest*
+spillovers in the matrix (into Austria) are driven by an indirect,
+two-hop path via Germany rather than any direct weight at all. A simple
+bilateral correlation is the wrong instrument for a fully simultaneous
+system where a country's total exposure to a shock is not just its own
+direct weight but also every other country's weight on it, compounded --
+the same reasoning [chain_weighted_index()] and this project's identity
+structure already treat as a *modelling* choice (rate-space chain
+aggregation over levels) applies equally to *interpreting* the resulting
+spillover matrix. A network-aware check (e.g. correlating against each
+receiver's weighted exposure through all sources, not just the direct
+source-receiver pair) would be needed to test this properly; that is
+follow-up work, not a fix to `spillover_sanity_checks()` as specified.

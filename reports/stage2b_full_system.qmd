@@ -1,0 +1,384 @@
+---
+title: "Stage 2b: the full eleven-country system"
+subtitle: "103 equations in one system_of_equations() — scaling, the degrees-of-freedom wall, and the Ireland and trade-weight decisions"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2b_full_system.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir2b <- file.path("data", "cache", "stage2b")
+bench <- readRDS(file.path(dir2b, "benchmark.rds"))
+projection <- readRDS(file.path(dir2b, "projection.rds"))
+tuned <- readRDS(file.path(dir2b, "full_tuned.rds"))
+base_fit <- readRDS(file.path(dir2b, "10_EA_US.rds"))
+tuning <- readRDS(file.path(dir2b, "tuning.rds"))
+stability <- readRDS(file.path(dir2b, "stability.rds"))
+coefs <- readRDS(file.path(dir2b, "coef_full.rds"))
+signs <- readRDS(file.path(dir2b, "sign_checks.rds"))
+ireland <- readRDS(file.path(dir2b, "ireland_ab.rds"))
+sys_eq <- tuned$sys_eq
+```
+
+## 1. The wall we hit first
+
+The eleven-country system **cannot be estimated on the window stage 1 and
+stage 2a use**, and the reason is structural rather than a matter of patience.
+
+koma's sampler projects *every* equation on the **full** `k`-column
+`x_matrix` on *every* draw — `construct_pi_hat_0()` and
+`construct_theta_hat_j()` both compute `Matrix::solve(t(x) %*% x)` — and it
+draws the covariance from `riwish(T - k, .)`. Both need `k < T`. At eleven
+countries on the 2019Q4 window that is `k = 83` against `T = 78`, which fails
+twice over:
+
+```
+Error: system is computationally singular: reciprocal condition number = 1.97e-19
+Error: v must be >= dimension of S in rwish()      # Wishart df = T - k = -4
+ESTIMATION FAILED: All equations failed to estimate.
+```
+
+Residual degrees of freedom `T - k` across the options:
+
+| estimation end | T | 4 EA | 6 EA | 8 EA | 10 EA | 10 EA + US |
+|---|---|---|---|---|---|---|
+| 2019Q4 (stage 1 / 2a) | 78 | 45 | 31 | 17 | **3** | **fails (−5)** |
+| 2024Q4 (**stage 2b**) | 98 | 65 | 51 | 37 | 23 | 15 |
+| 2026Q1 (panel end) | 103 | 70 | 56 | 42 | 28 | 20 |
+
+Even ten EA countries on the old window leaves 3 df — invertible, but the
+reduced-form projection would be very nearly interpolating the data.
+
+**What stage 2b changes to buy the room**, and what each costs:
+
+- **Estimation window 2000Q1–2024Q4** (T = 98) instead of 2019Q4. This gives
+  up the conditional-fill trick that neutralised COVID in stages 1 and 2a, so
+  COVID is controlled with dummies instead of excluded.
+- **`<iso2>_government` leaves the model.** It appears only in the
+  domestic-demand identity, so dropping it there removes it entirely and
+  returns 11 exogenous columns. The identity becomes
+  `dd == a*consumption + b*investment` with the shares **renormalised to sum
+  to 1** — left raw they sum to ~0.8 and would systematically under-predict
+  domestic-demand growth. The cost is real and worth stating: government is
+  ~19.7% of GDP, the omitted term `share_G × g(G)` has median sd 0.222pp
+  against `g(dd)` median sd 2.005pp, so **the identity now explains about 89%
+  of domestic-demand growth variation rather than ~100%**, and the model has
+  no fiscal channel at all.
+- **Four COVID dummies**, `2020Q1/Q2/Q3` and `2021Q2` — the only quarters
+  whose cross-country mean absolute GDP growth exceeds 3× the non-COVID
+  baseline of 0.81pp (they run 3.16, 12.19, 10.68, 2.48). They enter the five
+  real-side equations only; `long_rate` and the policy rules show no
+  mechanical COVID break.
+
+Net: **k = 76, T = 98, df = 22.**
+
+An alternative bought the same 11 columns with no accounting damage — drop
+the `imports` own-lag, insignificant in 7 of 11 stage-1 fits — but it leaves
+government exogenous and so breaks the three-variable exogenous spec. It is
+recorded here as the option not taken.
+
+## 2. The system
+
+```{r shape}
+kable(data.frame(
+  quantity = c("stochastic equations", "identities", "endogenous variables",
+               "exogenous variables", "predetermined (lags)", "k = 1 + lags + exogenous",
+               "T (2000Q3–2024Q4)", "residual df"),
+  value = c(length(sys_eq$stochastic_equations), length(sys_eq$identities),
+            length(sys_eq$endogenous_variables), length(sys_eq$exogenous_variables),
+            length(sys_eq$predetermined_variables), length(sys_eq$total_exogenous_variables),
+            98, 98 - length(sys_eq$total_exogenous_variables))
+), caption = "The eleven-country system.")
+```
+
+```{r exog}
+#| results: asis
+cat("Exogenous (", length(sys_eq$exogenous_variables), "): `",
+    paste(sort(sys_eq$exogenous_variables), collapse = "`, `"), "`.\n\n", sep = "")
+```
+
+Per EA country: `consumption`, `investment` (with `<cc>_long_rate`),
+`exports` (on `<cc>_foreign_demand`), `imports`, `prices`, `long_rate` (on
+the shared `ea_policy_rate`), plus `gdp`, `domestic_demand` and
+`foreign_demand` identities. The US adds `us_policy_rate ~ us_prices +
+us_gdp + us_policy_rate.L(1)` and loads its own `long_rate` on that instead.
+There is exactly **one** `ea_policy_rate` equation however many countries the
+system contains. Per the three-variable exogenous spec the US `prices`
+equation uses `eur_usd`, not the `us_exchange_rate` stage 1 and 2a gave it —
+which breaks continuity with the US block in both earlier stages.
+
+Nothing here is hand-written: `build_system(countries, blocks, weights)` in
+`R/equations.R` assembles blocks (`country_block()`, `monetary_block()`,
+`ea_aggregate_block()`), and stage 3 extends it by adding a block rather than
+editing the country loop.
+
+```{r preflight}
+kable(tuned$preflight, caption = "Pre-flight. The k < T row is new in stage 2b and exists because of §1.")
+```
+
+## 3. Scaling
+
+All four steps ran under the identical stage-2b configuration and 8 workers,
+so only the country count varies. The stage-2a fit is **not** a point on this
+curve — different window, different `k`.
+
+```{r bench}
+kable(bench[, c("step", "countries", "stochastic", "identities", "equations",
+                "k", "df", "seconds", "peak_mem_mb", "fit_mb",
+                "min_acceptance", "max_acceptance", "n_flagged")],
+      row.names = FALSE,
+      caption = "Benchmark. Acceptance rates are at the default tau = 1.1, before tuning.")
+```
+
+```{r scaling}
+#| results: asis
+final <- project_stage2_runtime(bench, stochastic = 68)
+actual <- bench$seconds[bench$stochastic == 68]
+cat(sprintf(
+"Fitting `log(seconds) ~ log(stochastic equations)` on the **first three** steps gave an exponent of **%.3f** (R² %.4f) — clearly superlinear — and projected the full system at **%.0f s**. It actually took **%.1f s**, an error of **%+.1f%%**. Across all four steps the exponent is **%.3f** (R² %.4f).\n\n",
+projection$exponent, projection$r_squared, projection$projected_seconds,
+actual, 100 * (actual - projection$projected_seconds) / projection$projected_seconds,
+final$exponent, final$r_squared))
+```
+
+The exponent lands almost exactly on koma's own documented `n^1.4`. It is
+superlinear because `k` grows with the system and `solve(t(x) %*% x)` is
+recomputed on every draw of every equation — cost scales with the equation
+count *and* with the per-equation work.
+
+### The BLAS trap, which cost more than the scaling did
+
+The first benchmark attempt was ~30× slower than these numbers and had to be
+killed. This R links a **pthread OpenBLAS** (`libopenblasp-r0.3.34.so`), and
+each process it runs in claims every core for its own thread pool. With
+`future::multicore` forking 8 workers, that is 8 × 16 threads on 16 cores:
+
+- **load average 116** on a 16-core machine, each worker burning ~180% CPU;
+- the 25-equation step **did not finish in twenty minutes**, against **41.5 s**
+  once fixed.
+
+The fix is to pin BLAS to one thread per process *before R starts*, so the
+parallelism is purely across equations:
+
+```sh
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 Rscript ...
+```
+
+It must be the environment rather than `Sys.setenv()` in-session, because
+OpenBLAS sizes its pool at library initialisation. Pinning costs nothing
+here — koma's matrices are at most 76 × 76, far too small for threaded BLAS
+to repay its own synchronisation. `warn_if_blas_threaded()` now warns when
+`workers > 1` and the variables are unset.
+
+## 4. Diagnostics
+
+### Acceptance rates
+
+```{r acceptance}
+#| results: asis
+cat(sprintf("At the default `tau = 1.1`, **%d of 68** equations sat outside the 20–60%% band, all marginally over the ceiling. One round at `tau = 2.2` cleared every one, leaving the band at **[%.3f, %.3f]**.\n\n",
+  sum(tuning$flagged_before), min(tuning$acceptance_rate_after, na.rm = TRUE),
+  max(tuning$acceptance_rate_after, na.rm = TRUE)))
+untouched <- tuning[tuning$tau == 1.1 & !is.na(tuning$acceptance_rate_before), ]
+cat(sprintf("All **%d of %d** untouched equations came back bit-identical, confirming again that a per-equation `[tau = ]` override does not leak into the rest of the system.\n\n",
+  sum(untouched$acceptance_rate_before == untouched$acceptance_rate_after), nrow(untouched)))
+```
+
+```{r tuning-table}
+t <- tuning[tuning$tau == 2.2, c("equation", "acceptance_rate_before", "acceptance_rate_after")]
+kable(t[order(t$equation), ], row.names = FALSE, digits = 4,
+      caption = "The tuned equations, before and after.")
+```
+
+### Convergence
+
+```{r stability}
+#| results: asis
+cat(sprintf("`check_running_mean_stability()` examined **%d** coefficients across all 68 equations and flagged **%d**. No chain is still drifting in its final third.\n\n",
+  nrow(stability), sum(stability$flagged)))
+```
+
+### Coefficient plausibility
+
+```{r signs}
+tbl <- as.data.frame.matrix(table(check = signs$check, ok = signs$ok))
+tbl$check <- rownames(tbl)
+kable(tbl[, c("check", if ("FALSE" %in% names(tbl)) "FALSE", "TRUE")], row.names = FALSE,
+      caption = "Sign checks across all eleven countries.")
+```
+
+```{r sign-fails}
+fails <- signs[!signs$ok, c("country", "check", "equation", "term", "estimate")]
+if (nrow(fails) > 0) {
+  kable(fails, row.names = FALSE, digits = 4, caption = "Violations, reported not corrected.")
+}
+```
+
+This is a **marked improvement on stage 1**, which failed six of these checks.
+`mpc_in_0_1` and `import_elasticity_positive` now pass 11/11 — including
+Spain, whose stage-1 MPC was an implausible 1.20, and Ireland, whose was
+effectively zero. Only `long_rate_loads_on_policy_rate` still fails, in
+Greece (−0.049) and Portugal (−0.013), both near-zero rather than
+meaningfully wrong-signed; stage 1 failed it in four countries.
+
+### The linkage
+
+```{r linkage}
+fd <- coefs[grepl("_foreign_demand$", coefs$term), c("equation", "estimate", "ci_low", "ci_high")]
+fd$excludes_zero <- fd$ci_low > 0 | fd$ci_high < 0
+kable(fd[order(-fd$estimate), ], row.names = FALSE, digits = 3,
+      caption = "Export elasticity on trade-weighted foreign demand.")
+```
+
+Every one of the eleven is **positive**, and 7 of 11 have intervals excluding
+zero. This is the substantive payoff over stage 2a, where the DE–FR loop gain
+was ~0.001 and moved nothing: with all eleven economies present, each
+country's foreign demand is built from real partners rather than a `row_gdp`
+residual, and the elasticities are both larger and much better identified
+(Germany 1.84 against 0.96 in the pilot).
+
+The US is the exception at 0.02 — see §5.
+
+### The monetary block
+
+```{r monetary}
+kable(coefs[coefs$equation %in% c("ea_policy_rate", "us_policy_rate"), ],
+      row.names = FALSE, digits = 3, caption = "The two policy rules.")
+```
+
+The euro-area Taylor rule loads **+0.253 on `ea_prices`** with an interval
+excluding zero, but only **+0.006 on `ea_gdp`** — it responds to inflation and
+essentially not to output. Both rules are close to a unit root in their own
+lag (0.98, 0.96), as policy rates are.
+
+```{r rate-channel}
+rc <- coefs[grepl("_long_rate$", coefs$term) & grepl("_investment$", coefs$equation),
+            c("equation", "estimate", "ci_low", "ci_high")]
+kable(rc, row.names = FALSE, digits = 3,
+      caption = "The rate -> investment channel that gives policy a route to GDP.")
+```
+
+Nine of eleven are correctly signed (negative), but only Portugal's interval
+excludes zero. The channel exists structurally — which is what stage 2a
+established it must, for a policy shock to reach GDP at all — but it is not
+sharply estimated.
+
+## 5. Ireland
+
+The brief proposed swapping Irish GDP for modified domestic demand. **On this
+panel that would make things four times worse**, because the multinational
+distortion lives in `ie_investment`, which is *inside* domestic demand:
+
+| series | sd | max abs | quarters >10pp |
+|---|---|---|---|
+| `ie_gdp` | 4.00 | 22.1 | 4 |
+| `ie_domestic_demand` (proposed) | **17.39** | **80.0** | **21** |
+| `ie_investment` (the culprit) | 38.01 | 148.5 | — |
+| `ie_consumption` (**used**) | 2.54 | 13.3 | 2 |
+| `ie_consumption + ie_government` | 1.76 | 9.5 | 0 |
+
+The CSO's real Modified Domestic Demand strips exactly the IP and
+aircraft-leasing components; we have no such series. `ie_consumption` is the
+best-behaved Irish demand series that is **already endogenous**, which is what
+makes the A/B clean: swapping it in changes no equation count, no `k` and no
+degrees of freedom, so the two fits are directly comparable. `C+G` would be
+marginally better still but needs its own identity plus `ie_government` back
+as an exogenous, costing a column and breaking that comparability.
+
+```{r ireland}
+kable(ireland[order(-ireland$ie_weight),
+              c("equation", "ie_weight", "estimate_gdp", "estimate_proxy", "delta")],
+      row.names = FALSE, digits = 3,
+      caption = "Export elasticity with partners loading on ie_gdp vs ie_consumption. Both fits at tau = 1.1.")
+```
+
+```{r ireland-summary}
+#| results: asis
+others <- ireland$delta[ireland$equation != "us_exports"]
+cat(sprintf("**The contamination is almost entirely one cell.** The median absolute change across the ten non-US countries is **%.3f**; for `us_exports` it is **%+.3f** — twenty times larger.\n\n",
+  median(abs(others)), ireland$delta[ireland$equation == "us_exports"]))
+```
+
+That is exactly where theory said to look: Ireland's weight in the US row is
+**0.247**, an order of magnitude above its 0.016–0.039 in every EA partner,
+and it is precisely the `W_trade["us","ie"]` cell CLAUDE.md already flags as
+unreliable — inflated by the same multinational redomiciliation that distorts
+Irish GDP, and reached through the reciprocal approximation used because the
+ECB publishes no US-reporter series.
+
+The effect is economically decisive for that equation: the US export
+elasticity moves from **0.02** (implausibly flat) to **0.98**. Acceptance
+rates are identical across the two variants (min 0.291, max 0.616, 14 flagged
+each), confirming the comparison isolates the swapped variable.
+
+**Recommendation: use the proxy.** Not because Ireland pollutes everyone —
+it does not, at a median delta of 0.05 — but because it badly distorts the
+one partner whose weight on it is already known to be wrong.
+
+## 6. Trade weights and Greece
+
+### Threshold: fold below 1% into `row`
+
+Applied. It drops 18 of 110 bilateral cells (16.4%) carrying **1.6%** of total
+bilateral mass; 92 cells survive, and the folded weight goes into `row_gdp` so
+every row still sums to 1.
+
+**One correction to the brief's rationale: this does not estimate faster.**
+koma samples only *stochastic* equation columns, and `foreign_demand` is an
+identity — identity columns are never sampled, so their density has
+essentially no effect on Gibbs cost. The real arguments are identification
+(every zeroed cell is an extra exclusion restriction, and the rank condition
+is what binds in a 103-equation system), interpretability, and a sparser,
+better-conditioned `Gamma` for the forecast solve.
+
+### Greece: not ragged, no truncation needed
+
+The premise does not hold for this vintage. Checked in both the aligned panel
+and the raw `global_panel` target: **every EA country, Greece included, starts
+2000Q1 and runs to 2026Q1 with zero NAs.** The only late starter anywhere is
+`es_core_prices` (2001Q1), a concept this system does not use.
+
+The real Greek issue is already handled elsewhere: `gr_long_rate` has one
+*internal* gap at 2015Q3, when capital controls shut the bond market, and
+`fill_internal_gaps()` interpolates it with a warning.
+
+On the general question — koma handles a ragged panel at the **edges** only.
+`fill_ragged_edge()` conditionally fills leading and trailing gaps during
+`estimate()`; an internal hole fails with an opaque error from inside
+`level()`. Note that `fill_ragged_edge()`'s `readline()` is **not**
+`interactive()`-guarded, so under `Rscript` or `targets` a ragged edge inside
+the estimation window is silently *not* filled — which is why the pre-flight
+asserts the window is gap-free rather than trusting the fill.
+
+## 7. Verdict
+
+The eleven-country system estimates, converges and is identified. 68
+stochastic equations and 35 identities in one `system_of_equations()`, 230s on
+8 workers, all acceptance rates in band after one tuning round, zero
+unstable chains, and export elasticities that are positive everywhere and
+significant in most places — the linkage now does real work, which it did not
+in the two-country pilot.
+
+Three things to carry forward:
+
+- **The df budget is now the binding constraint on the model.** At k = 76
+  against T = 98 there are 22 residual degrees of freedom, and *every*
+  additional equation or exogenous costs one. Stage 3 cannot add much to this
+  system without either a longer sample or something coming out.
+- **Government is gone, and with it any fiscal channel.** The
+  domestic-demand identity explains ~89% of its own growth variation rather
+  than ~100%. If fiscal policy matters for stage 3, this is the thing to
+  revisit first.
+- **The `W_trade["us", ]` row remains the weakest input.** The Ireland result
+  is really a symptom: the US row is a reciprocal approximation, and the one
+  cell where it is most distorted is the one that moved the most.

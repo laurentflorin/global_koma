@@ -4,27 +4,14 @@
 \alias{build_stage2_system}
 \title{Build the joint multi-country \code{koma_seq}}
 \usage{
-build_stage2_system(
-  countries,
-  country_specs,
-  shared_concepts,
-  weights,
-  truly_exogenous
-)
+build_stage2_system(spec, tau = NULL)
 }
 \arguments{
-\item{countries}{Character vector of ISO-2 country codes.}
+\item{spec}{A \code{\link[=stage2_spec]{stage2_spec()}} result.}
 
-\item{country_specs}{Named list of per-country stage-1 specs, keyed by
-\code{iso2} (see \code{\link[=stage1_country_equations]{stage1_country_equations()}}).}
-
-\item{shared_concepts}{Character vector of concepts to aggregate into
-\code{ea_}/\code{world_} variables (see \code{\link[=weighted_identity]{weighted_identity()}}).}
-
-\item{weights}{Named list of \code{\link[=country_weights]{country_weights()}} vectors, one per
-\code{shared_concepts} element.}
-
-\item{truly_exogenous}{Passed to \code{\link[=stage2_exogenous_variables]{stage2_exogenous_variables()}}.}
+\item{tau}{Optional named numeric vector, dependent variable -> sampler
+\code{tau} override, appended as \verb{[tau = value]}. Same contract as
+\code{\link[=stage1_country_equations]{stage1_country_equations()}}'s argument of the same name.}
 }
 \value{
 A \code{koma::koma_seq} object for the full system.

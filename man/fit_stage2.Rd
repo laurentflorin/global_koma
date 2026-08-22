@@ -4,24 +4,41 @@
 \alias{fit_stage2}
 \title{Fit the joint multi-country system}
 \usage{
-fit_stage2(sys_eq, panel, dates, stage1_fits = NULL, options = list())
+fit_stage2(sys_eq, panel, dates, options = list(), workers = NULL)
 }
 \arguments{
 \item{sys_eq}{A \code{koma_seq} as built by \code{\link[=build_stage2_system]{build_stage2_system()}}.}
 
-\item{panel}{Named list of \code{koma_ts}, the full multi-country panel.}
+\item{panel}{Named list of \code{koma_ts} including the stage-2 derived
+series (see \code{\link[=build_stage2_panel]{build_stage2_panel()}}).}
 
-\item{dates}{koma \code{dates} list.}
-
-\item{stage1_fits}{Optional named list of stage-1 \code{koma_estimate}
-objects (see \code{\link[=fit_stage1_all]{fit_stage1_all()}}) to warm-start from.}
+\item{dates}{koma \code{dates} list, e.g. from \code{\link[=stage1_dates]{stage1_dates()}}.}
 
 \item{options}{Passed through to \code{koma::estimate(options = )}.}
+
+\item{workers}{Number of \code{future} workers to spread the per-equation
+sampling across. \code{NULL} (the default) leaves koma sequential.}
 }
 \value{
-A \code{koma::koma_estimate} object for the joint system.
+A \code{koma::koma_estimate} object, carrying \code{runtime_s} and \code{workers}
+attributes.
 }
 \description{
-Estimates the full system, optionally warm-started from stage-1 fits via
-\code{koma::estimate(..., estimates = )}.
+The stage-2 counterpart to \code{\link[=estimate_stage1_system]{estimate_stage1_system()}}, and it follows the
+same recipe: subset the panel to what the system needs, refuse internal
+\code{NA}s with a message that names them, harmonise attributes for
+\code{as_mets()}, and truncate the \strong{endogenous} series to the estimation end
+so koma conditionally fills forward to the forecast start (which is how
+2020-2022 is neutralised -- see CLAUDE.md).
+}
+\details{
+\strong{No warm start.} \code{\link[=fit_stage1_all]{fit_stage1_all()}}'s fits cannot be reused here even
+though several equations are unchanged. \code{koma::estimate(estimates = )}
+decides what to re-estimate by comparing only the symbolic \strong{\code{B}}
+matrices (\code{identify_reestimation_indices()}); the \code{Gamma} block is never
+compared. Every cross-country term stage 2 introduces is a
+\emph{contemporaneous endogenous} regressor, i.e. \code{Gamma}-only, so a warm
+start would silently keep stale draws of the wrong dimension for exactly
+the equations the pilot exists to change. Verified against koma 0.3.1
+source.
 }
