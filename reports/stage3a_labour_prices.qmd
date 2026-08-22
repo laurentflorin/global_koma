@@ -379,21 +379,27 @@ which costs no degrees of freedom. It was estimated and it **does not work**
 term takes the wrong sign too:
 
 ```{r imports-variants}
-rel <- readRDS(file.path(dir3a, "fit_a_relative.rds"))
+crel <- readRDS(file.path(dir3a, "fit_a_relative.rds")) |> (\(x) coefficient_table(x$fit))()
+clag <- readRDS(file.path(dir3a, "coefs_a_lagged.rds"))
 b2b <- readRDS(file.path("data", "cache", "stage2b", "coef_full.rds"))
 pick <- function(ct, term) {
   x <- ct[ct$equation == "de_imports" & ct$term == term, ]
   if (nrow(x) == 0) NA_real_ else x$estimate[1]
 }
-crel <- coefficient_table(rel$fit)
+ci <- function(ct, term) {
+  x <- ct[ct$equation == "de_imports" & ct$term == term, ]
+  if (nrow(x) == 0) NA_character_ else sprintf("[%.2f, %.2f]", x$ci_low[1], x$ci_high[1])
+}
 kable(data.frame(
-  specification = c("stage 2b (no price term)", "stage 3a: own price only",
-                    "stage 3a: own price + domestic price"),
+  specification = c("stage 2b (no price term)", "own price, contemporaneous",
+                    "own price + domestic price", "own price, LAGGED one quarter"),
   domestic_demand = c(pick(b2b, "de_domestic_demand"), pick(coefs, "de_domestic_demand"),
-                      pick(crel, "de_domestic_demand")),
-  import_prices = c(NA, pick(coefs, "de_import_prices"), pick(crel, "de_import_prices")),
-  de_prices = c(NA, NA, pick(crel, "de_prices"))
-), digits = 3, caption = "The imports equation across three specifications.")
+                      pick(crel, "de_domestic_demand"), pick(clag, "de_domestic_demand")),
+  import_price = c(NA, pick(coefs, "de_import_prices"), pick(crel, "de_import_prices"),
+                   pick(clag, "de_import_prices.L(1)")),
+  import_price_ci = c(NA, ci(coefs, "de_import_prices"), ci(crel, "de_import_prices"),
+                      ci(clag, "de_import_prices.L(1)"))
+), digits = 3, caption = "The imports equation across four specifications.")
 ```
 
 **The revised diagnosis is simultaneity, and the table above is the
@@ -419,19 +425,38 @@ In other words the coefficient is not a demand elasticity at all: it is the
 within-quarter correlation between a commodity-driven deflator and
 commodity-driven volumes, with nothing in the equation to separate them.
 
-Note also that the interval only barely excludes zero
-(`r sprintf("[%.3f, %.3f]", coefs$ci_low[coefs$equation == "de_imports" & coefs$term == "de_import_prices"], coefs$ci_high[coefs$equation == "de_imports" & coefs$term == "de_import_prices"])`),
-so the strength of the wrong-signed result should not be overstated either;
-what is solid is the *pattern* across specifications, not the point estimate.
+**The decisive test: lag the import price.** That breaks the within-quarter
+channel while keeping the variable. The prediction was that the sign would
+turn negative. It **half** worked, and the half that failed is as
+informative as the half that succeeded:
 
-The remaining test is to lag the import price, breaking the within-quarter
-channel while keeping the variable in the equation. If simultaneity is the
-cause the sign should turn negative.
+- **The demand elasticity is fully restored.** It returns to
+  `r round(pick(clag, "de_domestic_demand"), 3)`, against
+  `r round(pick(b2b, "de_domestic_demand"), 3)` in stage 2b — the
+  contamination is gone, and this is the clearest confirmation that the
+  contemporaneous term was stealing the scale variation.
+- **The price coefficient does not flip.** It halves, to
+  `r round(pick(clag, "de_import_prices.L(1)"), 3)`, and its interval now
+  **spans zero** (`r ci(clag, "de_import_prices.L(1)")`) where the
+  contemporaneous one did not.
 
-Until that is settled: **the import-price elasticity in this fit should not
-be used**, and any spillover routed through German import demand inherits
-the problem. The export side, which has a genuine relative-price pair and
-whose coefficients come back nearly equal and opposite, is unaffected.
+So simultaneity is confirmed as the contaminating mechanism, but there is no
+negative import-price elasticity underneath it waiting to be recovered.
+Breaking the simultaneity does not reveal the textbook relationship; it
+reveals that this window and this specification contain no identifiable
+import-price effect at all.
+
+**Recommendation: drop the import price from the imports equation** rather
+than lag it or pair it. Contemporaneously it actively damages the demand
+elasticity; lagged it contributes nothing distinguishable from zero while
+still costing a predetermined column. The price block would then reach trade
+volumes through exports only — which is the side that works, with a genuine
+relative-price pair whose coefficients come back nearly equal and opposite.
+
+This is a departure from the block as specified, so it is reported here
+rather than applied silently. Until it is settled, **the import-price
+elasticity in this fit should not be used**, and any spillover routed
+through German import demand inherits the problem.
 
 ## 6. Verification
 
@@ -573,8 +598,10 @@ the wage Phillips curve, the collinearity concern that motivated the whole
 identification assessment does not materialise, and the new wage–price loop
 is weak enough that no posterior draw is self-sustaining.
 
-What does not: the imports equation, for the reason diagnosed in 5.1, with a
-concrete fix to try.
+What does not: the imports equation. Its import-price term is contaminated
+by within-quarter simultaneity, and once that is broken there is no
+identifiable price elasticity underneath — the recommendation in 5.1 is to
+drop the term, not repair it.
 
 What phase B settled: the degrees-of-freedom budget is not a soft
 constraint that trades gracefully against model richness. At `df = 6` the
