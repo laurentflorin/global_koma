@@ -530,6 +530,67 @@ The FRED API key lives in `.Renviron` as `FRED_API_KEY`. Copy
 - If a key is ever accidentally committed, treat it as compromised: rotate
   it at FRED before doing anything else, then scrub the commit.
 
+## Backtesting and scoring (`R/scoring.R`)
+
+- **`k < T` (`df > 0`) is the right first gate for a joint system but not a
+  sufficient one — treat `df < 4` as infeasible in practice.** Backtesting
+  stage 2/3 across many re-estimation origins (`reports/evaluation.qmd`)
+  found an exact cutoff across 92 attempted estimations: every origin with
+  `df >= 4` produced a usable `koma::forecast()` result; every origin with
+  `df` of 1, 2 or 3 passed `origin_feasible()`'s gate but then failed
+  outright at the forecast stage (`riwish(T - k, .)` drawing from a
+  near-degenerate Wishart throws `"v must be >= dimension of S in
+  rwish()"` on most draws at `df` this small). `stage3c_rollout.qmd`'s own
+  language ("no usable degrees of freedom" at `df = 1`) already anticipated
+  this; the backtest turns it into a precise, load-bearing threshold rather
+  than an impression.
+- **A closed-form AR(1) naive benchmark needs the same explosive-value
+  awareness as koma's own Gibbs draws, for a different reason.**
+  `naive_ar1_forecast()`'s textbook recursion (`mean_h = mu + phi^h*(y_T -
+  mu)`) has no stability guard, and a country/concept whose estimated `phi`
+  lands at or above 1 at some origin compounds geometrically over an 8-quarter
+  horizon — verified: the naive benchmark's median squared error stays flat
+  around 0.13-0.15 across every horizon in the evaluation backtest, but its
+  *maximum* reaches 42 million at horizon 8. This is not a bug to fix (the
+  design deliberately keeps the benchmark unclamped, as the honest textbook
+  comparison), but it means **RMSE is not a safe metric to read on its own
+  here** — a handful of explosive outliers on either side swamp the mean and
+  make an MSE-based comparison directionless even when MAE shows a clear,
+  monotonic pattern. Prefer MAE (or CRPS, which is itself robust) over RMSE
+  when comparing against this benchmark.
+- **`koma::model_evaluation()` needs the full, untruncated panel as its
+  `ts_data` argument — never a fit's own `fit$ts_data`.** Every
+  `fit_stage1()`/`fit_stage2()` fit in this project deliberately truncates
+  its endogenous series to `dates$estimation$end` (that is how the
+  conditional-fill/COVID-neutralisation trick works), so `fit$ts_data` has
+  no real values in the forecast window to score against at all —
+  `model_evaluation()` silently returns `NA` RMSE for every variable if
+  handed it. `score_country_forecast()`/`score_all_countries()` therefore
+  take an explicit `panel` argument (the full panel, e.g. `stage2b_panel`
+  for a stage-2 fit) rather than reading it off `fit`.
+- **`koma::forecast()`'s `$forecasts[[i]]` draws carry no attributes** —
+  only `$mean`/`$median` are tagged `series_type`/`method`/`anker`, which
+  `koma::level()` needs to invert rate space back to levels.
+  `forecast_draws_level()` reattaches `$mean[[var]]`'s attributes onto each
+  draw's raw numeric column before calling `level()`; verified against
+  `docs/koma-api.md`'s own round-trip example. `level()` returns one extra
+  leading value (the `anker` itself — the last known *actual*, not a
+  forecast), which must be dropped.
+- **A perfectly-reciprocal small trade-weight matrix breaks
+  `koma::construct_posterior()`.** `stage2_linkage_weights()` always folds
+  whatever share of trade weight is left over into a `row_gdp` residual
+  identity term; if the declared countries' weights on each other happen to
+  sum to exactly 1 (a hand-built two-country synthetic fixture with, e.g.,
+  weights `[[0,1],[1,0]]`), that residual is exactly zero, and koma aborts
+  with `"The posterior beta matrix has zeros at different indices compared
+  to the character beta matrix"` — the symbolic matrix marks the declared
+  `row_gdp` term as structurally nonzero, but its actual weight is exactly
+  0. Real bilateral trade weights never sum to 1 across a handful of
+  countries, so this only bites synthetic test fixtures; keep any hand-built
+  `trade_weights` matrix's off-diagonal entries below 1 (e.g. scale by 0.7)
+  so `row_gdp` stays genuinely nonzero. `diagnostics_synthetic_stage2_fit()`
+  (`tests/testthat/helper-fixtures.R`) does this.
+
 ## Proving a change works
 
 ```r
@@ -542,12 +603,12 @@ Run both after any change to `R/`, `_targets.R`, or the data pipeline.
 at the expected, not-yet-implemented step); `devtools::test()` confirms
 the unit tests for whatever you touched now pass. `data_fred.R`,
 `data_eamdqd.R`, `panel_build.R`, `weights.R`, `stage1_models.R`,
-`diagnostics.R`, `stage2_system.R` and `spillovers.R` are implemented;
-`stage3_blocks.R` and `scoring.R` are not, so `tar_make()` will still error partway through
-by design — that is expected, not a regression; make sure it errors at the
-*next* unimplemented stub, not an earlier one you touched. `devtools::test()`
-likewise still shows 6 `not implemented` errors, all from
-`test-scoring.R` and `test-stage3_blocks.R`.
+`diagnostics.R`, `stage2_system.R`, `spillovers.R` and `scoring.R` are
+implemented; `stage3_blocks.R` is not, so `tar_make()` will still error
+partway through by design — that is expected, not a regression; make sure
+it errors at the *next* unimplemented stub, not an earlier one you touched.
+`devtools::test()` likewise still shows 3 `not implemented` errors, all
+from `test-stage3_blocks.R`.
 
 `stage2_system.R` implements **stage 2a** (the two-country DE + FR pilot of
 the linkage mechanism), **stage 2b** (all eleven economies: 68 stochastic
@@ -565,6 +626,16 @@ departure is opt-in and the cached 2a fit keeps reproducing.
 
 Run anything that sets `workers` with `OMP_NUM_THREADS=1
 OPENBLAS_NUM_THREADS=1` in the environment.
+
+`R/scoring.R` implements an expanding-window, re-estimating backtest across
+four specifications (naive AR(1)/RW, stage 1, stage 2, stage 3) —
+`pseudo_oos_backtest()`'s per-spec drivers are `backtest_stage1()` /
+`backtest_stage2()` / `backtest_stage3()` / `backtest_naive()`, all built on
+the shared `score_forecast()` scorer. See `reports/evaluation.qmd` for the
+results and the `df >= 4` usability finding above; reproducing the full run
+takes several hours (92 joint-system estimations at production settings) and
+should not be re-run casually — the per-origin cache under
+`data/cache/evaluation/<spec>/` makes it resumable if interrupted.
 
 Do not fetch real data as part of "proving a change works" unless the
 change is specifically about the fetch layer — most iteration should run

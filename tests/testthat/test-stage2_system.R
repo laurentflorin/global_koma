@@ -540,6 +540,14 @@ test_that("build_stage2_panel adds requested dummies", {
   expect_equal(sum(out$covid_2005q2), 1)
 })
 
+test_that("stage2b_dummies_through only includes dummies at or before the origin", {
+  expect_equal(stage2b_dummies_through(c(2019, 4)), character(0))
+  expect_equal(stage2b_dummies_through(c(2020, 1)), "covid_2020q1")
+  expect_equal(stage2b_dummies_through(c(2020, 2)), c("covid_2020q1", "covid_2020q2"))
+  expect_equal(stage2b_dummies_through(c(2021, 1)), c("covid_2020q1", "covid_2020q2", "covid_2020q3"))
+  expect_equal(stage2b_dummies_through(c(2024, 4)), stage2b_dummies())
+})
+
 # --- the k < T guard ---------------------------------------------------
 
 test_that("stage2_preflight fails loudly when k >= T", {

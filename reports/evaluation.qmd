@@ -1,0 +1,312 @@
+---
+title: "Backtesting and scoring: which specification, for what"
+subtitle: "An expanding-window pseudo-out-of-sample comparison of stage 1, stage 2, stage 3 and a naive benchmark"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/evaluation.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir_eval <- file.path("data", "cache", "evaluation")
+a <- readRDS(file.path(dir_eval, "analysis.rds"))
+```
+
+## A note on what this backtest is, and is not
+
+**Every origin in this backtest trains on, and is scored against, the same
+current EA-MD/QD and Eurostat data vintage.** There is no historical-vintage
+archive in this project, so a 2012Q1 origin "knows" the 2012 data exactly as
+it stands revised today, not as it was published in 2012. This is not a true
+real-time evaluation, and it biases measured accuracy **upward** relative to
+what a real-time forecaster would actually have achieved, for two reasons:
+the actuals a forecast is scored against already reflect every subsequent
+revision, and the training data feeding each origin's estimation is the
+*revised* series, not the vintage that was actually available at the time.
+The bias is largest for GDP components (heavily and repeatedly revised) and
+smallest for financial-market series (policy rates, spreads), which are
+essentially never revised after publication. Read every number below as an
+upper bound on real-time performance, not an estimate of it.
+
+## 1. Methodology
+
+- **Expanding window**, origins from 2010Q1 to 2024Q1 (the latest origin that
+  still leaves a full 8-quarter horizon inside the panel, which ends
+  2026Q1), horizons 1-8 quarters, **re-estimating at every origin** -- this
+  is not a fixed-coefficient rolling forecast.
+- **Four specifications**: a closed-form naive AR(1) (growth-rate concepts) /
+  driftless random-walk (rate/none concepts) benchmark, dispatched by each
+  series' own tag; Stage 1 (eleven independent per-country models); Stage 2
+  (the eleven-country linked core system); Stage 3 (the DE-only extended
+  system -- labour, external, fiscal and financial blocks -- the same
+  configuration `reports/stage3b_external_fiscal_financial.qmd` and
+  `reports/stage3c_rollout.qmd` established; the full eleven-country rollout
+  was found infeasible there and is not re-attempted here).
+- **Scoring space**: point and density scores (RMSE, MAE, CRPS, log score)
+  are computed in **rate space** -- each quarter's growth-rate forecast
+  against that quarter's realised growth -- because compounding posterior
+  draws into levels over an 8-quarter horizon is exactly the pathology the
+  spillover work (`reports/stage3c_rollout.qmd` §4) already found:
+  explosive draws blow up multiplicatively in level space long before they
+  would be flagged in rate space. `score_forecast()` also records a
+  level-space RMSE/MAE for every row; it is not used below for the reason
+  just given, but is available in the cached results for anyone who wants
+  it.
+- **Origin feasibility, and a stricter usability finding on top of it**:
+  Stage 2 and Stage 3 self-skip any origin where `k >= T` (the same
+  constraint documented throughout `CLAUDE.md`), logging why rather than
+  silently omitting it. That gate turned out to be necessary but not
+  sufficient -- see §2.
+- **Re-estimation frequency**: Stage 1 and Stage 2 each ran at both
+  quarterly and annual spacing, to measure the actual cost/precision
+  trade-off rather than assert one -- see §3. Stage 3's feasible window is
+  capacity-bound, not frequency-bound (see §2), so it only ran annual.
+- **No per-origin tuning**: every origin within a spec reuses that spec's
+  existing default Gibbs settings (2000 draws) and, for Stage 2/3, the
+  already-tuned production `tau` -- consistent with how this project has
+  handled the acceptance-rate band elsewhere (reported, not silently
+  re-tuned away).
+- **COVID handling is asymmetric across specs, by necessity.** Stage 1 has
+  no dummy mechanism in this project -- its only COVID handling anywhere is
+  the bespoke conditional-fill gap used for the one production window,
+  which does not generalise to a rolling-origin backtest. So once a Stage 1
+  origin passes 2020, the collapse enters its estimation sample as ordinary
+  data. Stage 2/3 reuse the existing `covid_2020q1`-style dummies,
+  restricted per origin to quarters that have actually occurred
+  (`stage2b_dummies_through()`) so a not-yet-reached dummy does not hand
+  koma an all-zero exogenous column. Separately, **forecast horizons whose
+  target quarter falls in 2020Q1-2021Q4 are reported apart from calm-period
+  horizons** throughout §4, so one shock quarter does not swamp fifty
+  ordinary ones in a pooled average.
+
+## 2. Which origins are actually usable
+
+```{r feasibility}
+kable(a$feasibility_summary, row.names = FALSE,
+      caption = "Origins requested, passing the k < T gate ('feasible'), and actually producing a scoreable forecast ('usable').")
+```
+
+`feasible` (`k < T`) and `usable` (did `koma::forecast()` actually return a
+non-degenerate result) are **not the same thing**, and the gap between them
+is not noise:
+
+```{r unusable}
+kable(a$unusable, row.names = FALSE,
+      caption = "Every origin that passed the k < T gate but failed at the forecast stage anyway.")
+```
+
+Every one of these has `df` of 1, 2 or 3. Every origin in the backtest with
+`df >= 4` produced a usable forecast; every one with `df < 4` did not. This
+is an exact, clean cutoff across 92 attempted joint-system estimations (77
+Stage 2 + 15 Stage 3), not a rough tendency. Mechanically it is the same
+failure this project has already documented at these boundary values --
+`riwish(T - k, .)` drawing from a near-degenerate Wishart at `df` this small
+throws `"v must be >= dimension of S in rwish()"` on a large share of draws,
+and `reports/stage3c_rollout.qmd`'s own language ("no usable degrees of
+freedom" at `df = 1`) anticipated exactly this. The practical upshot:
+**`origin_feasible()`'s `k < T` check is the right first gate but not a
+sufficient one** -- a caller backtesting this project's stage 2/3 systems
+should treat `df < 4` as infeasible in practice, not just `df <= 0`.
+
+The consequence for Stage 3 is severe: of fifteen requested annual origins,
+only **one** -- 2024Q1, `df = 5` -- ever produces a scoreable forecast. Every
+result in §4-5 involving Stage 3 rests on that single origin. It is reported
+descriptively, not tested.
+
+## 3. The re-estimation-frequency trade-off
+
+```{r frequency-cost}
+kable(a$freq_cost, digits = 1, row.names = FALSE,
+      caption = "Measured cost of quarterly vs. annual re-estimation. 'origins_usable' per the df >= 4 finding in section 2.")
+```
+
+Quarterly buys real density for Stage 1 (57 usable origins vs. 15, at 3.9x
+the cost) and for Stage 2 (20 usable origins vs. 5, at 4.0x the cost) --
+almost exactly proportional, since Stage 1 has no feasibility gate at all
+and Stage 2's usable window (2019Q2 onward) is long enough that quarterly
+spacing multiplies it by roughly the frequency ratio. **The frequency knob
+does nothing for Stage 3**: its usable window is one origin regardless of
+spacing, because it is capacity-bound (df collapses too fast as the window
+narrows) rather than frequency-bound. Quarterly re-estimation is worth
+running for Stage 1 and Stage 2 if the extra evidence is worth ~40-70
+minutes of compute; it cannot rescue Stage 3.
+
+## 4. Head-to-head
+
+### 4.1 Naive vs. Stage 1, quarterly, the full 2010Q1-2024Q1 window
+
+This is the strongest comparison in the report: 57 origins, both specs
+usable at every one, 1,254 (origin x country x concept) observations per
+horizon.
+
+```{r hh-quarterly-calm}
+kable(a$lb_quarterly_calm[order(a$lb_quarterly_calm$horizon, a$lb_quarterly_calm$variant), ],
+      row.names = FALSE, digits = 4, caption = "Calm-period horizons (target quarter outside 2020Q1-2021Q4).")
+```
+
+```{r hh-quarterly-covid}
+kable(a$lb_quarterly_covid[order(a$lb_quarterly_covid$horizon, a$lb_quarterly_covid$variant), ],
+      row.names = FALSE, digits = 4, caption = "COVID-era horizons (target quarter in 2020Q1-2021Q4) -- reported separately, not pooled in.")
+```
+
+RMSE tells an inconsistent-looking story (Stage 1 sometimes far ahead,
+sometimes far behind) that MAE resolves: RMSE is dominated by a handful of
+extreme misses on **both** sides, not a real difference in typical
+accuracy -- see §5.3. MAE is the number to read here.
+
+### 4.2 Naive vs. Stage 1 vs. Stage 2, annual, common window
+
+Restricted to the five annual origins (2020-2024) where Stage 2 actually
+produces a forecast (§2), so this is a fair, identical-origin comparison
+across all three -- not Stage 2's full requested range.
+
+```{r hh-annual-common}
+kable(a$lb_annual_common[order(a$lb_annual_common$horizon, a$lb_annual_common$variant), ],
+      row.names = FALSE, digits = 4, caption = "n = 110 (5 origins x 11 countries x 2 concepts) per row.")
+```
+
+Stage 2 is worse than both Stage 1 and naive on every metric at every
+horizon here -- roughly 1.5-2x the RMSE, 3-5x the CRPS. This is a much
+smaller, more volatile sample (5 origins, all post-2019) than §4.1, so the
+margin should not be over-read quantitatively, but the direction is
+unambiguous and consistent across all eight horizons.
+
+### 4.3 Stage 3's one usable origin
+
+```{r hh-stage3}
+kable(a$lb_stage3_origin[order(a$lb_stage3_origin$horizon, a$lb_stage3_origin$variant), ],
+      row.names = FALSE, digits = 4, caption = "2024Q1 only, n = 22 (11 countries x 2 concepts) per row -- descriptive, not tested.")
+```
+
+At this single origin, Stage 3 is not competitive with any of the other
+three specs at any horizon -- by horizon 8 its RMSE (13.3) is roughly 7x
+naive's (1.8) and its CRPS (7.9) is 12x naive's (0.6). One origin cannot
+support a general claim, but it is directly consistent with everything
+already established about this system: `reports/stage3c_rollout.qmd` found
+its in-sample fit was not better than stage 2b's and its degrees of freedom
+too thin to validate out of sample at all. This is that validation, run
+once, and it confirms the worry rather than contradicting it.
+
+## 5. Diebold-Mariano tests: naive vs. Stage 1, quarterly
+
+**Nested-model caveat, stated up front.** Stage 1 is not literally nested in
+Stage 2 in the classical parameter-restriction sense, but Stage 2 extends
+five of Stage 1's six equations with additional cross-country terms and
+adds a monetary block on top, and Stage 3 extends Stage 2 further still --
+each specification is a structural superset of the one before it. Clark &
+McCracken (2001) show the classical DM test's asymptotic normality is
+invalid under the null of equal predictive ability when one model nests the
+other, because the population loss differential degenerates to zero rather
+than to a well-behaved limiting distribution. This is stated, not corrected
+-- exactly the caveat the brief asked for, not a request to implement the
+Clark-West correction. It does **not** apply to naive vs. Stage 1: the
+closed-form AR(1)/RW benchmark is not nested in the structural system, so
+this is the one clean DM comparison the backtest has real power for (the
+Stage 2/3 samples are far too thin for a DM test to mean anything regardless
+of nesting -- 5 and 1 origins respectively).
+
+```{r dm-table}
+kable(a$dm_table, row.names = FALSE, digits = c(0, 0, 4, 4, 3, 4, 3, 4, 3, 4),
+      caption = "Naive vs. Stage 1, quarterly, n = 1254 per horizon. Negative dm_stat favours naive; positive favours Stage 1.")
+```
+
+### 5.1 What the RMSE-loss DM test says
+
+**Nothing significant, in either direction, at any horizon** (all
+`p_value_rmse > 0.2`). The point estimate favours Stage 1 by a widening
+margin as horizon grows, but the DM statistic barely clears 1 even at
+`mean_diff` in the tens of thousands (horizon 8) -- variance, not
+direction, is the problem. §5.3 diagnoses why.
+
+### 5.2 What the CRPS-loss DM test says
+
+**Naive is significantly better at horizon 1** (`dm_stat = -3.84`,
+`p < 0.001`) -- the one genuinely significant result in this report, and it
+runs against the structural system, not for it. From horizon 2 onward the
+CRPS difference is not significant either way (`p > 0.3` throughout).
+
+Read together with §5.1's mean-squared-error point estimates favouring
+Stage 1 at longer horizons, this is a specific, defensible claim: **Stage
+1's point median catches up to and passes naive's from horizon 2 onward
+(§5.3's MAE numbers make this precise), but nowhere in the eight horizons
+tested does Stage 1's predictive *distribution* significantly beat naive's,
+and at horizon 1 naive's distribution is significantly better.** A
+structural system that cannot beat a random walk's density forecast even
+once it starts beating its point forecast is not a system whose forecasts
+should be trusted as calibrated, whatever the point-forecast horse race
+says.
+
+### 5.3 Why RMSE and MAE disagree, and the naive benchmark's own failure mode
+
+```{r naive-explosion}
+kable(a$naive_explosion, digits = c(0, 4, 1),
+      caption = "Naive AR(1)/RW forecast: median vs. maximum squared error, by horizon. The median is essentially flat; the maximum is not.")
+```
+
+The naive benchmark's own AR(1) recursion is not immune to the instability
+this project has repeatedly documented for koma's Gibbs sampler --
+`naive_ar1_forecast()` is a deliberately plain textbook closed-form
+recursion (`mean_h = mu + phi^h*(y_T - mu)`) with no stability guard, so a
+country/concept whose estimated `phi` lands at or above 1 at some origin
+produces a forecast that compounds geometrically over 8 quarters. The
+median squared error stays close to 0.13-0.15 across every horizon; the
+maximum reaches **42 million** at horizon 8. A handful of explosive AR(1)
+fits, not a systematic difference in typical accuracy, is what drives
+§5.1's noisy RMSE picture and the huge point-estimate swings in §4.1's RMSE
+column. This was a deliberate design choice (§1: the naive benchmark is the
+textbook closed-form, not clamped or winsorised) rather than an oversight,
+but it means **MAE, not RMSE, is the point-forecast metric to trust** in
+this report -- it is far less sensitive to the rare cases where either
+model's forecast blows up, and it is the metric §5.2's mean_diff_mae
+figures (naive 0.94 to 7.15 growing with horizon vs. Stage 1's flat
+0.86-0.97) actually support the "Stage 1 pulls ahead on point forecasts
+from horizon 2" reading above.
+
+## 6. Verdict: forecasting vs. scenario analysis
+
+**For forecasting, use Stage 1 -- with a real caveat, not an endorsement.**
+It is the only specification with a fully powered, favourable comparison
+(§4.1, 57 origins): its point forecasts (MAE) pull ahead of naive from
+horizon 2 and the gap widens, and it is the cheapest of the three
+structural specs to run (§3). But §5.2 is the qualifier that keeps this
+from being a clean win: naive's *density* forecast is significantly better
+at horizon 1 and not significantly worse at any other horizon, so Stage 1's
+advantage is in the point median, not in a demonstrably better-calibrated
+predictive distribution. Stage 2 does not clear this bar at all -- worse
+than both naive and Stage 1 on every metric at every horizon in the one
+window it can be tested on (§4.2) -- and Stage 3's single usable origin
+(§4.3) is worse still. Neither should be preferred over Stage 1 for pure
+forecasting on this evidence, thin as the Stage 2/3 evidence is.
+
+**For scenario analysis, the calculus is different, and this backtest does
+not overturn it.** Stage 2's and Stage 3's entire reason to exist is
+mechanisms Stage 1 cannot represent at all: cross-country trade and
+monetary spillovers (Stage 2), and the wage-price loop, competitiveness
+channel and debt-to-spread link (Stage 3, per `reports/stage3c_rollout.qmd`
+§4.5's placebo-controlled finding that Stage 3's own-country amplification
+is real). A single-country model has no spillover to ask about and no
+fiscal-financial loop to stress-test, regardless of how well it forecasts.
+That said, this backtest adds a genuinely new, unfavourable data point for
+Stage 3 specifically: its one testable origin was not just uncompetitive but
+dramatically worse (§4.3), which is a second independent confirmation (the
+first being `reports/stage3c_rollout.qmd`'s in-sample/out-of-sample-capacity
+findings) that the extended system's structural richness has not yet been
+shown to buy *any* predictive value, not even on the one variable set and
+window it could be tested on. Use Stage 3 to reason about mechanisms it
+alone can represent; do not report its point forecasts or fan charts as if
+they carried the same evidentiary weight as Stage 1's.
+
+**On the question the brief specifically asked**: at horizon 1, the
+structural system does not beat the random-walk-style benchmark -- on CRPS
+it loses significantly, and on RMSE/MAE the difference is not significant
+in either direction. It only pulls ahead, and only on point forecasts, from
+horizon 2 onward.

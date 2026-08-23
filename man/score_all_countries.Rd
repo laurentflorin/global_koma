@@ -4,7 +4,7 @@
 \alias{score_all_countries}
 \title{Score every country in a fitted system}
 \usage{
-score_all_countries(fit, countries, concepts, dates, horizon)
+score_all_countries(fit, countries, concepts, dates, horizon, panel)
 }
 \arguments{
 \item{fit}{A \code{koma::koma_estimate} object for the joint system.}
@@ -17,6 +17,9 @@ country.}
 \item{dates}{koma \code{dates} list with a \code{forecast} range to evaluate over.}
 
 \item{horizon}{Integer forecast horizon.}
+
+\item{panel}{Named list of \code{koma_ts}, passed through to
+\code{\link[=score_country_forecast]{score_country_forecast()}}.}
 }
 \value{
 A \code{data.frame}, the row-bound output of

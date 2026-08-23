@@ -1591,6 +1591,31 @@ stage2b_dummies <- function() {
   c("covid_2020q1", "covid_2020q2", "covid_2020q3", "covid_2021q2")
 }
 
+#' Only the COVID dummies whose quarter has already occurred by a given origin
+#'
+#' [stage2b_dummies()] declares a fixed set of impulse dummies for the one
+#' production estimation window (2000Q1-2024Q4), where every dummy's quarter
+#' is necessarily in the past. A backtest re-estimates at many earlier
+#' origins, and passing a not-yet-reached dummy (e.g. `covid_2021q2` at a
+#' 2020Q1 origin) would hand koma an all-zero exogenous column for the whole
+#' estimation window -- a new instance of the same `X'X` singularity class
+#' CLAUDE.md already documents for other zero/near-zero-variance columns,
+#' not a new problem to solve, just a new place the existing trap can bite.
+#'
+#' @param origin `c(year, quarter)`, the estimation window's end.
+#'
+#' @return Character vector, the subset of [stage2b_dummies()] whose quarter
+#'   is `<= origin`.
+#' @export
+stage2b_dummies_through <- function(origin) {
+  to_idx <- function(yq) yq[1] * 4 + (yq[2] - 1)
+  origin_idx <- to_idx(origin)
+  all_dummies <- stage2b_dummies()
+  parsed <- regmatches(all_dummies, regexec("^covid_([0-9]{4})q([1-4])$", all_dummies))
+  dummy_idx <- vapply(parsed, function(p) to_idx(c(as.integer(p[2]), as.integer(p[3]))), numeric(1))
+  all_dummies[dummy_idx <= origin_idx]
+}
+
 #' Configuration for stage 3a: the German labour and price block
 #'
 #' Stage 2b's configuration plus the stage-3a block, in two phases. Every

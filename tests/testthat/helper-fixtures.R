@@ -94,3 +94,51 @@ diagnostics_synthetic_fit <- function(iso2 = "de", n = 80, ndraws = 200) {
     fit = fit_stage1(iso2, panel, dates, options = list(gibbs = list(ndraws = ndraws)))
   )
 }
+
+# A small two-country JOINT (stage-2-shaped) synthetic fit, for tests that
+# need a system spanning more than one country -- score_all_countries()'s
+# contract, and the stage-2 backtest recipe in R/scoring.R. Countries share
+# one draw of each unprefixed variable (eur_usd, oil_price, ...), taken from
+# the first country's panel; that has no economic meaning here, it only
+# needs to be internally consistent and estimable.
+diagnostics_synthetic_stage2_fit <- function(countries = c("de", "fr"), n = 80, ndraws = 100,
+                                             estimation_end = c(2015, 4),
+                                             forecast_start = c(2018, 1),
+                                             forecast_end = c(2018, 4)) {
+  panels <- lapply(seq_along(countries), function(i) {
+    diagnostics_synthetic_panel(countries[i], n = n, seed = 42 + i)
+  })
+  panel <- panels[[1]]
+  for (p in panels[-1]) panel <- c(panel, p[setdiff(names(p), names(panel))])
+
+  # Deliberately NOT reciprocal-sums-to-1: stage2_linkage_weights() folds
+  # whatever is left over into a "row_gdp" residual identity term, and koma's
+  # construct_posterior() aborts ("posterior beta matrix has zeros at
+  # different indices...") if that residual's weight comes out at EXACTLY
+  # zero, which a perfectly-reciprocal small closed system produces. Real
+  # bilateral trade weights never sum to 1 across a handful of countries, so
+  # this only bites a hand-built synthetic fixture -- keep the off-diagonal
+  # below 1 so row_gdp stays genuinely nonzero.
+  n_c <- length(countries)
+  trade_weights <- matrix((1 - diag(n_c)) / (n_c - 1) * 0.7, n_c, n_c, dimnames = list(countries, countries))
+  gdp_weights <- stats::setNames(rep(1 / n_c, n_c), countries)
+
+  lw <- stage2_linkage_weights(countries, trade_weights, gdp_weights)
+  dates <- list(
+    estimation = list(start = c(2000, 1), end = estimation_end),
+    forecast = list(start = forecast_start, end = forecast_end)
+  )
+  shares <- stats::setNames(
+    lapply(countries, function(cc) expenditure_shares(panel, cc, dates)),
+    countries
+  )
+  spec <- stage2_spec(countries, shares, lw)
+  sys_eq <- build_stage2_system(spec)
+  stage2_panel <- build_stage2_panel(panel, lw)
+
+  list(
+    panel = stage2_panel, raw_panel = panel, dates = dates, sys_eq = sys_eq,
+    linkage_weights = lw, trade_weights = trade_weights, gdp_weights = gdp_weights,
+    fit = fit_stage2(sys_eq, stage2_panel, dates, options = list(gibbs = list(ndraws = ndraws)))
+  )
+}

@@ -355,10 +355,17 @@ list(
   ),
 
   # -- diagnostics and scoring (see diagnostics.R, scoring.R) --
+  # score_country_forecast()/score_all_countries() need the FULL (untruncated)
+  # panel, not stage2b_fit$ts_data -- every fit_stage2() fit deliberately
+  # truncates its endogenous series to the estimation end (that is how the
+  # conditional-fill trick works), so it has no real values in the forecast
+  # window to score against at all. stage2b_panel carries the derived series
+  # (de_foreign_demand etc.) stage2b_sys_eq references, which the raw `panel`
+  # target does not.
   tar_target(
     scores,
     score_all_countries(stage2b_fit, countries, shared_concepts,
-                        stage2b_dates_target, horizon = 4)
+                        stage2b_dates_target, horizon = 4, panel = stage2b_panel)
   ),
   tar_target(model_leaderboard, leaderboard(scores, by = "concept"))
 )

@@ -4,10 +4,10 @@
 \alias{score_country_forecast}
 \title{Score one country's forecast against actuals}
 \usage{
-score_country_forecast(fit, iso2, concepts, dates, horizon)
+score_country_forecast(fit, iso2, concepts, dates, horizon, panel)
 }
 \arguments{
-\item{fit}{A \code{koma::koma_estimate} object.}
+\item{fit}{A \code{koma::koma_estimate} object, carrying \verb{$sys_eq}.}
 
 \item{iso2}{Two-letter lowercase ISO country code.}
 
@@ -17,6 +17,9 @@ score_country_forecast(fit, iso2, concepts, dates, horizon)
 \item{dates}{koma \code{dates} list with a \code{forecast} range to evaluate over.}
 
 \item{horizon}{Integer forecast horizon (see \code{?koma::model_evaluation}).}
+
+\item{panel}{Named list of \code{koma_ts}, the full (untruncated) panel with
+real observations spanning \code{dates$forecast}.}
 }
 \value{
 A \code{data.frame} with columns \code{iso2}, \code{concept}, \code{horizon},
@@ -24,5 +27,13 @@ A \code{data.frame} with columns \code{iso2}, \code{concept}, \code{horizon},
 }
 \description{
 Wraps \code{koma::model_evaluation()} for a single country/concept and
-reshapes its output into this project's scoring schema.
+reshapes its output into this project's scoring schema. \code{model_evaluation()}
+re-estimates \code{fit$sys_eq} at every rolling origin inside
+\code{dates$forecast} and needs the \strong{real, unabridged} series to score
+against -- \code{fit$ts_data} will not do, because every \code{fit_stage1()} /
+\code{fit_stage2()} fit in this project deliberately truncates its endogenous
+series to \code{dates$estimation$end} (that's how the conditional-fill/COVID
+trick works), so it has no real values past that point at all. \code{panel}
+must therefore be the full, untruncated panel the fit's own training data
+was drawn from.
 }
