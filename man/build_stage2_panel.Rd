@@ -12,6 +12,7 @@ build_stage2_panel(
   hicp_weights = NULL,
   external_countries = character(),
   financial_countries = character(),
+  spread_countries = character(),
   policy_rate = "ea_policy_rate"
 )
 }
@@ -23,6 +24,12 @@ build_stage2_panel(
 \item{dummies}{Character vector of \verb{covid_<year>q<quarter>} names to add
 as 0/1 indicator series (see \code{\link[=covid_dummy]{covid_dummy()}}). Empty by default, which
 is stage 2a's behaviour.}
+
+\item{spread_countries}{Character vector of ISO-2 codes needing a
+\verb{<iso2>_spread} series because their \code{long_rate} is an identity over the
+spread and the policy rate. Stage 2c sets this to every country; the
+stage-3b \code{financial_countries} set is added to it automatically, since a
+financial-block country needs the same series for the same reason.}
 }
 \value{
 \code{panel} with the derived series appended.

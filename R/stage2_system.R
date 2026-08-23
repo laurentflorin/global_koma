@@ -78,6 +78,26 @@
 #'   break that comparability. Note `ie_domestic_demand` is **not** an option:
 #'   at sd 17.39 it is four times *worse* than GDP, because the distortion
 #'   lives in `ie_investment` (sd 38.0), which is inside it.
+#' @param demand_concept Which partner concept the foreign-demand index
+#'   aggregates: `"gdp"` (stage 2a/2b) or `"imports"` (stage 2c).
+#'
+#'   **`"gdp"` carries a sign defect.** GDP nets out imports, so with
+#'   `de_gdp == 0.937*de_domestic_demand + 0.382*de_exports - 0.330*de_imports`
+#'   and Austria's 0.286 weight on `de_gdp`, the partial derivative
+#'   `d(at_foreign_demand)/d(de_imports)` is `0.286 * -0.330 = -0.094`:
+#'   Germany importing **more** *lowers* Austria's foreign demand. That is
+#'   backwards -- partner imports are exactly what a country's exports sell
+#'   into.
+#'
+#'   `"imports"` is the standard construction (the ECB/OECD/IMF "export market
+#'   growth" variable) and fixes the sign. It costs nothing: every country
+#'   already has an endogenous `<iso2>_imports`, so this is a re-weighting of
+#'   an existing identity, not new data and not a new column of `k`. The
+#'   rest-of-world residual stays on `row_gdp` either way -- no rest-of-world
+#'   import series is fetched -- so the index is mixed, and the `row_gdp`
+#'   share (0.38-0.57 for the euro-area countries) is the fraction still on
+#'   the old basis. That leg is exogenous, so it does not carry the perverse
+#'   sign; only the modelled partners did.
 #'
 #' @return A list with elements `foreign_demand` (named list, one weight
 #'   vector per country, keyed by full variable name), `ea` (named numeric
@@ -85,7 +105,9 @@
 #' @export
 stage2_linkage_weights <- function(countries, trade_weights, gdp_weights,
                                    digits = 3, threshold = 0,
-                                   ireland_proxy = FALSE) {
+                                   ireland_proxy = FALSE,
+                                   demand_concept = c("gdp", "imports")) {
+  demand_concept <- match.arg(demand_concept)
   countries <- tolower(countries)
   if (length(countries) < 2) {
     cli::cli_abort("A linked system needs at least two countries; got {.val {countries}}.")
@@ -102,13 +124,17 @@ stage2_linkage_weights <- function(countries, trade_weights, gdp_weights,
     cli::cli_abort("{.arg gdp_weights} covers none of {.val {countries}}.")
   }
 
-  # Which variable carries a partner's demand signal. Normally its GDP; for
-  # Ireland optionally its consumption -- see the `ireland_proxy` docs.
+  # Which variable carries a partner's demand signal. `demand_concept` picks
+  # the basis (GDP for stage 2a/2b, imports for stage 2c -- see its docs for
+  # the sign defect that motivates the switch); `ireland_proxy` overrides it
+  # for Ireland alone, and only on the GDP basis, since the distortion it
+  # works around lives in Irish measured GDP (and its investment component),
+  # not in Irish imports.
   demand_var <- function(cc) {
-    if (isTRUE(ireland_proxy) && identical(cc, "ie")) {
+    if (isTRUE(ireland_proxy) && identical(cc, "ie") && identical(demand_concept, "gdp")) {
       country_var("ie", "consumption")
     } else {
-      country_var(cc, "gdp")
+      country_var(cc, demand_concept)
     }
   }
 
@@ -278,6 +304,41 @@ stage2_spec <- function(countries, shares, linkage_weights,
 #'   from [foreign_price_weights()], for labour countries whose
 #'   `<iso2>_foreign_prices` should be an **identity** (phase B). Omit an
 #'   entry to leave that country's foreign prices exogenous (phase A).
+#' @param phillips_countries Character vector of ISO-2 codes whose
+#'   `<iso2>_prices` equation gains `<iso2>_gdp` -- a "speed-limit" Phillips
+#'   curve in the growth-rate space koma estimates in. **This is stage 2c's
+#'   headline change.** In stage 2a/2b the price equation's contemporaneous
+#'   endogenous regressor set is *empty*: prices are driven only by their own
+#'   lag, the COVID dummies, `eur_usd` and `oil_price`, all exogenous. Tracing
+#'   reachability shows `ea_policy_rate` reaching 90 of 103 endogenous
+#'   variables -- every country's GDP included -- and **not one price
+#'   variable**, so the Taylor rule responds to inflation nothing it does can
+#'   influence. That is the structural cause of the monetary sanity-check
+#'   failure reported in `reports/stage2_spillovers.qmd` Sec. 7.2. Adding GDP
+#'   here closes the loop and costs no column of `k`, GDP being endogenous.
+#' @param consumption_rate_countries Character vector of ISO-2 codes whose
+#'   `<iso2>_consumption` equation gains `<iso2>_long_rate` -- the
+#'   intertemporal-substitution channel. Without it monetary policy reaches
+#'   demand through investment only. Costs no `k`.
+#' @param import_content_countries Character vector of ISO-2 codes whose
+#'   `<iso2>_imports` equation gains `<iso2>_exports` -- the import content of
+#'   exports. Note this is a *volume* term, not the price term stage 3a tried
+#'   and rejected four times (see [country_block()]); it is the activity
+#'   control whose absence made those price specifications unidentifiable.
+#'   Costs no `k`.
+#' @param spread_countries Character vector of ISO-2 codes that model the
+#'   sovereign **spread** instead of the long-rate level, with
+#'   `<iso2>_long_rate` becoming an identity over the spread and the policy
+#'   rate ([long_rate_identity()]). Motivation: in stage 2b every country's
+#'   contemporaneous policy-rate loading is 0.005-0.064 with a credible
+#'   interval spanning zero (negative for GR and PT), while own lags run
+#'   0.910-0.964 -- a near-non-stationary dependent variable letting its own
+#'   lag absorb the structure, the pathology `CLAUDE.md` records. The
+#'   reformulation imposes unit pass-through (the expectations hypothesis) and
+#'   models the stationary term/risk premium instead. Costs no net `k`: one
+#'   stochastic equation with an own lag is swapped for another, and the new
+#'   identity carries no lag. A country here must **not** also be in
+#'   `financial_countries`, which defines the same identity.
 #'
 #' @return A list of options for [country_block()].
 #' @export
@@ -291,7 +352,18 @@ stage2_options <- function(include_government = TRUE,
                            foreign_price_weights = NULL,
                            external_countries = character(),
                            fiscal_countries = character(),
-                           financial_countries = character()) {
+                           financial_countries = character(),
+                           phillips_countries = character(),
+                           consumption_rate_countries = character(),
+                           import_content_countries = character(),
+                           spread_countries = character()) {
+  spread_overlap <- intersect(spread_countries, financial_countries)
+  if (length(spread_overlap) > 0) {
+    cli::cli_abort(c(
+      "{.val {spread_overlap}} {?is/are} in both {.arg spread_countries} and {.arg financial_countries}.",
+      "i" = "Both define {.field <iso2>_long_rate} as an identity; two blocks cannot define the same variable."
+    ))
+  }
   overlap <- intersect(labour_countries, export_price_countries)
   if (length(overlap) > 0) {
     cli::cli_abort(c(
@@ -338,7 +410,11 @@ stage2_options <- function(include_government = TRUE,
     foreign_price_weights = foreign_price_weights,
     external_countries = external_countries,
     fiscal_countries = fiscal_countries,
-    financial_countries = financial_countries
+    financial_countries = financial_countries,
+    phillips_countries = phillips_countries,
+    consumption_rate_countries = consumption_rate_countries,
+    import_content_countries = import_content_countries,
+    spread_countries = spread_countries
   )
 }
 
@@ -385,6 +461,12 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   has_external <- iso2 %in% (opts$external_countries %||% character())
   has_fiscal <- iso2 %in% (opts$fiscal_countries %||% character())
   has_financial <- iso2 %in% (opts$financial_countries %||% character())
+  # Stage 2c refinements, each independently switchable so stage 2a/2b keep
+  # reproducing exactly. See stage2_options() for the evidence behind each.
+  has_phillips <- iso2 %in% (opts$phillips_countries %||% character())
+  has_consumption_rate <- iso2 %in% (opts$consumption_rate_countries %||% character())
+  has_import_content <- iso2 %in% (opts$import_content_countries %||% character())
+  has_spread <- iso2 %in% (opts$spread_countries %||% character())
 
   # With the labour block on, the price variables must reach trade volumes or
   # they are estimated and then transmit nothing -- the terminal-variable
@@ -427,9 +509,23 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   # the existing inflation channel for no saving, since both are endogenous.
   credit_terms <- if (has_financial) v("credit") else character()
 
+  # Stage 2c: the intertemporal-substitution channel. Without it monetary
+  # policy reaches demand through investment alone.
+  consumption_rate_terms <- if (has_consumption_rate) v("long_rate") else character()
+  # Stage 2c: the import content of exports. A VOLUME term -- not the import
+  # *price* term rejected four times above. Its absence is part of why those
+  # failed: the equation had no world-activity control, so the deflator was
+  # the only proxy for a global impulse that also drives volumes.
+  import_content_terms <- if (has_import_content) v("exports") else character()
+  # Stage 2c: the Phillips curve. In stage 2a/2b this equation has NO
+  # contemporaneous endogenous regressor at all, which leaves prices a closed
+  # exogenous block and the Taylor rule an open loop.
+  phillips_terms <- if (has_phillips) v("gdp") else character()
+
   stochastic <- list()
   stochastic[[v("consumption")]] <- list(
-    terms = c(v("gdp"), real_income_terms, extra, v("consumption")), lags = own_lag(v("consumption"))
+    terms = c(v("gdp"), consumption_rate_terms, real_income_terms, extra, v("consumption")),
+    lags = own_lag(v("consumption"))
   )
   stochastic[[v("investment")]] <- list(
     terms = c(v("gdp"), v("long_rate"), credit_terms, extra, v("investment")),
@@ -440,7 +536,7 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
     lags = own_lag(v("exports"))
   )
   stochastic[[v("imports")]] <- list(
-    terms = c(v("domestic_demand"), extra, v("imports")),
+    terms = c(v("domestic_demand"), import_content_terms, extra, v("imports")),
     lags = own_lag(v("imports"))
   )
   # A labour-block country defines `prices` as an identity over its energy and
@@ -448,7 +544,8 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   # stochastic price equation -- build_system() aborts on a duplicated LHS.
   if (!has_labour) {
     stochastic[[v("prices")]] <- list(
-      terms = c(fx, "oil_price", extra, v("prices")), lags = own_lag(v("prices"))
+      terms = c(fx, "oil_price", phillips_terms, extra, v("prices")),
+      lags = own_lag(v("prices"))
     )
   }
   # A financial-block country's long rate becomes an IDENTITY over its spread
@@ -456,7 +553,17 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   # stochastic equation here. Everything that loads on <iso2>_long_rate --
   # investment, credit, house prices, net borrowing -- keeps doing so; it is
   # now an identity-defined variable rather than an estimated one.
-  if (!has_financial) {
+  # Stage 2c swaps the long-rate LEVEL equation for a SPREAD equation, with
+  # `long_rate` becoming an identity below. The regressors carry over minus the
+  # policy rate, which the identity now handles at unit pass-through. Net cost
+  # in `k` is zero: one own-lagged stochastic equation replaces another, and
+  # the identity has no lag.
+  if (has_spread) {
+    stochastic[[v("spread")]] <- list(
+      terms = c(v("prices"), v("gdp"), v("spread")),
+      lags = own_lag(v("spread"))
+    )
+  } else if (!has_financial) {
     stochastic[[v("long_rate")]] <- list(
       terms = c(v("prices"), policy_rate, v("gdp"), v("long_rate")),
       lags = own_lag(v("long_rate"))
@@ -491,6 +598,12 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   identities[[v("gdp")]] <- shares$gdp
   identities[[v("domestic_demand")]] <- dd
   identities[[v("foreign_demand")]] <- foreign_weights
+  # Stage 2c. Shares one code path with financial_block()'s own version so the
+  # identity and the constructed <iso2>_spread series cannot drift apart --
+  # koma has no identity-consistency check to catch it if they do.
+  if (has_spread) {
+    identities[[v("long_rate")]] <- long_rate_identity(iso2, opts)
+  }
 
   list(stochastic = stochastic, identities = identities)
 }
@@ -846,6 +959,58 @@ fiscal_block <- function(iso2) {
   list(stochastic = stochastic, identities = identities)
 }
 
+#' Which policy rate a country's spread is measured against
+#'
+#' `<iso2>_long_rate == <iso2>_spread + <policy rate>` is used in two places
+#' that must agree exactly: the identity ([financial_block()], and
+#' [country_block()] under stage 2c's `spread_countries`) and the constructed
+#' `<iso2>_spread` series ([build_stage2_panel()]). If they disagree the
+#' identity is silently violated -- koma has no identity-consistency check --
+#' so both resolve the name through this one function.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @param policy_rate Either a scalar policy-rate variable name applied to
+#'   every country, or a **named** character vector keyed by ISO-2 code
+#'   giving per-country overrides (the same shape [stage2_options()]'s `fx`
+#'   argument takes), with unnamed entries ignored. The US needs
+#'   `"us_policy_rate"` whenever it carries its own Taylor rule.
+#'
+#' @return A single policy-rate variable name.
+#' @keywords internal
+spread_policy_rate <- function(iso2, policy_rate = "ea_policy_rate") {
+  iso2 <- tolower(iso2)
+  if (!is.null(names(policy_rate)) && iso2 %in% names(policy_rate)) {
+    return(unname(policy_rate[[iso2]]))
+  }
+  if (length(policy_rate) != 1 || !is.null(names(policy_rate))) {
+    # A named vector with no entry for this country falls back to the EA rate.
+    return("ea_policy_rate")
+  }
+  policy_rate
+}
+
+#' The spread identity `<iso2>_long_rate == 1*<iso2>_spread + 1*<policy rate>`
+#'
+#' Shared by [financial_block()] and stage 2c's [country_block()] so the two
+#' cannot diverge. Weights are explicit `1`s: [identity_equation()] renders
+#' `1*x`, never a bare `x`, because koma stores `character(0)` weights for an
+#' unweighted term (see `CLAUDE.md`).
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#' @param opts A [stage2_options()] list, read for `policy_rule`.
+#'
+#' @return A named numeric vector suitable as an `identities[[...]]` entry.
+#' @keywords internal
+long_rate_identity <- function(iso2, opts = stage2_options()) {
+  iso2 <- tolower(iso2)
+  policy_rate <- if (identical(iso2, "us") && isTRUE(opts$policy_rule)) {
+    "us_policy_rate"
+  } else {
+    "ea_policy_rate"
+  }
+  stats::setNames(c(1, 1), c(country_var(iso2, "spread"), policy_rate))
+}
+
 #' One country's financial block (stage 3b)
 #'
 #' Credit, house prices, and a sovereign **spread** that responds to debt:
@@ -925,7 +1090,7 @@ financial_block <- function(iso2, opts = stage2_options()) {
   )
 
   identities <- list()
-  identities[[v("long_rate")]] <- stats::setNames(c(1, 1), c(v("spread"), policy_rate))
+  identities[[v("long_rate")]] <- long_rate_identity(iso2, opts)
 
   list(stochastic = stochastic, identities = identities)
 }
@@ -1107,6 +1272,11 @@ build_stage2_system <- function(spec, tau = NULL) {
 #' @param dummies Character vector of `covid_<year>q<quarter>` names to add
 #'   as 0/1 indicator series (see [covid_dummy()]). Empty by default, which
 #'   is stage 2a's behaviour.
+#' @param spread_countries Character vector of ISO-2 codes needing a
+#'   `<iso2>_spread` series because their `long_rate` is an identity over the
+#'   spread and the policy rate. Stage 2c sets this to every country; the
+#'   stage-3b `financial_countries` set is added to it automatically, since a
+#'   financial-block country needs the same series for the same reason.
 #'
 #' @return `panel` with the derived series appended.
 #' @export
@@ -1115,6 +1285,7 @@ build_stage2_panel <- function(panel, linkage_weights, dummies = character(),
                                hicp_weights = NULL,
                                external_countries = character(),
                                financial_countries = character(),
+                               spread_countries = character(),
                                policy_rate = "ea_policy_rate") {
   out <- panel
 
@@ -1186,12 +1357,18 @@ build_stage2_panel <- function(panel, linkage_weights, dummies = character(),
   # level series and aborts on a rate component. Both sides are already in
   # percentage points and koma passes rate/none through untouched, so the
   # identity `long_rate == spread + policy_rate` is a literal subtraction here.
-  for (cc in tolower(financial_countries)) {
+  for (cc in unique(tolower(c(financial_countries, spread_countries)))) {
     v <- function(concept) country_var(cc, concept)
+    # Resolve the SAME policy rate the identity will use -- via the shared
+    # helper, so the constructed series and the equation cannot drift apart.
+    # With the US in `spread_countries` (stage 2c) this matters: its identity
+    # is over `us_policy_rate`, and subtracting `ea_policy_rate` here instead
+    # would silently break `long_rate == spread + policy_rate`.
+    pr_name <- spread_policy_rate(cc, policy_rate)
     lr <- out[[v("long_rate")]]
-    pr <- out[[policy_rate]]
+    pr <- out[[pr_name]]
     if (is.null(lr) || is.null(pr)) {
-      cli::cli_abort("Cannot build {.val {v('spread')}}: panel lacks {.val {v('long_rate')}} or {.val {policy_rate}}.")
+      cli::cli_abort("Cannot build {.val {v('spread')}}: panel lacks {.val {v('long_rate')}} or {.val {pr_name}}.")
     }
     start <- max(stats::tsp(lr)[1], stats::tsp(pr)[1])
     end <- min(stats::tsp(lr)[2], stats::tsp(pr)[2])
@@ -1589,6 +1766,68 @@ stage2b_config <- function(ireland_proxy = FALSE) {
 #' @export
 stage2b_dummies <- function() {
   c("covid_2020q1", "covid_2020q2", "covid_2020q3", "covid_2021q2")
+}
+
+#' Configuration for stage 2c: the refined linked core system
+#'
+#' Stage 2b's structure with five refinements applied to **every** country, all
+#' of which cost **zero** additional `k`. `k` stays at 76 against `T = 98`, so
+#' stage 2c is the same size as stage 2b and directly comparable to it. The
+#' equation *count* is unchanged at 68 stochastic (the long-rate level equation
+#' is swapped for a spread equation, not added to); identities go 35 -> 46.
+#'
+#' | # | Refinement | Rationale |
+#' |---|---|---|
+#' | 1 | `prices` gains `<iso2>_gdp` | The Phillips curve. Without it prices are a closed exogenous block and monetary policy is an open loop. |
+#' | 2 | `foreign_demand` over partner **imports** | Partner GDP nets out imports, so a partner importing more currently *lowers* its neighbours' foreign demand. |
+#' | 3 | Model the **spread**; `long_rate` becomes an identity | The level equation's policy-rate loading is insignificant in all eleven countries while its own lag sits at 0.91-0.96. |
+#' | 4 | `consumption` gains `<iso2>_long_rate` | Intertemporal substitution -- a second monetary channel. |
+#' | 5 | `imports` gains `<iso2>_exports` | The import content of exports. |
+#'
+#' Refinements 1, 4 and 5 add only *contemporaneous endogenous* regressors,
+#' which cost no column: `k = 1 + (one lag per stochastic equation) +
+#' (exogenous)`. Refinement 2 re-weights an existing identity. Refinement 3 is
+#' `k`-neutral by construction. The second constraint is also slack --
+#' `draw_omega_j()` draws `riwish(T - k, .)` on a matrix that is
+#' `(endogenous regressors in *that* equation + 1)` square, so the binding
+#' requirement is `df >= 3` here against `df = 22`.
+#'
+#' Everything is opt-in through [stage2_options()], so stage 2a and 2b keep
+#' reproducing byte-for-byte from their cached fits.
+#'
+#' @param countries Character vector of ISO-2 codes the refinements apply to.
+#'   Defaults to every modelled country -- the refinements are deliberately
+#'   uniform, unlike the stage-3 blocks, because each one is either free or
+#'   `k`-neutral and so does not have to be rationed.
+#' @param ireland_proxy Passed through to [stage2_linkage_weights()]. Note it
+#'   is inert on the `"imports"` basis stage 2c uses -- it works around a
+#'   distortion in Irish measured GDP and its investment component, not in
+#'   Irish imports.
+#'
+#' @return A list with `opts`, `threshold`, `ireland_proxy`, `dummies` and
+#'   `demand_concept`, in the shape [benchmark_stage2()] and the `_targets.R`
+#'   stage-2c chain consume.
+#' @export
+stage2c_config <- function(countries = modelled_countries, ireland_proxy = FALSE) {
+  countries <- tolower(countries)
+  b2b <- stage2b_config(ireland_proxy = ireland_proxy)
+  list(
+    opts = stage2_options(
+      include_government = FALSE,
+      extra_regressors = b2b$opts$extra_regressors,
+      policy_rule = b2b$opts$policy_rule,
+      fx = b2b$opts$fx,
+      phillips_countries = countries,
+      consumption_rate_countries = countries,
+      import_content_countries = countries,
+      spread_countries = countries
+    ),
+    threshold = b2b$threshold,
+    ireland_proxy = ireland_proxy,
+    dummies = b2b$dummies,
+    demand_concept = "imports",
+    spread_countries = countries
+  )
 }
 
 #' Only the COVID dummies whose quarter has already occurred by a given origin

@@ -15,7 +15,11 @@ stage2_options(
   foreign_price_weights = NULL,
   external_countries = character(),
   fiscal_countries = character(),
-  financial_countries = character()
+  financial_countries = character(),
+  phillips_countries = character(),
+  consumption_rate_countries = character(),
+  import_content_countries = character(),
+  spread_countries = character()
 )
 }
 \arguments{
@@ -69,6 +73,45 @@ kind of hidden decision the identity must not contain.}
 from \code{\link[=foreign_price_weights]{foreign_price_weights()}}, for labour countries whose
 \verb{<iso2>_foreign_prices} should be an \strong{identity} (phase B). Omit an
 entry to leave that country's foreign prices exogenous (phase A).}
+
+\item{phillips_countries}{Character vector of ISO-2 codes whose
+\verb{<iso2>_prices} equation gains \verb{<iso2>_gdp} -- a "speed-limit" Phillips
+curve in the growth-rate space koma estimates in. \strong{This is stage 2c's
+headline change.} In stage 2a/2b the price equation's contemporaneous
+endogenous regressor set is \emph{empty}: prices are driven only by their own
+lag, the COVID dummies, \code{eur_usd} and \code{oil_price}, all exogenous. Tracing
+reachability shows \code{ea_policy_rate} reaching 90 of 103 endogenous
+variables -- every country's GDP included -- and \strong{not one price
+variable}, so the Taylor rule responds to inflation nothing it does can
+influence. That is the structural cause of the monetary sanity-check
+failure reported in \code{reports/stage2_spillovers.qmd} Sec. 7.2. Adding GDP
+here closes the loop and costs no column of \code{k}, GDP being endogenous.}
+
+\item{consumption_rate_countries}{Character vector of ISO-2 codes whose
+\verb{<iso2>_consumption} equation gains \verb{<iso2>_long_rate} -- the
+intertemporal-substitution channel. Without it monetary policy reaches
+demand through investment only. Costs no \code{k}.}
+
+\item{import_content_countries}{Character vector of ISO-2 codes whose
+\verb{<iso2>_imports} equation gains \verb{<iso2>_exports} -- the import content of
+exports. Note this is a \emph{volume} term, not the price term stage 3a tried
+and rejected four times (see \code{\link[=country_block]{country_block()}}); it is the activity
+control whose absence made those price specifications unidentifiable.
+Costs no \code{k}.}
+
+\item{spread_countries}{Character vector of ISO-2 codes that model the
+sovereign \strong{spread} instead of the long-rate level, with
+\verb{<iso2>_long_rate} becoming an identity over the spread and the policy
+rate (\code{\link[=long_rate_identity]{long_rate_identity()}}). Motivation: in stage 2b every country's
+contemporaneous policy-rate loading is 0.005-0.064 with a credible
+interval spanning zero (negative for GR and PT), while own lags run
+0.910-0.964 -- a near-non-stationary dependent variable letting its own
+lag absorb the structure, the pathology \code{CLAUDE.md} records. The
+reformulation imposes unit pass-through (the expectations hypothesis) and
+models the stationary term/risk premium instead. Costs no net \code{k}: one
+stochastic equation with an own lag is swapped for another, and the new
+identity carries no lag. A country here must \strong{not} also be in
+\code{financial_countries}, which defines the same identity.}
 }
 \value{
 A list of options for \code{\link[=country_block]{country_block()}}.

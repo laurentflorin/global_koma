@@ -380,9 +380,17 @@ coefficient_table <- function(fit, ci_low = 5, ci_up = 95) {
 #'   is not a check that passed.
 #' @export
 sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
-                        fiscal = FALSE, financial = FALSE) {
+                        fiscal = FALSE, financial = FALSE, stage2c = FALSE) {
   iso2 <- tolower(iso2)
   rules <- base_sign_rules(iso2)
+  if (isTRUE(stage2c)) {
+    # Stage 2c models the spread, so `long_rate` is an identity over the spread
+    # and the policy rate: pass-through is IMPOSED at 1, not estimated, and
+    # there is no coefficient left whose sign could be checked. Same reasoning
+    # as the financial block below.
+    rules <- Filter(function(r) r$check != "long_rate_loads_on_policy_rate", rules)
+    rules <- c(rules, stage2c_sign_rules(iso2))
+  }
   if (isTRUE(labour)) rules <- c(rules, stage3a_sign_rules(iso2))
   # Under the external block exports load on the competitiveness difference
   # rather than the two separate prices, so those two stage-3a rules no longer
@@ -435,6 +443,56 @@ base_sign_rules <- function(iso2) {
          term = v("domestic_demand"), expected = "> 0", test = function(x) x > 0),
     list(check = "long_rate_loads_on_policy_rate", equation = v("long_rate"),
          term = policy_var, expected = "> 0", test = function(x) x > 0)
+  )
+}
+
+#' Sign rules for the stage-2c refinements
+#'
+#' Four testable claims, one per refinement that introduces a coefficient
+#' (the `foreign_demand` re-weighting introduces none -- it changes an
+#' identity's components, whose weights are fixed trade shares, not
+#' estimates).
+#'
+#' - **`phillips_curve_positive`**: the price equation's loading on GDP must
+#'   be positive -- faster growth, faster price growth. This is the
+#'   refinement stage 2c exists for, so a negative value is a red flag rather
+#'   than a result: it would say the fitted system believes demand is
+#'   *dis*inflationary, and it would invert the monetary loop the refinement
+#'   is meant to close (the ECB would need to *cut* to fight inflation).
+#' - **`consumption_rate_channel_negative`**: consumption's loading on the
+#'   long rate must be negative -- intertemporal substitution. A positive
+#'   value would mean higher rates raise consumption, reversing the second
+#'   monetary channel this refinement adds.
+#' - **`import_content_positive`**: imports' loading on exports must be
+#'   positive -- exporting more requires importing more intermediates. Note
+#'   this is a *volume* claim; it is not the import-*price* term rejected
+#'   four times in stage 3a.
+#' - **`spread_loads_on_prices_positive`**: the spread's loading on prices
+#'   must be positive -- an inflation risk premium. This is the weakest of
+#'   the four a priori (a flight-to-quality episode can compress spreads
+#'   while inflation rises), so treat a failure here as informative rather
+#'   than disqualifying.
+#'
+#' Note what is deliberately **absent**: `long_rate_loads_on_policy_rate`.
+#' [sign_checks()] drops it under `stage2c = TRUE`, because the stage-2c
+#' `long_rate` is an identity whose policy-rate weight is imposed at exactly
+#' 1. Leaving it in would report a permanent, meaningless failure.
+#'
+#' @param iso2 Two-letter lowercase ISO country code.
+#'
+#' @return A list of rule entries in [base_sign_rules()]'s shape.
+#' @keywords internal
+stage2c_sign_rules <- function(iso2) {
+  v <- function(concept) country_var(iso2, concept)
+  list(
+    list(check = "phillips_curve_positive", equation = v("prices"), term = v("gdp"),
+         expected = "> 0", test = function(x) x > 0),
+    list(check = "consumption_rate_channel_negative", equation = v("consumption"),
+         term = v("long_rate"), expected = "< 0", test = function(x) x < 0),
+    list(check = "import_content_positive", equation = v("imports"),
+         term = v("exports"), expected = "> 0", test = function(x) x > 0),
+    list(check = "spread_loads_on_prices_positive", equation = v("spread"),
+         term = v("prices"), expected = "> 0", test = function(x) x > 0)
   )
 }
 

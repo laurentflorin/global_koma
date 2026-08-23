@@ -10,7 +10,8 @@ stage2_linkage_weights(
   gdp_weights,
   digits = 3,
   threshold = 0,
-  ireland_proxy = FALSE
+  ireland_proxy = FALSE,
+  demand_concept = c("gdp", "imports")
 )
 }
 \arguments{
@@ -50,6 +51,27 @@ plus \code{ie_government} back as an exogenous, which would cost a column and
 break that comparability. Note \code{ie_domestic_demand} is \strong{not} an option:
 at sd 17.39 it is four times \emph{worse} than GDP, because the distortion
 lives in \code{ie_investment} (sd 38.0), which is inside it.}
+
+\item{demand_concept}{Which partner concept the foreign-demand index
+aggregates: \code{"gdp"} (stage 2a/2b) or \code{"imports"} (stage 2c).
+
+\strong{\code{"gdp"} carries a sign defect.} GDP nets out imports, so with
+\code{de_gdp == 0.937*de_domestic_demand + 0.382*de_exports - 0.330*de_imports}
+and Austria's 0.286 weight on \code{de_gdp}, the partial derivative
+\code{d(at_foreign_demand)/d(de_imports)} is \code{0.286 * -0.330 = -0.094}:
+Germany importing \strong{more} \emph{lowers} Austria's foreign demand. That is
+backwards -- partner imports are exactly what a country's exports sell
+into.
+
+\code{"imports"} is the standard construction (the ECB/OECD/IMF "export market
+growth" variable) and fixes the sign. It costs nothing: every country
+already has an endogenous \verb{<iso2>_imports}, so this is a re-weighting of
+an existing identity, not new data and not a new column of \code{k}. The
+rest-of-world residual stays on \code{row_gdp} either way -- no rest-of-world
+import series is fetched -- so the index is mixed, and the \code{row_gdp}
+share (0.38-0.57 for the euro-area countries) is the fraction still on
+the old basis. That leg is exogenous, so it does not carry the perverse
+sign; only the modelled partners did.}
 }
 \value{
 A list with elements \code{foreign_demand} (named list, one weight

@@ -10,7 +10,8 @@ sign_checks(
   labour = FALSE,
   external = FALSE,
   fiscal = FALSE,
-  financial = FALSE
+  financial = FALSE,
+  stage2c = FALSE
 )
 }
 \arguments{

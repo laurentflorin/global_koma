@@ -548,6 +548,124 @@ test_that("stage2b_dummies_through only includes dummies at or before the origin
   expect_equal(stage2b_dummies_through(c(2024, 4)), stage2b_dummies())
 })
 
+# --- stage 2c refinements ----------------------------------------------
+
+test_that("demand_concept switches foreign_demand between partner GDP and partner imports", {
+  tw <- stage2_test_trade_weights()
+  gw <- stage2_test_gdp_weights()
+  by_gdp <- stage2_linkage_weights(c("de", "fr"), tw, gw)
+  by_imports <- stage2_linkage_weights(c("de", "fr"), tw, gw, demand_concept = "imports")
+
+  expect_named(by_gdp$foreign_demand$de, c("fr_gdp", "row_gdp"))
+  expect_named(by_imports$foreign_demand$de, c("fr_imports", "row_gdp"))
+  # Only the component NAMES change; the weights themselves are the same trade
+  # shares, and the rest-of-world residual stays on row_gdp either way.
+  expect_equal(unname(by_imports$foreign_demand$de), unname(by_gdp$foreign_demand$de))
+  expect_equal(sum(by_imports$foreign_demand$de), 1)
+})
+
+test_that("ireland_proxy is inert on the imports basis", {
+  cs <- c("de", "fr", "ie")
+  tw <- stage2_test_trade_weights_n(cs)
+  gw <- c(de = 0.6, fr = 0.3, ie = 0.1)
+  # On the GDP basis the proxy swaps ie_gdp for ie_consumption ...
+  gdp_proxy <- stage2_linkage_weights(cs, tw, gw, ireland_proxy = TRUE)
+  expect_true("ie_consumption" %in% names(gdp_proxy$foreign_demand$de))
+  # ... but it works around a distortion in Irish measured GDP and its
+  # investment component, which Irish IMPORTS do not share.
+  imports_proxy <- stage2_linkage_weights(cs, tw, gw, ireland_proxy = TRUE,
+                                          demand_concept = "imports")
+  expect_true("ie_imports" %in% names(imports_proxy$foreign_demand$de))
+  expect_false("ie_consumption" %in% names(imports_proxy$foreign_demand$de))
+})
+
+test_that("the stage-2c regressors appear only when their flag names the country", {
+  shares <- stage2_test_shares("de")$de
+  fw <- c(fr_imports = 0.2, row_gdp = 0.8)
+  off <- country_block("de", shares, fw, stage2_options(include_government = FALSE))
+  on <- country_block("de", shares, fw, stage2_options(
+    include_government = FALSE, phillips_countries = "de",
+    consumption_rate_countries = "de", import_content_countries = "de"
+  ))
+  expect_false("de_gdp" %in% off$stochastic$de_prices$terms)
+  expect_true("de_gdp" %in% on$stochastic$de_prices$terms)
+  expect_false("de_long_rate" %in% off$stochastic$de_consumption$terms)
+  expect_true("de_long_rate" %in% on$stochastic$de_consumption$terms)
+  expect_false("de_exports" %in% off$stochastic$de_imports$terms)
+  expect_true("de_exports" %in% on$stochastic$de_imports$terms)
+})
+
+test_that("spread_countries swaps the long-rate equation for a spread equation plus an identity", {
+  shares <- stage2_test_shares("de")$de
+  fw <- c(fr_imports = 0.2, row_gdp = 0.8)
+  off <- country_block("de", shares, fw, stage2_options(include_government = FALSE))
+  on <- country_block("de", shares, fw,
+                      stage2_options(include_government = FALSE, spread_countries = "de"))
+
+  expect_true("de_long_rate" %in% names(off$stochastic))
+  expect_false("de_long_rate" %in% names(on$stochastic))
+  expect_true("de_spread" %in% names(on$stochastic))
+  expect_true("de_long_rate" %in% names(on$identities))
+  # k-neutral: one own-lagged stochastic equation replaces another, and the
+  # new identity carries no lag.
+  expect_equal(length(on$stochastic), length(off$stochastic))
+  expect_equal(on$identities$de_long_rate,
+               stats::setNames(c(1, 1), c("de_spread", "ea_policy_rate")))
+})
+
+test_that("the US spread identity uses us_policy_rate when the US has its own rule", {
+  shares <- stage2_test_shares("us")$us
+  fw <- c(de_imports = 0.3, row_gdp = 0.7)
+  on <- country_block("us", shares, fw, stage2_options(
+    include_government = FALSE, spread_countries = "us", policy_rule = TRUE
+  ))
+  expect_equal(on$identities$us_long_rate,
+               stats::setNames(c(1, 1), c("us_spread", "us_policy_rate")))
+})
+
+test_that("spread_policy_rate resolves scalars and per-country overrides", {
+  expect_equal(spread_policy_rate("de"), "ea_policy_rate")
+  expect_equal(spread_policy_rate("us", c(us = "us_policy_rate")), "us_policy_rate")
+  # A named vector with no entry for this country falls back to the EA rate,
+  # so a partial override cannot silently mis-assign the others.
+  expect_equal(spread_policy_rate("de", c(us = "us_policy_rate")), "ea_policy_rate")
+})
+
+test_that("build_stage2_panel builds an exact spread for every spread country", {
+  panel <- stage2_test_panel()
+  lw <- stage2_linkage_weights(c("de", "fr"), stage2_test_trade_weights(),
+                               stage2_test_gdp_weights(), demand_concept = "imports")
+  out <- build_stage2_panel(panel, lw, spread_countries = c("de", "fr"))
+  expect_true(all(c("de_spread", "fr_spread") %in% names(out)))
+  # rate/none throughout, so long_rate == spread + policy_rate is a literal
+  # subtraction and must hold to machine precision.
+  for (cc in c("de", "fr")) {
+    m <- stats::na.omit(cbind(out[[paste0(cc, "_long_rate")]], out[[paste0(cc, "_spread")]],
+                              out$ea_policy_rate))
+    expect_equal(as.numeric(m[, 1]), as.numeric(m[, 2] + m[, 3]), tolerance = 1e-12)
+  }
+  expect_equal(attr(out$de_spread, "series_type"), "rate")
+  expect_equal(attr(out$de_spread, "method"), "none")
+})
+
+test_that("stage2_options rejects a country in both spread_countries and financial_countries", {
+  expect_error(
+    stage2_options(spread_countries = "de", financial_countries = "de",
+                   labour_countries = "de", hicp_weights = list(de = c(a = 1))),
+    "both"
+  )
+})
+
+test_that("stage2c_config keeps k identical to stage 2b", {
+  cfg <- stage2c_config()
+  expect_equal(cfg$demand_concept, "imports")
+  expect_setequal(cfg$opts$phillips_countries, modelled_countries)
+  expect_setequal(cfg$opts$spread_countries, modelled_countries)
+  expect_false(isTRUE(cfg$opts$include_government))
+  # Same COVID dummies as stage 2b, so the exogenous count is unchanged too.
+  expect_equal(cfg$dummies, stage2b_dummies())
+})
+
 # --- the k < T guard ---------------------------------------------------
 
 test_that("stage2_preflight fails loudly when k >= T", {
