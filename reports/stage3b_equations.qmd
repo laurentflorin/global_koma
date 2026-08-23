@@ -1,0 +1,98 @@
+---
+title: "Stage 3b equations: koma strings, plain language, and fitted coefficients"
+subtitle: "Stage 3a plus Germany's external, fiscal and financial blocks"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage3b_equations.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+source("reports/_equation_overview_helpers.R")
+
+f3a <- readRDS(file.path("data", "cache", "stage3a", "fit_a_final.rds"))
+f3b <- readRDS(file.path("data", "cache", "stage3b", "fit_financial.rds"))
+spec <- f3b$spec
+eq_order <- names(c(spec$stochastic, spec$identities))
+ov <- equation_overview(spec)
+ct <- readable_coefficient_table(f3b$fit, eq_order)
+
+new_stochastic <- setdiff(names(spec$stochastic), names(f3a$spec$stochastic))
+new_identities <- setdiff(names(spec$identities), names(f3a$spec$identities))
+common <- intersect(names(spec$stochastic), names(f3a$spec$stochastic))
+changed_stochastic <- common[vapply(common, function(nm) !identical(spec$stochastic[[nm]], f3a$spec$stochastic[[nm]]), logical(1))]
+touched_stochastic <- c(new_stochastic, changed_stochastic)
+dropped_stochastic <- setdiff(names(f3a$spec$stochastic), names(spec$stochastic))
+```
+
+This is the cumulative "financial" step: stage 3a plus, in order, the
+external block (competitiveness, terms of trade, current account), the
+fiscal block (`de_government` re-enters as its own equation, government
+debt accumulates via `de_govdebt == de_govdebt.L(1) + de_netborrowing`),
+and the financial block (credit, house prices, and the sovereign spread
+replacing the long-rate level equation --
+`de_long_rate == de_spread + ea_policy_rate` is now an **identity**, not a
+regression). `de_investment` and `de_exports` also changed content (a
+credit term and a competitiveness/foreign-demand term respectively) without
+changing which variable they explain. `k = 90` against `T = 98`, `df = 8`
+-- see `reports/stage3b_external_fiscal_financial.qmd` for the
+degrees-of-freedom accounting, the fiscal-block redesign that made this
+window feasible, and why `de_long_rate` moved from a regression to an
+identity.
+
+Full system:
+`r nrow(ov[ov$kind == "stochastic", ])` stochastic equations,
+`r nrow(ov[ov$kind == "identity", ])` identities. This section again shows
+only what stage 3b **added or changed** relative to stage 3a
+(`reports/stage3a_equations.qmd`) -- `r length(dropped_stochastic)` equation
+(`r paste(dropped_stochastic, collapse = ", ")`) moved from stochastic to
+identity, shown in the identities table below instead.
+
+## 1. Equations as koma parsed them
+
+```{r koma-strings}
+kable(ov[ov$equation %in% touched_stochastic, c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = "New or changed stochastic equations.")
+kable(ov[ov$equation %in% new_identities, c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = "New identities (including de_long_rate, now an identity).")
+```
+
+## 2. The same equations, plain language
+
+```{r readable}
+kable(ov[ov$equation %in% touched_stochastic, c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = "New or changed stochastic equations.")
+kable(ov[ov$equation %in% new_identities, c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = "New identities.")
+```
+
+## 3. Fitted coefficients
+
+90% credible intervals (`ci_low`-`ci_high`), from `coefficient_table()`
+applied to the cached fit (`data/cache/stage3b/fit_financial.rds`).
+Identities (including `de_long_rate`, now one) carry no estimated
+coefficients -- their fixed weights are shown in full above.
+
+```{r coefficients}
+#| results: asis
+for (eq in touched_stochastic) {
+  sub <- ct[ct$equation == eq, ]
+  print(kable(sub[, c("term_readable", "estimate", "ci_low", "ci_high")],
+             digits = 4, row.names = FALSE,
+             col.names = c("Term", "Estimate", "CI low (5%)", "CI high (95%)"),
+             caption = sub$equation_readable[1]))
+  cat("\n\n")
+}
+```

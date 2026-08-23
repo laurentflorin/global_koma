@@ -1,0 +1,86 @@
+---
+title: "Stage 3a equations: koma strings, plain language, and fitted coefficients"
+subtitle: "The stage-2b system plus Germany's labour market and disaggregated-price block"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage3a_equations.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+source("reports/_equation_overview_helpers.R")
+
+f3a <- readRDS(file.path("data", "cache", "stage3a", "fit_a_final.rds"))
+spec <- f3a$spec
+eq_order <- names(c(spec$stochastic, spec$identities))
+ov <- equation_overview(spec)
+ct <- readable_coefficient_table(f3a$fit, eq_order)
+
+de_labour_stochastic <- c("de_employment", "de_unemployment", "de_wages",
+                          "de_nonenergy_prices", "de_energy_prices", "de_export_prices")
+de_labour_identities <- c("de_productivity", "de_ulc", "de_prices", "de_real_income", "de_foreign_prices")
+```
+
+Every equation from stage 2 (`reports/stage2_equations.qmd`) is unchanged
+here **except** Germany's `de_prices`, which drops out as a stochastic
+equation and reappears below as an identity, and `de_exports`, which gains
+a competitiveness term. On top, Germany gets seven new behavioural equations
+and five new identities: employment, unemployment (a wage Phillips curve),
+wages, the energy/non-energy price split, import/export prices, and the
+productivity / unit-labour-cost / real-income / foreign-price identities
+built from them. This section shows **only the stage-3a-specific
+equations** -- for the full system (all
+`r nrow(ov[ov$kind == "stochastic", ])` stochastic equations and
+`r nrow(ov[ov$kind == "identity", ])` identities), see
+`reports/stage2_equations.qmd` and diff against here. See
+`reports/stage3a_labour_prices.qmd` for the HICP-weight sourcing,
+identification checks and estimation diagnostics behind these coefficients.
+
+## 1. Equations as koma parsed them
+
+```{r koma-strings}
+kable(ov[ov$equation %in% c(de_labour_stochastic, "de_exports"), c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = "New or changed stochastic equations.")
+kable(ov[ov$equation %in% de_labour_identities, c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = "New identities.")
+```
+
+## 2. The same equations, plain language
+
+```{r readable}
+kable(ov[ov$equation %in% c(de_labour_stochastic, "de_exports"), c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = "New or changed stochastic equations.")
+kable(ov[ov$equation %in% de_labour_identities, c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = "New identities.")
+```
+
+## 3. Fitted coefficients
+
+90% credible intervals (`ci_low`-`ci_high`), from `coefficient_table()`
+applied to the cached fit (`data/cache/stage3a/fit_a_final.rds`). Identities
+carry no estimated coefficients -- their fixed weights are shown in full
+above.
+
+```{r coefficients}
+#| results: asis
+for (eq in c(de_labour_stochastic, "de_exports")) {
+  sub <- ct[ct$equation == eq, ]
+  print(kable(sub[, c("term_readable", "estimate", "ci_low", "ci_high")],
+             digits = 4, row.names = FALSE,
+             col.names = c("Term", "Estimate", "CI low (5%)", "CI high (95%)"),
+             caption = sub$equation_readable[1]))
+  cat("\n\n")
+}
+```

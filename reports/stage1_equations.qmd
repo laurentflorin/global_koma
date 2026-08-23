@@ -1,0 +1,88 @@
+---
+title: "Stage 1 equations: koma strings, plain language, and fitted coefficients"
+subtitle: "Eleven independent per-country satellite models"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage1_equations.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+source("reports/_equation_overview_helpers.R")
+
+panel <- readRDS("_targets/objects/panel")
+dates <- readRDS("_targets/objects/estimation_dates")
+
+specs <- stats::setNames(lapply(modelled_countries, function(cc) {
+  stage1_spec(cc, expenditure_shares(panel, cc, dates))
+}), modelled_countries)
+
+fits <- stats::setNames(
+  lapply(modelled_countries, function(cc) readRDS(file.path("data", "cache", "stage1", paste0(cc, ".rds")))),
+  modelled_countries
+)
+```
+
+Each of the eleven economies is its own small `koma` system: six behavioural
+equations (consumption, investment, exports, imports, prices, long rate) plus
+two accounting identities (GDP, domestic demand), all taking shared/world
+variables as exogenous. The United States carries a seventh equation, its
+own policy rate. See `CLAUDE.md` and `reports/stage1_diagnostics.qmd` for the
+estimation window, acceptance-rate band and tau-tuning that produced the
+fitted coefficients below.
+
+## 1. Equations as koma parsed them
+
+```{r koma-strings}
+#| results: asis
+for (cc in modelled_countries) {
+  cat("###", country_names[[cc]], "\n\n")
+  ov <- equation_overview(specs[[cc]])
+  cat("**Stochastic:**\n\n")
+  cat(paste0("- `", ov$koma_string[ov$kind == "stochastic"], "`"), sep = "\n")
+  cat("\n\n**Identities:**\n\n")
+  cat(paste0("- `", ov$koma_string[ov$kind == "identity"], "`"), sep = "\n")
+  cat("\n\n")
+}
+```
+
+## 2. The same equations, plain language
+
+```{r readable}
+#| results: asis
+for (cc in modelled_countries) {
+  cat("###", country_names[[cc]], "\n\n")
+  ov <- equation_overview(specs[[cc]])
+  cat("**Behavioural equations:**\n\n")
+  cat(paste0("- ", ov$readable[ov$kind == "stochastic"]), sep = "\n")
+  cat("\n\n**Identities:**\n\n")
+  cat(paste0("- ", ov$readable[ov$kind == "identity"]), sep = "\n")
+  cat("\n\n")
+}
+```
+
+## 3. Fitted coefficients
+
+90% credible intervals (`ci_low`-`ci_high`), from `coefficient_table()`
+applied to each country's own fit (`data/cache/stage1/<iso2>.rds`).
+
+```{r coefficients}
+#| results: asis
+for (cc in modelled_countries) {
+  cat("###", country_names[[cc]], "\n\n")
+  eq_order <- names(c(specs[[cc]]$stochastic, specs[[cc]]$identities))
+  ct <- readable_coefficient_table(fits[[cc]], eq_order)
+  print(kable(ct[, c("equation_readable", "term_readable", "estimate", "ci_low", "ci_high")],
+             digits = 4, col.names = c("Equation", "Term", "Estimate", "CI low (5%)", "CI high (95%)"),
+             caption = paste(country_names[[cc]], "-- fitted coefficients")))
+  cat("\n\n")
+}
+```

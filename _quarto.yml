@@ -1,0 +1,8 @@
+# Reports read the repo-relative cache (data/cache/...) and call
+# devtools::load_all("."), so every .qmd must execute with the project root as
+# its working directory -- quarto's default is the .qmd file's own directory.
+project:
+  type: default
+  execute-dir: project
+  render:
+    - reports/*.qmd

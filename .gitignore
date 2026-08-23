@@ -34,3 +34,6 @@ NAMESPACE.bak
 reports/*.html
 reports/*_files/
 docs/*.html
+
+/.quarto/
+**/*.quarto_ipynb

@@ -1,0 +1,85 @@
+---
+title: "Stage 2 equations: koma strings, plain language, and fitted coefficients"
+subtitle: "The eleven-country linked core system (stage 2b)"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2_equations.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+source("reports/_equation_overview_helpers.R")
+
+f2b <- readRDS(file.path("data", "cache", "stage2b", "full_tuned.rds"))
+spec <- f2b$spec
+eq_order <- names(c(spec$stochastic, spec$identities))
+ov <- equation_overview(spec)
+ct <- readable_coefficient_table(f2b$fit, eq_order)
+```
+
+Every stage-1 equation for every country plus the `ea_`/`world_`
+aggregation identities, in **one** joint `koma::system_of_equations()`
+call, so cross-country simultaneity is estimated rather than assumed:
+`r nrow(ov[ov$kind == "stochastic", ])` stochastic equations and
+`r nrow(ov[ov$kind == "identity", ])` identities. This is stage 2b (all
+eleven economies, its own 2000Q1-2024Q4 estimation window), not the
+two-country stage 2a pilot -- see `CLAUDE.md` for why stage 2b needs a
+different window and `reports/stage2b_full_system.qmd` for the estimation
+diagnostics behind the coefficients below.
+
+Government appears in no equation (`include_government = FALSE`, stage 2b's
+own departure from stage 2a, which buys back the exogenous columns the
+eleven-country system needs to fit at all); the monetary block adds one
+equation (`ea_policy_rate`); `ea_gdp`/`ea_prices` are the two euro-area
+aggregation identities on top of each country's own `gdp`/`domestic_demand`/
+`foreign_demand`.
+
+## 1. Equations as koma parsed them
+
+```{r koma-strings}
+kable(ov[ov$kind == "stochastic", c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = "Stochastic equations, as passed to koma::system_of_equations().")
+kable(ov[ov$kind == "identity", c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = "Identities.")
+```
+
+## 2. The same equations, plain language
+
+```{r readable}
+kable(ov[ov$kind == "stochastic", c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = "Stochastic equations.")
+kable(ov[ov$kind == "identity", c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = "Identities.")
+```
+
+## 3. Fitted coefficients
+
+90% credible intervals (`ci_low`-`ci_high`), from `coefficient_table()`
+applied to the cached, tau-tuned fit
+(`data/cache/stage2b/full_tuned.rds`). Identities carry no estimated
+coefficients -- their fixed weights are already shown in full in sections 1
+and 2.
+
+```{r coefficients}
+#| results: asis
+for (eq in intersect(eq_order, unique(ct$equation))) {
+  sub <- ct[ct$equation == eq, ]
+  print(kable(sub[, c("term_readable", "estimate", "ci_low", "ci_high")],
+             digits = 4, row.names = FALSE,
+             col.names = c("Term", "Estimate", "CI low (5%)", "CI high (95%)"),
+             caption = sub$equation_readable[1]))
+  cat("\n\n")
+}
+```

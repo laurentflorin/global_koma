@@ -4,3 +4,8 @@
 # committed, logged, or printed.
 
 FRED_API_KEY=
+
+# renv keeps its library outside the repo, on the Data disk. Without this,
+# renv falls back to a per-user cache path and reports a fresh, empty library.
+RENV_PATHS_ROOT=/run/media/system/Data/opt/renv-root
+RENV_PATHS_LIBRARY_ROOT=/run/media/system/Data/opt/renv-root/library
