@@ -142,3 +142,38 @@ diagnostics_synthetic_stage2_fit <- function(countries = c("de", "fr"), n = 80, 
     fit = fit_stage2(sys_eq, stage2_panel, dates, options = list(gibbs = list(ndraws = ndraws)))
   )
 }
+
+# A two-country stage-2 system built straight from a stage2_options() list, so
+# a test can compare the STRUCTURE of a stage-2b system against a stage-2c one
+# without estimating either. Deliberately mirrors test-stage2_system.R's own
+# fixtures (uneven trade weights, a "row" residual well clear of zero) rather
+# than sharing them, because those live in that file and are not visible here.
+reachability_sys_eq <- function(opts = stage2_options(), countries = c("de", "fr")) {
+  n <- length(countries)
+  trade_weights <- matrix(
+    0, n, n + 1,
+    dimnames = list(countries, c(countries, "row"))
+  )
+  for (i in seq_len(n)) {
+    others <- setdiff(seq_len(n), i)
+    trade_weights[i, others] <- 0.25
+    trade_weights[i, "row"] <- 1 - 0.25 * length(others)
+  }
+  gdp_weights <- stats::setNames(rep(1 / n, n), countries)
+
+  lw <- stage2_linkage_weights(countries, trade_weights, gdp_weights)
+  shares <- stats::setNames(lapply(countries, function(cc) {
+    list(
+      gdp = stats::setNames(
+        c(0.9, 0.4, -0.3),
+        country_var(cc, c("domestic_demand", "exports", "imports"))
+      ),
+      domestic_demand = stats::setNames(
+        c(0.6, 0.2, 0.2),
+        country_var(cc, c("consumption", "investment", "government"))
+      )
+    )
+  }), countries)
+
+  build_stage2_system(stage2_spec(countries, shares, lw, opts = opts))
+}

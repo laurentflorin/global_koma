@@ -1,0 +1,487 @@
+---
+title: "Cross-country spillovers from the refined core system (stage 2c)"
+subtitle: "Demand, monetary and oil shocks on the four-refinement system — and what survives a seed placebo"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2c_spillovers.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+library(ggplot2)
+
+dir_sp   <- file.path("data", "cache", "stage2c_spillovers")
+dir_2b   <- file.path("data", "cache", "spillovers")
+
+countries <- modelled_countries
+HORIZON <- 8
+SEED_A <- 20240101
+SEED_B <- 20240102
+PLACEBO_SRC <- c("de", "fr", "it", "nl")
+
+ext_summary <- readRDS(file.path(dir_sp, "noic_extension_summary.rds"))
+mon_2c  <- readRDS(file.path(dir_sp, "noic_monetary_a.rds"))
+mon_2c_b <- readRDS(file.path(dir_sp, "noic_monetary_b.rds"))
+mon_2b  <- readRDS(file.path(dir_2b, "diffs_monetary.rds"))
+oil_2c  <- readRDS(file.path(dir_sp, "noic_oil_a.rds"))
+oil_2b  <- readRDS(file.path(dir_2b, "diffs_oil.rds"))
+mat_2c  <- readRDS(file.path(dir_sp, "noic_matrix_a.rds"))
+mat_2c_b <- readRDS(file.path(dir_sp, "noic_matrix_b.rds"))
+mat_2b  <- readRDS(file.path(dir_2b, "spillover_matrix.rds"))
+sanity_2c <- readRDS(file.path(dir_sp, "noic_sanity_a.rds"))
+sanity_2b <- readRDS(file.path(dir_2b, "sanity.rds"))
+failed  <- readRDS(file.path(dir_sp, "noic_monetary_failed_draws.rds"))
+failed_b <- readRDS(file.path(dir_sp, "noic_monetary_failed_draws_b.rds"))
+explosive <- readRDS(file.path(dir_sp, "noic_baseline_explosive.rds"))
+lw_2c   <- readRDS(file.path("data", "cache", "stage2c", "noic_full_tuned.rds"))$linkage_weights
+
+demand <- stats::setNames(lapply(countries, function(cc)
+  readRDS(file.path(dir_sp, paste0("noic_demand_", cc, "_a.rds")))), countries)
+
+response <- function(d, concept) {
+  vars <- country_var(countries, concept)
+  x <- d[d$variable %in% vars, ]
+  x$country <- toupper(sub(paste0("_", concept, "$"), "", x$variable))
+  x[order(x$country, x$horizon), ]
+}
+peak_table <- function(d, concept) {
+  x <- response(d, concept)
+  out <- do.call(rbind, lapply(split(x, x$country), function(z) data.frame(
+    country = z$country[1],
+    peak_horizon = z$horizon[which.max(abs(z$median_diff))],
+    peak = z$median_diff[which.max(abs(z$median_diff))],
+    cumulative = sum(z$median_diff), stringsAsFactors = FALSE)))
+  rownames(out) <- NULL
+  out
+}
+report_cols <- c("country", "horizon", "median_diff", "ci_low", "ci_high", "explosive_frac")
+```
+
+## 1. What this is, and what is different from stage 2b
+
+This is the same battery `reports/stage2_spillovers.qmd` ran, re-run on the
+**stage 2c** system: eleven countries, four refinements, `k = 76` and `df = 22`
+— *identical* to stage 2b. That equality is what makes this report worth
+writing. Every previous extension in this project traded degrees of freedom for
+structure, so a change in the spillover matrix could always be attributed to a
+thinner posterior; here it cannot.
+
+Method, unchanged from stage 2b and not re-derived here:
+
+- koma has **no impulse-response function**. A shock response is two
+  `koma::forecast()` calls — one unconditional, one with `restrictions = ` —
+  differenced, with `set.seed()` immediately before each so the two legs share
+  the identical innovation draw (`scenario_diff()`).
+- **Demand shocks**: `<iso2>_gdp` growth restricted to baseline **+1pp at
+  horizon 1 only**. A one-quarter growth impulse, not a permanent level step.
+- **Monetary shock**: `ea_policy_rate` at baseline **+100bp for 4 quarters**.
+- **Oil shock**: `oil_price` **level ×1.5**, sustained. Oil is exogenous, so it
+  cannot use `restrictions` at all — a whole shocked copy of the fit is built
+  instead.
+- Every table is keyed off **`median_diff`**, never `mean_diff` — see §2.
+
+```{r extension}
+kable(ext_summary$extension, row.names = FALSE,
+      caption = "How each exogenous series was extended to reach an 8-quarter horizon. Trailing-momentum continuation, not a forecast of oil markets or world trade.")
+```
+
+## 2. Numerical health of the posterior
+
+### 2.1 Explosive draws
+
+koma's Gibbs sampler places no stationarity constraint on a draw's
+coefficients, so on a system of this size a real share of posterior draws are
+dynamically explosive. This is a property of the fitted posterior, not a bug,
+and it is why every point estimate below is a median.
+
+```{r explosive-profile}
+prof <- do.call(rbind, lapply(names(demand), function(src) {
+  x <- response(demand[[src]], "gdp")
+  agg <- stats::aggregate(explosive_frac ~ horizon, x, mean)
+  data.frame(source = src, horizon = agg$horizon, explosive_frac = agg$explosive_frac)
+}))
+mean_prof <- stats::aggregate(explosive_frac ~ horizon, prof, mean)
+kable(mean_prof, row.names = FALSE, digits = 3,
+      col.names = c("Horizon", "Mean explosive share across GDP variables"),
+      caption = "Averaged over all eleven demand shocks and all eleven GDP variables.")
+```
+
+At horizon 8, `r length(explosive)` of 1000 unconditional baseline draws exceed
+`|de_gdp| > 100` — `r sprintf("%.1f%%", 100 * length(explosive) / 1000)`, against
+the 56.8% `reports/stage2_spillovers.qmd` recorded for stage 2b. Materially the
+same; stage 2c does not fix the explosive-draw population, and was not expected
+to.
+
+### 2.2 Draws the monetary restriction kills outright
+
+A sustained 4-quarter restriction is a different failure mode from an extreme
+value: restricting four horizons at once requires inverting
+`R %*% Omega %*% t(R)`, and for a numerically rank-deficient draw no valid
+conditional innovation exists. koma drops such draws by **subsetting the list**,
+recording nothing about which index they were, so `scenario_diff()` aborts on
+the draw-count mismatch rather than silently mispair the common random numbers.
+
+`failed_restriction_draws()` recovers the indices by tracing
+`koma:::forecast_draw()` and asking, per draw, whether it returned normally.
+
+```{r failed}
+kable(data.frame(
+  quantity = c("draws attempted", "draws failing the conditional solve",
+               "of those, also explosive in the unconditional baseline",
+               "identical failing index set at the placebo seed"),
+  value = c(attr(failed, "n_draws"), attr(failed, "n_failed"),
+            sprintf("%d of %d", length(intersect(failed, explosive)), length(failed)),
+            identical(as.integer(failed), as.integer(failed_b)))
+), row.names = FALSE, caption = "Verification before dropping them from the baseline leg.")
+```
+
+Both checks matter. **All `r attr(failed, "n_failed")` failing draws are also
+explosive** — the same badly-behaved population surfacing as an outright failure
+under a demanding restriction and as a blow-up without one, exactly as stage 2b
+found (38 of 38 there). And the failing set is **identical at both seeds**, not
+merely the same size, which is the prediction the mechanism makes: failure
+depends on the draw's posterior `Omega`, which carries no RNG, while the seed
+controls only the innovation draw.
+
+## 3. German demand shock
+
+```{r de-plot}
+#| fig-width: 9
+#| fig-height: 5
+gdp_de <- response(demand$de, "gdp")
+ggplot(gdp_de, aes(horizon, median_diff, color = country)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_line(linewidth = 0.7) +
+  labs(title = "GDP response to a +1pp German demand shock at horizon 1",
+       x = "quarter", y = "GDP growth diff, pp", color = NULL) +
+  theme_minimal()
+```
+
+```{r de-table}
+kable(gdp_de[, report_cols], row.names = FALSE, digits = 4,
+      caption = "GDP response by country, quarters 1-8.")
+```
+
+## 4. US demand shock
+
+```{r us-plot}
+#| fig-width: 9
+#| fig-height: 5
+gdp_us <- response(demand$us, "gdp")
+ggplot(gdp_us, aes(horizon, median_diff, color = country)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_line(linewidth = 0.7) +
+  labs(title = "GDP response to a +1pp US demand shock at horizon 1",
+       x = "quarter", y = "GDP growth diff, pp", color = NULL) +
+  theme_minimal()
+```
+
+```{r us-table}
+kable(gdp_us[, report_cols], row.names = FALSE, digits = 4,
+      caption = "GDP response by country, quarters 1-8.")
+```
+
+## 5. Common monetary shock
+
+`ea_policy_rate` +100bp, sustained for 4 quarters, with the
+`r attr(failed, "n_failed")` singular-solve draws of §2.2 dropped from both legs.
+
+This is the shock stage 2c exists for. Stage 2b's `ea_policy_rate` reached 91 of
+103 endogenous variables and **not one price**, so the Taylor rule's inflation
+term responded to something nothing it did could influence; stage 2c's reaches
+all 114, all 12 prices included. The structural gap is closed and exactly
+verifiable. The question here is whether the numbers moved.
+
+```{r mon-plot}
+#| fig-width: 9
+#| fig-height: 5
+gdp_mon <- response(mon_2c, "gdp")
+ggplot(gdp_mon, aes(horizon, median_diff, color = country)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_line(linewidth = 0.7) +
+  labs(title = "GDP response to +100bp for 4 quarters (stage 2c)",
+       x = "quarter", y = "GDP growth diff, pp", color = NULL) +
+  theme_minimal()
+```
+
+```{r mon-tables}
+kable(gdp_mon[, report_cols], row.names = FALSE, digits = 4,
+      caption = "GDP response by country.")
+kable(response(mon_2c, "prices")[, report_cols], row.names = FALSE, digits = 4,
+      caption = "Price response by country.")
+```
+
+### 5.1 Against stage 2b
+
+```{r mon-vs-2b}
+g2b <- peak_table(mon_2b, "gdp"); g2c <- peak_table(mon_2c, "gdp")
+p2b <- peak_table(mon_2b, "prices"); p2c <- peak_table(mon_2c, "prices")
+kable(merge(g2b, g2c, by = "country", suffixes = c("_2b", "_2c")),
+      row.names = FALSE, digits = 3,
+      caption = "GDP: peak horizon, peak value and cumulative 8-quarter effect.")
+kable(data.frame(
+  measure = c("GDP peaks at horizon 1", "GDP peak negative",
+              "GDP cumulative negative", "price peak negative"),
+  stage2b = c(sum(g2b$peak_horizon == 1), sum(g2b$peak < 0),
+              sum(g2b$cumulative < 0), sum(p2b$peak < 0)),
+  stage2c = c(sum(g2c$peak_horizon == 1), sum(g2c$peak < 0),
+              sum(g2c$cumulative < 0), sum(p2c$peak < 0))
+), row.names = FALSE, caption = "Out of 11 countries.")
+```
+
+Three things to read off this, in order of confidence.
+
+**The price sign is wrong in both systems, and stage 2c did not fix it.** Every
+one of the eleven price peaks is positive — a tightening appearing to raise
+prices. §7 shows this is not a broken price block: the same equations respond
+correctly and substantially to an oil shock. The Phillips-curve link is
+correctly signed in 10 of 11 countries. What goes wrong is upstream: the policy
+shock's effect on GDP is *positive at horizon 1* (the simultaneity echo), the
+price response is almost entirely a horizon-1 effect, and prices are faithfully
+tracking the wrong part of the GDP path.
+
+**The GDP response is still dominated by the horizon-1 echo.** Eight of eleven
+still peak at horizon 1 with a positive value — the same-quarter artefact of
+imposing an exact-value restriction, diagnosed in stage 2b's §1.3.
+
+**The apparent gain in cumulative GDP sign does not survive the placebo** — see
+§9.1. Greece and Ireland are the exceptions, and the only two countries whose
+monetary response can honestly be called changed.
+
+## 6. Oil shock
+
+```{r oil}
+kable(peak_table(oil_2c, "prices"), row.names = FALSE, digits = 3,
+      caption = "Price response to a sustained oil price level x1.5 (stage 2c).")
+kable(response(oil_2c, "prices")[, report_cols], row.names = FALSE, digits = 4,
+      caption = "Full path by country.")
+```
+
+All eleven positive, cumulative 0.8–2.3pp, peaking on impact and persisting.
+This is the control that makes §5 interpretable: the price block responds
+sensibly and with the right sign to a genuine cost-push shock, and perversely to
+a policy rate. The fault is not in the price equations.
+
+## 7. The spillover matrix
+
+```{r matrix}
+kable(round(mat_2c, 3),
+      caption = "Stage 2c: cumulative 8-quarter GDP response, source (row) x receiver (column).")
+```
+
+```{r diagonals}
+kable(data.frame(
+  country = rownames(mat_2b),
+  own_2b = diag(mat_2b), own_2c = diag(mat_2c)
+), row.names = FALSE, digits = 3,
+caption = "Own-effect diagonals. Stage 2c's are tighter as well as uniformly dominant.")
+```
+
+`CLAUDE.md` is emphatic that an individual cell of this matrix is not a reliable
+number at 1000 draws. Read it as a pattern — sign, rough ordering, and whether
+the own effect dominates — never cell by cell. §9 quantifies exactly how
+unreliable a cell is, and the answer for stage 2c is *notably better than for
+stage 2b*.
+
+## 8. Sanity checks
+
+```{r sanity}
+kable(data.frame(
+  check = sanity_2b$check,
+  stage2b = paste0(ifelse(sanity_2b$ok, "PASS", "FAIL"), " — ", sanity_2b$detail),
+  stage2c = paste0(ifelse(sanity_2c$ok, "PASS", "FAIL"), " — ", sanity_2c$detail)
+), row.names = FALSE, caption = "All three checks, both systems, reported as-is.")
+```
+
+### 8.1 Own effect: 7/11 → 11/11, and the Austria artefact is gone
+
+Stage 2b failed this for four countries. A French, German or Belgian demand
+shock moved *Austrian* GDP more than it moved the source's own — an indirect
+two-hop path through Germany, which §7.1 of that report analysed at length and
+concluded was a legitimate property of a simultaneous system rather than a
+defect. Under stage 2c the own effect dominates in **11 of 11**.
+
+```{r at-exposure}
+kable(data.frame(loads_on = names(lw_2c$foreign_demand$at),
+                 weight = unname(lw_2c$foreign_demand$at)),
+      row.names = FALSE, digits = 3,
+      caption = "Austria's stage-2c foreign_demand weights -- now over partner IMPORTS, with row_gdp the unmodelled-world residual.")
+```
+
+The plausible mechanism is refinement 2. Austria's exposure is unchanged as a
+set of trade weights, but what those weights now multiply is partner *imports*
+rather than partner *GDP*. A German demand shock raises German GDP a lot and
+German imports proportionally less, so the two-hop path into Austria is damped
+relative to the source's own response. This report does not claim to have
+isolated that mechanism — it is the reading consistent with the change, and the
+alternative explanations (the Phillips curve, the spread) do not touch the
+demand-propagation path at all.
+
+### 8.2 Trade-weight correlation: 0.141 → 0.292, still failing
+
+Better by more than a factor of two, and still short of the 0.3 threshold. The
+structural argument stage 2b's §7.3 made still applies: this check correlates
+each cell against the receiver's **direct** bilateral weight on the source, in a
+system where a large share of any country's total exposure runs through third
+countries. A network-aware version would be the right test, and remains
+follow-up work.
+
+**This number would not exist at all without a fix made for this stage.**
+`spillover_sanity_checks()` looked each source up as `<source>_gdp` in the
+receiver's `foreign_demand` weights. Stage 2c's identity loads partner
+**imports**, so under the old code every lookup missed, the weight column came
+out all zeros, and the reported correlation was computed against a constant — a
+meaningless verdict rather than an error. The lookup now matches on the ISO-2
+prefix, which also repairs the same latent bug under `ireland_proxy`.
+
+### 8.3 Monetary sign: still failing, for a diagnosed reason
+
+Covered in §5.1: the price response is wrong-signed in all eleven countries
+because the policy rate's route into GDP is dominated by the horizon-1
+simultaneity echo. The check's premise — that there is a real monetary channel
+whose sign can be tested — is closer to holding than it was in stage 2b, but it
+does not yet hold.
+
+## 9. The seed placebo
+
+Common random numbers make a *baseline-vs-scenario* pair exact. They do nothing
+about sampling error in the level of the estimand itself, which is a median over
+draws of which more than half have exploded by horizon 8. So before any of §5–§8
+is read as a stage-2c effect, the same four source countries were re-run at a
+second seed **on the same fit**. Anything smaller than that gap is noise.
+
+```{r placebo}
+d_seed <- abs(mat_2c[PLACEBO_SRC, ] - mat_2c_b[PLACEBO_SRC, ])
+d_sys  <- abs(mat_2c[PLACEBO_SRC, ] - mat_2b[PLACEBO_SRC, ])
+kable(data.frame(
+  comparison = c("seed A vs seed B, same stage-2c fit (noise)",
+                 "stage 2c vs stage 2b, same seed (the claim)"),
+  mean_abs_diff = c(mean(d_seed), mean(d_sys)),
+  max_abs_diff = c(max(d_seed), max(d_sys)),
+  sign_flips = c(sum(sign(mat_2c[PLACEBO_SRC, ]) != sign(mat_2c_b[PLACEBO_SRC, ])),
+                 sum(sign(mat_2c[PLACEBO_SRC, ]) != sign(mat_2b[PLACEBO_SRC, ])))
+), row.names = FALSE, digits = 3,
+caption = "Four sources (de, fr, it, nl) x 11 receivers = 44 cells.")
+```
+
+Two readings, and the second is the more valuable.
+
+**The matrix change is signal.** The cross-system difference is
+`r sprintf("%.1fx", mean(d_sys) / mean(d_seed))` the seed-to-seed spread, and
+`r sum(d_sys > 2 * d_seed)` of 44 cells move by more than twice the noise.
+
+**Stage 2c's matrix is about three times more reproducible than stage 2b's.**
+`CLAUDE.md` records stage 2b's own seed sensitivity: an off-diagonal cell moved
+by **0.35 on average, up to 1.85, flipping the sign of 7–10 of 30**. The same
+measurement on stage 2c gives `r sprintf("%.3f", mean(d_seed))`,
+`r sprintf("%.3f", max(d_seed))`, and
+**`r sum(sign(mat_2c[PLACEBO_SRC, ]) != sign(mat_2c_b[PLACEBO_SRC, ]))` of 44**.
+That is not a claim that can itself be dismissed as noise — it is a measurement
+*of* the noise — and it is the strongest single result in this report. A matrix
+whose cells were previously too unstable to read individually is now
+substantially closer to being readable.
+
+```{r placebo-diag}
+kable(data.frame(
+  country = PLACEBO_SRC,
+  own_2b = diag(mat_2b)[PLACEBO_SRC],
+  own_2c_seedA = diag(mat_2c)[PLACEBO_SRC],
+  own_2c_seedB = diag(mat_2c_b)[PLACEBO_SRC],
+  seed_spread = abs(diag(mat_2c)[PLACEBO_SRC] - diag(mat_2c_b)[PLACEBO_SRC]),
+  system_gap = abs(diag(mat_2c)[PLACEBO_SRC] - diag(mat_2b)[PLACEBO_SRC])
+), row.names = FALSE, digits = 3,
+caption = "Own diagonals. A change is reportable only where the system gap clearly exceeds the seed spread.")
+```
+
+France, Italy and the Netherlands move by roughly ten times their seed spread
+and can be reported. **Germany's diagonal moves by less than its own seed spread
+(0.103 against 0.183) and must not be.** The same discipline that killed the two
+largest apparent findings in `reports/stage3c_rollout.qmd` §4.4 applies here and
+lands on a different country.
+
+### 9.1 The monetary shock does not survive it
+
+```{r placebo-mon}
+gb <- peak_table(mon_2c_b, "gdp")
+kable(data.frame(
+  measure = c("GDP cumulative negative", "GDP peak negative", "price peak negative"),
+  stage2b = c(sum(g2b$cumulative < 0), sum(g2b$peak < 0), sum(p2b$peak < 0)),
+  stage2c_seedA = c(sum(g2c$cumulative < 0), sum(g2c$peak < 0), sum(p2c$peak < 0)),
+  stage2c_seedB = c(sum(gb$cumulative < 0), sum(gb$peak < 0),
+                    sum(peak_table(mon_2c_b, "prices")$peak < 0))
+), row.names = FALSE,
+caption = "Out of 11. Seeds A and B are the SAME stage-2c fit, so any gap between those two columns is pure noise.")
+```
+
+```{r placebo-mon-country}
+cmp <- merge(g2c[, c("country", "cumulative")], gb[, c("country", "cumulative")],
+             by = "country", suffixes = c("_seedA", "_seedB"))
+cmp <- merge(cmp, g2b[, c("country", "cumulative")], by = "country")
+names(cmp)[4] <- "cumulative_2b"
+cmp$seed_gap <- abs(cmp$cumulative_seedA - cmp$cumulative_seedB)
+cmp$system_gap <- abs(cmp$cumulative_seedA - cmp$cumulative_2b)
+cmp$survives <- cmp$system_gap > 2 * cmp$seed_gap
+kable(cmp, row.names = FALSE, digits = 3,
+      caption = "Cumulative 8-quarter GDP response to the monetary shock, per country.")
+```
+
+The count of countries with a negative cumulative GDP response is
+`r sum(g2c$cumulative < 0)` at seed A and `r sum(gb$cumulative < 0)` at seed B —
+against `r sum(g2b$cumulative < 0)` in stage 2b. **The stage-2c "improvement" is
+smaller than the distance between two runs of stage 2c itself**, so it is not a
+finding. Mean seed gap `r sprintf("%.3f", mean(cmp$seed_gap))` against a mean
+cross-system gap of `r sprintf("%.3f", mean(cmp$system_gap))`; for
+`r sum(cmp$system_gap < cmp$seed_gap)` of eleven the cross-system gap is
+*smaller* than the seed spread.
+
+What survives is Greece (system gap 1.78 against a seed spread of 0.19) and
+Ireland (1.05 against 0.32), both substantially more contractionary under
+stage 2c and both among the countries whose response peaks at a later horizon.
+Portugal clears the same bar only because its seed spread is unusually small
+(0.030) on a movement of 0.17 in the opposite direction, and is better read as
+unresolvable than as a third finding. Germany's gap (0.43) is not clearly above
+its seed spread (0.37).
+
+## 10. Verdict
+
+**The spillover structure is materially better; the monetary transmission is
+not.** Both halves of that are worth stating precisely, because the second is
+the one stage 2c was designed to fix.
+
+Better, and it survives the placebo:
+
+- The own-effect sanity check goes from **7/11 (fail) to 11/11 (pass)**. Stage
+  2b's Austria two-hop artefact — the largest anomaly in that report — is gone.
+- The trade-weight correlation **more than doubles** (0.141 → 0.292), though it
+  still misses the threshold.
+- The matrix is **~3× more seed-reproducible** (mean cell movement 0.119 against
+  0.35; one sign flip in 44 cells against 7–10 in 30). For a matrix whose cells
+  `CLAUDE.md` warns must never be read individually, this is the most useful
+  improvement of the three.
+
+Not better:
+
+- **Prices respond to a monetary tightening with the wrong sign in all eleven
+  countries**, in both systems.
+- The GDP response still concentrates in a horizon-1 simultaneity echo, and the
+  apparent improvement in its cumulative sign **fails the seed placebo**. Only
+  Greece and Ireland change by more than noise.
+- The explosive-draw population is unchanged (~55% at horizon 8).
+
+The diagnosis is specific rather than a shrug. Closing the loop structurally was
+necessary — `ea_policy_rate` genuinely could not reach a single price variable
+before, and now reaches all twelve — but the fitted magnitudes along that path
+are tiny (`monetary_loop()` gives a contemporaneous round-trip gain around 1e-5,
+see `reports/stage2c_refined_core.qmd` §4.5), and 3 of 11 consumption-rate
+loadings are wrong-signed. The oil shock confirms the price block itself is
+sound. **What is missing is a lagged demand channel from the policy rate strong
+enough to outweigh the within-quarter restriction artefact** — not another
+contemporaneous link, which is what stage 2c added.

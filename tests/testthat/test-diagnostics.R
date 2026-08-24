@@ -288,3 +288,105 @@ test_that("save_stage1_plots writes one PNG per equation and kind, per country",
   expect_true(all(file.exists(written)))
   expect_true(all(grepl("^trace_de_", basename(written))))
 })
+
+# --- contemporaneous reachability --------------------------------------
+
+test_that("stage 2b's policy rate reaches GDP but no price variable", {
+  sys_eq <- reachability_sys_eq()
+  reached <- contemporaneous_reachability(sys_eq, "ea_policy_rate")
+
+  # The stage-1/2a finding, reproduced structurally: the rate moves the real
+  # side through long_rate -> investment, ...
+  expect_true("de_gdp" %in% reached)
+  expect_true("fr_gdp" %in% reached)
+  # ... and stops there. The price equation has no contemporaneous endogenous
+  # regressor at all, so the Taylor rule responds to an inflation rate nothing
+  # it does can influence.
+  expect_length(grep("prices$", reached), 0)
+  # The rule's OUTPUT term is nonetheless closed -- the rate returns to itself
+  # through ea_gdp. It is specifically the inflation term that is an open loop,
+  # which is why "the policy rate is endogenous" is not the same claim.
+  expect_true("ea_gdp" %in% reached)
+  expect_true("ea_policy_rate" %in% reached)
+})
+
+test_that("stage 2c's refinements close the monetary loop", {
+  cc <- c("de", "fr")
+  sys_eq <- reachability_sys_eq(stage2_options(
+    phillips_countries = cc, consumption_rate_countries = cc,
+    import_content_countries = cc, spread_countries = cc
+  ))
+  reached <- contemporaneous_reachability(sys_eq, "ea_policy_rate")
+
+  expect_true(all(c("de_prices", "fr_prices", "ea_prices") %in% reached))
+  # A cycle brings the policy rate back to itself -- that IS the closed loop.
+  expect_true("ea_policy_rate" %in% reached)
+})
+
+test_that("contemporaneous_reachability rejects a variable outside the system", {
+  expect_error(
+    contemporaneous_reachability(reachability_sys_eq(), "de_wages"),
+    "not endogenous"
+  )
+})
+
+# --- the monetary loop path --------------------------------------------
+
+test_that("monetary_loop names all six links and refuses the US", {
+  path <- monetary_loop("de", consumption_to_gdp = 0.54, prices_to_ea_prices = 0.3)
+
+  expect_length(path, 6)
+  expect_equal(path[[1]], 1)
+  expect_equal(path[["consumption <- long_rate"]],
+               list(equation = "de_consumption", term = "de_long_rate"))
+  expect_equal(path[["prices <- gdp (Phillips curve)"]],
+               list(equation = "de_prices", term = "de_gdp"))
+  expect_equal(path[["ea_prices <- prices (identity)"]], 0.3)
+  expect_equal(path[["ea_policy_rate <- ea_prices (Taylor rule)"]],
+               list(equation = "ea_policy_rate", term = "ea_prices"))
+
+  expect_error(monetary_loop("us", 0.5, 0.2), "us_policy_rate")
+})
+
+# --- stage-2c sign rules are per-refinement ----------------------------
+
+test_that("a dropped stage-2c refinement contributes no rule rather than a failure", {
+  # The recommended stage-2c configuration drops refinement 5 (import content).
+  # With `stage2c = TRUE` its rule is still applied, finds no `de_exports` term
+  # in the imports equation, and scores NA/FALSE -- eleven deliberate absences
+  # read as eleven failures across the system.
+  coefs <- data.frame(
+    equation = c("de_consumption", "de_imports", "de_prices", "de_spread"),
+    term = c("de_gdp", "de_domestic_demand", "de_gdp", "de_prices"),
+    estimate = c(0.5, 0.4, 0.1, 0.2), stringsAsFactors = FALSE
+  )
+
+  all_five <- sign_checks(coefs, "de", stage2c = TRUE)
+  expect_true("import_content_positive" %in% all_five$check)
+  expect_true(is.na(all_five$estimate[all_five$check == "import_content_positive"]))
+  expect_false(all_five$ok[all_five$check == "import_content_positive"])
+
+  dropped <- sign_checks(coefs, "de",
+                         stage2c = c("phillips", "consumption_rate", "spread"))
+  expect_false("import_content_positive" %in% dropped$check)
+  expect_equal(nrow(dropped), nrow(all_five) - 1)
+  # The rules that remain are unchanged, and the spread refinement still
+  # suppresses the imposed long-rate pass-through check.
+  expect_false("long_rate_loads_on_policy_rate" %in% dropped$check)
+  expect_true(all(c("phillips_curve_positive", "consumption_rate_channel_negative",
+                    "spread_loads_on_prices_positive") %in% dropped$check))
+})
+
+test_that("without the spread refinement the long-rate pass-through check stays", {
+  coefs <- data.frame(equation = "de_long_rate", term = "ea_policy_rate",
+                      estimate = 0.05, stringsAsFactors = FALSE)
+  res <- sign_checks(coefs, "de", stage2c = c("phillips"))
+  expect_true("long_rate_loads_on_policy_rate" %in% res$check)
+  expect_true(res$ok[res$check == "long_rate_loads_on_policy_rate"])
+})
+
+test_that("sign_checks rejects an unknown stage-2c refinement", {
+  coefs <- data.frame(equation = "de_prices", term = "de_gdp", estimate = 0.1,
+                      stringsAsFactors = FALSE)
+  expect_error(sign_checks(coefs, "de", stage2c = "phillips_curve"), "Unknown")
+})

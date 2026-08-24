@@ -167,6 +167,74 @@ list(
   tar_target(stage2b_acceptance, check_acceptance_rates(stage2b_fit)),
   tar_target(stage2b_stability, check_running_mean_stability(stage2b_fit)),
 
+  # -- stage 2c: the refined linked core (see stage2_system.R) --
+  # Same eleven countries, same window, same k = 76 and df = 22 as stage 2b --
+  # every refinement is free, so this is the one stage in the project that can
+  # be compared against its predecessor without a degrees-of-freedom caveat.
+  # stage2c_config() leaves the rejected import-content refinement off; see its
+  # roxygen and reports/stage2c_refined_core.qmd Sec. 4.
+  tar_target(stage2c_cfg, stage2c_config()),
+  tar_target(
+    stage2c_linkage_weights,
+    stage2_linkage_weights(countries, trade_weights, gdp_weights,
+                           threshold = stage2c_cfg$threshold,
+                           ireland_proxy = stage2c_cfg$ireland_proxy,
+                           demand_concept = stage2c_cfg$demand_concept)
+  ),
+  tar_target(
+    stage2c_spec,
+    stage2_spec(
+      countries,
+      stats::setNames(
+        lapply(countries, function(cc) expenditure_shares(panel, cc, stage2b_dates_target)),
+        countries
+      ),
+      stage2c_linkage_weights,
+      opts = stage2c_cfg$opts
+    )
+  ),
+  tar_target(stage2c_sys_eq, build_stage2_system(stage2c_spec)),
+  # policy_rate_map() is load-bearing: the <iso2>_spread series built here and
+  # the long-rate identity in stage2c_sys_eq must subtract the SAME policy rate,
+  # and koma has no identity-consistency check that would notice if they did
+  # not. Getting it wrong violated the US identity by 3.25pp in silence.
+  tar_target(
+    stage2c_panel,
+    build_stage2_panel(panel, stage2c_linkage_weights,
+                       dummies = stage2c_cfg$dummies,
+                       spread_countries = stage2c_cfg$spread_countries,
+                       policy_rate = policy_rate_map(stage2c_cfg$opts))
+  ),
+  tar_target(
+    stage2c_preflight,
+    stage2_preflight(stage2c_sys_eq, stage2c_panel, dates = stage2b_dates_target)
+  ),
+  tar_target(
+    stage2c_identity_check,
+    identity_consistency(stage2c_sys_eq, stage2c_panel)
+  ),
+  # NOTE: run with OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1, as stage 2b.
+  tar_target(
+    stage2c_fit,
+    fit_stage2(stage2c_sys_eq, stage2c_panel, stage2b_dates_target, workers = 8)
+  ),
+  tar_target(stage2c_acceptance, check_acceptance_rates(stage2c_fit)),
+  tar_target(stage2c_coefs, coefficient_table(stage2c_fit)),
+  tar_target(
+    stage2c_signs,
+    do.call(rbind, lapply(countries, function(cc) {
+      s <- sign_checks(stage2c_coefs, cc, stage2c = stage2c_cfg$refinements)
+      s$iso2 <- cc
+      s
+    }))
+  ),
+  # The headline structural claim: stage 2b's policy rate reached 91 of 103
+  # endogenous variables and not one price; stage 2c's reaches all 114.
+  tar_target(
+    stage2c_reachability,
+    contemporaneous_reachability(stage2c_sys_eq, "ea_policy_rate")
+  ),
+
   # -- cross-country spillovers (see spillovers.R) --
   # koma has no impulse-response helper: spillovers are the DIFFERENCE
   # between two conditional forecasts, paired via common random numbers

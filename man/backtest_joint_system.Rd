@@ -18,7 +18,7 @@ backtest_joint_system(
   workers = NULL,
   options = list(),
   cache_dir = NULL,
-  panel_extra_fn = function(dummies) list(),
+  panel_extra_fn = function(dummies, opts) list(),
   spec_label = "stage2"
 )
 }
@@ -51,8 +51,14 @@ into, or \code{NULL}.}
 
 \item{panel_extra_fn}{Function \code{(dummies) -> list(...)} of extra
 \code{build_stage2_panel()} arguments (\code{labour_countries}, \code{hicp_weights},
-\code{external_countries}, \code{financial_countries}) -- empty by default
-(stage 2).}
+\code{external_countries}, \code{financial_countries}, \code{spread_countries},
+\code{policy_rate}) -- empty by default (stage 2). Called as
+\code{panel_extra_fn(dummies, opts)}, because a stage-2c panel needs the
+policy-rate map derived from that origin's own \code{opts} to keep the
+constructed \verb{<iso2>_spread} series and the long-rate identity in step.
+\code{config$demand_concept} (default \code{"gdp"}) selects the \code{foreign_demand}
+basis, so a stage-2c backtest re-weights the identity the same way its
+production fit does.}
 
 \item{spec_label}{Character scalar recorded in \code{meta$spec}.}
 }

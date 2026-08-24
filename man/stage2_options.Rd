@@ -79,11 +79,13 @@ entry to leave that country's foreign prices exogenous (phase A).}
 curve in the growth-rate space koma estimates in. \strong{This is stage 2c's
 headline change.} In stage 2a/2b the price equation's contemporaneous
 endogenous regressor set is \emph{empty}: prices are driven only by their own
-lag, the COVID dummies, \code{eur_usd} and \code{oil_price}, all exogenous. Tracing
-reachability shows \code{ea_policy_rate} reaching 90 of 103 endogenous
-variables -- every country's GDP included -- and \strong{not one price
-variable}, so the Taylor rule responds to inflation nothing it does can
-influence. That is the structural cause of the monetary sanity-check
+lag, the COVID dummies, \code{eur_usd} and \code{oil_price}, all exogenous.
+\code{\link[=contemporaneous_reachability]{contemporaneous_reachability()}} shows \code{ea_policy_rate} reaching 91 of the
+103 stage-2b endogenous variables -- every country's GDP included, and
+itself, through the rule's \code{ea_gdp} term -- but \strong{not one price
+variable}, so the Taylor rule's \emph{inflation} term responds to something
+nothing it does can influence. Under stage 2c the same trace reaches all
+114. That is the structural cause of the monetary sanity-check
 failure reported in \code{reports/stage2_spillovers.qmd} Sec. 7.2. Adding GDP
 here closes the loop and costs no column of \code{k}, GDP being endogenous.}
 

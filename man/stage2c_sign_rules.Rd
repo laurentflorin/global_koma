@@ -4,10 +4,14 @@
 \alias{stage2c_sign_rules}
 \title{Sign rules for the stage-2c refinements}
 \usage{
-stage2c_sign_rules(iso2)
+stage2c_sign_rules(iso2, refinements = stage2c_refinements())
 }
 \arguments{
 \item{iso2}{Two-letter lowercase ISO country code.}
+
+\item{refinements}{Which of \code{\link[=stage2c_refinements]{stage2c_refinements()}} the system carries. A
+dropped refinement contributes no rule at all, rather than a rule whose
+term does not exist and therefore scores \code{NA}/\code{FALSE}.}
 }
 \value{
 A list of rule entries in \code{\link[=base_sign_rules]{base_sign_rules()}}'s shape.
@@ -42,10 +46,9 @@ than disqualifying.
 }
 
 Note what is deliberately \strong{absent}: \code{long_rate_loads_on_policy_rate}.
-\code{\link[=sign_checks]{sign_checks()}} drops it under \code{stage2c = TRUE}, because the stage-2c
-\code{long_rate} is an identity whose policy-rate weight is imposed at exactly
-\enumerate{
-\item Leaving it in would report a permanent, meaningless failure.
-}
+\code{\link[=sign_checks]{sign_checks()}} drops it whenever the \code{spread} refinement is active, because
+the stage-2c \code{long_rate} is then an identity whose policy-rate weight is
+imposed at exactly 1. Leaving it in would report a permanent, meaningless
+failure.
 }
 \keyword{internal}

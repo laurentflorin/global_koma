@@ -34,6 +34,9 @@ already passed -- it is re-reported here for the record);
 inside \code{estimate()}, after building the design matrices;
 \item \strong{the system is identified}. \code{koma::model_identification()} fills the
 free coefficients with \code{rnorm} draws, so a single pass proves very
-little; this repeats it across \code{seeds} and reports how many passed.
+little; this repeats it across \code{seeds} and reports how many passed;
+\item \strong{every identity meant to be exact actually holds in the panel}, via
+\code{\link[=identity_consistency]{identity_consistency()}}. koma never checks this, and every silent
+mis-specification this project has hit came through that gap.
 }
 }

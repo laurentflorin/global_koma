@@ -373,6 +373,13 @@ coefficient_table <- function(fit, ci_low = 5, ci_up = 95) {
 #'   without the block has none of those equations and every row would be
 #'   `NA`/`FALSE`, which reads as fifteen failures rather than "not
 #'   applicable".
+#' @param stage2c Which stage-2c refinements the system carries: `FALSE` for
+#'   none, `TRUE` for all of [stage2c_refinements()], or a character subset.
+#'   **Pass the subset when a refinement has been dropped.** The stage-2c
+#'   refinements are individually optional -- refinement 5 (import content) is
+#'   dropped in the recommended configuration -- and a rule whose term is not in
+#'   the model scores `NA`/`FALSE`, so `TRUE` on a system without it turns
+#'   eleven deliberate absences into eleven reported failures.
 #'
 #' @return A `data.frame` with columns `check`, `equation`, `term`,
 #'   `estimate`, `expected`, `ok`. A term the fit does not contain gives
@@ -383,13 +390,20 @@ sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
                         fiscal = FALSE, financial = FALSE, stage2c = FALSE) {
   iso2 <- tolower(iso2)
   rules <- base_sign_rules(iso2)
-  if (isTRUE(stage2c)) {
-    # Stage 2c models the spread, so `long_rate` is an identity over the spread
-    # and the policy rate: pass-through is IMPOSED at 1, not estimated, and
-    # there is no coefficient left whose sign could be checked. Same reasoning
-    # as the financial block below.
-    rules <- Filter(function(r) r$check != "long_rate_loads_on_policy_rate", rules)
-    rules <- c(rules, stage2c_sign_rules(iso2))
+  if (!identical(stage2c, FALSE)) {
+    refinements <- if (isTRUE(stage2c)) stage2c_refinements() else stage2c
+    unknown <- setdiff(refinements, stage2c_refinements())
+    if (length(unknown) > 0) {
+      cli::cli_abort("Unknown stage-2c refinement{?s}: {.val {unknown}}.")
+    }
+    if ("spread" %in% refinements) {
+      # With the spread modelled, `long_rate` is an identity over the spread and
+      # the policy rate: pass-through is IMPOSED at 1, not estimated, and there
+      # is no coefficient left whose sign could be checked. Same reasoning as
+      # the financial block below.
+      rules <- Filter(function(r) r$check != "long_rate_loads_on_policy_rate", rules)
+    }
+    rules <- c(rules, stage2c_sign_rules(iso2, refinements))
   }
   if (isTRUE(labour)) rules <- c(rules, stage3a_sign_rules(iso2))
   # Under the external block exports load on the competitiveness difference
@@ -474,26 +488,44 @@ base_sign_rules <- function(iso2) {
 #'   than disqualifying.
 #'
 #' Note what is deliberately **absent**: `long_rate_loads_on_policy_rate`.
-#' [sign_checks()] drops it under `stage2c = TRUE`, because the stage-2c
-#' `long_rate` is an identity whose policy-rate weight is imposed at exactly
-#' 1. Leaving it in would report a permanent, meaningless failure.
+#' [sign_checks()] drops it whenever the `spread` refinement is active, because
+#' the stage-2c `long_rate` is then an identity whose policy-rate weight is
+#' imposed at exactly 1. Leaving it in would report a permanent, meaningless
+#' failure.
 #'
 #' @param iso2 Two-letter lowercase ISO country code.
+#' @param refinements Which of [stage2c_refinements()] the system carries. A
+#'   dropped refinement contributes no rule at all, rather than a rule whose
+#'   term does not exist and therefore scores `NA`/`FALSE`.
 #'
 #' @return A list of rule entries in [base_sign_rules()]'s shape.
 #' @keywords internal
-stage2c_sign_rules <- function(iso2) {
+stage2c_sign_rules <- function(iso2, refinements = stage2c_refinements()) {
   v <- function(concept) country_var(iso2, concept)
-  list(
-    list(check = "phillips_curve_positive", equation = v("prices"), term = v("gdp"),
-         expected = "> 0", test = function(x) x > 0),
-    list(check = "consumption_rate_channel_negative", equation = v("consumption"),
-         term = v("long_rate"), expected = "< 0", test = function(x) x < 0),
-    list(check = "import_content_positive", equation = v("imports"),
-         term = v("exports"), expected = "> 0", test = function(x) x > 0),
-    list(check = "spread_loads_on_prices_positive", equation = v("spread"),
-         term = v("prices"), expected = "> 0", test = function(x) x > 0)
+  all_rules <- list(
+    phillips = list(check = "phillips_curve_positive", equation = v("prices"),
+                    term = v("gdp"), expected = "> 0", test = function(x) x > 0),
+    consumption_rate = list(check = "consumption_rate_channel_negative",
+                            equation = v("consumption"), term = v("long_rate"),
+                            expected = "< 0", test = function(x) x < 0),
+    import_content = list(check = "import_content_positive", equation = v("imports"),
+                          term = v("exports"), expected = "> 0", test = function(x) x > 0),
+    spread = list(check = "spread_loads_on_prices_positive", equation = v("spread"),
+                  term = v("prices"), expected = "> 0", test = function(x) x > 0)
   )
+  unname(all_rules[intersect(stage2c_refinements(), refinements)])
+}
+
+#' The stage-2c refinements that introduce a checkable coefficient
+#'
+#' Four of the five. Refinement 2 (re-basing `foreign_demand` on partner
+#' imports) introduces none: it changes an identity's components, whose weights
+#' are fixed trade shares rather than estimates.
+#'
+#' @return Character vector of refinement keys, in report order.
+#' @export
+stage2c_refinements <- function() {
+  c("phillips", "consumption_rate", "import_content", "spread")
 }
 
 #' Sign rules for the stage-3a labour and price block
@@ -1395,5 +1427,103 @@ fiscal_financial_loop <- function(iso2, investment_to_gdp) {
     `long_rate <- spread (identity)` = 1,
     `investment <- long_rate` = list(equation = v("investment"), term = v("long_rate")),
     `gdp <- investment (identities)` = investment_to_gdp
+  )
+}
+
+#' Which endogenous variables a variable reaches within the quarter
+#'
+#' Breadth-first search over `sys_eq$character_gamma_matrix`, the symbolic
+#' matrix of **contemporaneous** endogenous regressors: entry `[i, j]` is
+#' non-`"0"` when variable `i` appears on the right-hand side of equation `j`.
+#' A path through it is a within-quarter transmission channel, identity links
+#' included -- koma renders an identity weight as a `-thetaJ_I` symbol, not as
+#' a literal number, so the only entries that have to be excluded are the
+#' diagonal `"1"`s, which are each equation's own left-hand side rather than a
+#' regressor.
+#'
+#' **Why this is worth measuring rather than assuming.** Making a variable
+#' endogenous does not give it a transmission channel: stage 2b promoted
+#' `ea_policy_rate` to its own Taylor rule and it still reached no price
+#' variable anywhere in the system, because the price equation's
+#' contemporaneous endogenous regressor set was *empty*. The rule therefore
+#' responded to an inflation rate nothing it did could influence -- an open
+#' loop that looks closed in the equation listing. Stage 2c's Phillips-curve
+#' and consumption-rate refinements exist to close it, and this function is
+#' how that claim is checked.
+#'
+#' The search starts from the equations `from` *enters*, so `from` appears in
+#' the result only when a cycle brings it back to itself. Read that with care:
+#' stage 2b's `ea_policy_rate` **is** self-reachable, through the Taylor rule's
+#' `ea_gdp` term, while reaching no price variable at all. Self-reachability
+#' says *a* loop is closed, not *which* one -- which is why the price count
+#' matters here and the self-reach on its own does not.
+#'
+#' Reachability is a statement about *structure*, not about magnitude. A path
+#' whose links are estimated near zero is reachable and inert; use
+#' [loop_gain()] to put a number on one.
+#'
+#' @param sys_eq A `koma::system_of_equations()` result.
+#' @param from One or more endogenous variable names to start from.
+#'
+#' @return A sorted character vector of the endogenous variables reachable
+#'   from `from` through contemporaneous links.
+#' @export
+contemporaneous_reachability <- function(sys_eq, from) {
+  g <- sys_eq$character_gamma_matrix
+  unknown <- setdiff(from, colnames(g))
+  if (length(unknown) > 0) {
+    cli::cli_abort("{.val {unknown}} {?is/are} not endogenous in this system.")
+  }
+
+  adjacency <- g != "0"
+  diag(adjacency) <- FALSE
+
+  reached <- character()
+  frontier <- from
+  while (length(frontier) > 0) {
+    rows <- adjacency[rownames(g) %in% frontier, , drop = FALSE]
+    nxt <- setdiff(colnames(g)[apply(rows, 2, any)], reached)
+    reached <- c(reached, nxt)
+    frontier <- nxt
+  }
+  sort(reached)
+}
+
+#' The stage-2c monetary loop, as a [loop_gain()] path
+#'
+#' `ea_policy_rate -> long_rate -> consumption -> gdp -> prices ->
+#' ea_prices -> ea_policy_rate`, every link within-quarter. Two of the six are
+#' the refinements stage 2c adds (`consumption <- long_rate` and the Phillips
+#' curve `prices <- gdp`); two are identity weights rather than estimated
+#' coefficients, and one -- `long_rate <- ea_policy_rate` -- is imposed at
+#' exactly 1 by the stage-2c spread identity, which is why the loop can only be
+#' measured on a system that models the spread.
+#'
+#' Only meaningful for a euro-area country: the US runs its own policy rule, so
+#' its loop closes through `us_policy_rate` and never touches `ea_prices`.
+#'
+#' @param iso2 Two-letter lowercase ISO country code, a euro-area member.
+#' @param consumption_to_gdp The product of the domestic-demand weight on
+#'   consumption and the GDP weight on domestic demand, from
+#'   [expenditure_shares()].
+#' @param prices_to_ea_prices The country's GDP weight in the `ea_prices`
+#'   identity, from [stage2_linkage_weights()]`$ea`.
+#'
+#' @return A `path` list for [loop_gain()].
+#' @export
+monetary_loop <- function(iso2, consumption_to_gdp, prices_to_ea_prices) {
+  iso2 <- tolower(iso2)
+  if (identical(iso2, "us")) {
+    cli::cli_abort("The US closes its loop through {.val us_policy_rate}, not {.val ea_prices}.")
+  }
+  v <- function(concept) country_var(iso2, concept)
+  list(
+    `long_rate <- ea_policy_rate (identity)` = 1,
+    `consumption <- long_rate` = list(equation = v("consumption"), term = v("long_rate")),
+    `gdp <- consumption (identities)` = consumption_to_gdp,
+    `prices <- gdp (Phillips curve)` = list(equation = v("prices"), term = v("gdp")),
+    `ea_prices <- prices (identity)` = prices_to_ea_prices,
+    `ea_policy_rate <- ea_prices (Taylor rule)` =
+      list(equation = "ea_policy_rate", term = "ea_prices")
   )
 }

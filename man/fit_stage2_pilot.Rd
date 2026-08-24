@@ -16,7 +16,9 @@ fit_stage2_pilot(
   threshold = 0,
   ireland_proxy = FALSE,
   dummies = character(),
-  workers = NULL
+  workers = NULL,
+  demand_concept = c("gdp", "imports"),
+  spread_countries = character()
 )
 }
 \arguments{
@@ -35,9 +37,13 @@ fit_stage2_pilot(
 
 \item{opts}{A \code{\link[=stage2_options]{stage2_options()}} list. Defaults reproduce stage 2a.}
 
-\item{threshold, ireland_proxy}{Passed to \code{\link[=stage2_linkage_weights]{stage2_linkage_weights()}}.}
+\item{threshold, ireland_proxy, demand_concept}{Passed to
+\code{\link[=stage2_linkage_weights]{stage2_linkage_weights()}}. \code{demand_concept} defaults to \code{"gdp"}, which
+is what stages 2a and 2b use; stage 2c passes \code{"imports"}.}
 
-\item{dummies}{Passed to \code{\link[=build_stage2_panel]{build_stage2_panel()}}.}
+\item{dummies, spread_countries}{Passed to \code{\link[=build_stage2_panel]{build_stage2_panel()}}.
+\code{spread_countries} must match \code{opts$spread_countries}, or the system will
+reference a \verb{<iso2>_spread} series the panel does not carry.}
 
 \item{workers}{Passed to \code{\link[=fit_stage2]{fit_stage2()}}.}
 }

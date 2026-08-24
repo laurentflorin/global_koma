@@ -309,11 +309,13 @@ stage2_spec <- function(countries, shares, linkage_weights,
 #'   curve in the growth-rate space koma estimates in. **This is stage 2c's
 #'   headline change.** In stage 2a/2b the price equation's contemporaneous
 #'   endogenous regressor set is *empty*: prices are driven only by their own
-#'   lag, the COVID dummies, `eur_usd` and `oil_price`, all exogenous. Tracing
-#'   reachability shows `ea_policy_rate` reaching 90 of 103 endogenous
-#'   variables -- every country's GDP included -- and **not one price
-#'   variable**, so the Taylor rule responds to inflation nothing it does can
-#'   influence. That is the structural cause of the monetary sanity-check
+#'   lag, the COVID dummies, `eur_usd` and `oil_price`, all exogenous.
+#'   [contemporaneous_reachability()] shows `ea_policy_rate` reaching 91 of the
+#'   103 stage-2b endogenous variables -- every country's GDP included, and
+#'   itself, through the rule's `ea_gdp` term -- but **not one price
+#'   variable**, so the Taylor rule's *inflation* term responds to something
+#'   nothing it does can influence. Under stage 2c the same trace reaches all
+#'   114. That is the structural cause of the monetary sanity-check
 #'   failure reported in `reports/stage2_spillovers.qmd` Sec. 7.2. Adding GDP
 #'   here closes the loop and costs no column of `k`, GDP being endogenous.
 #' @param consumption_rate_countries Character vector of ISO-2 codes whose
@@ -989,6 +991,29 @@ spread_policy_rate <- function(iso2, policy_rate = "ea_policy_rate") {
   policy_rate
 }
 
+#' The per-country policy-rate map implied by a [stage2_options()] list
+#'
+#' `<iso2>_long_rate == <iso2>_spread + <policy rate>` is written in two
+#' places that must agree exactly -- the identity ([long_rate_identity()]) and
+#' the constructed `<iso2>_spread` series ([build_stage2_panel()]) -- and only
+#' the *identity* side has ever seen `opts`. That asymmetry is a live trap:
+#' with `policy_rule = TRUE` the identity is over `us_policy_rate` while
+#' [build_stage2_panel()]'s scalar default subtracts `ea_policy_rate`, so the
+#' US identity is violated by the whole EA-US rate gap -- **verified at up to
+#' 3.25 percentage points** on the 2000Q1-2024Q4 sample -- and koma has no
+#' identity-consistency check that would say so. Both sides now derive the map
+#' from this one function, and [stage2_preflight()] checks the arithmetic.
+#'
+#' @param opts A [stage2_options()] list.
+#'
+#' @return A named character vector in the shape [spread_policy_rate()]
+#'   accepts: an entry per country that departs from `ea_policy_rate`, which
+#'   today means the US when it carries its own Taylor rule.
+#' @keywords internal
+policy_rate_map <- function(opts = stage2_options()) {
+  if (isTRUE(opts$policy_rule)) c(us = "us_policy_rate") else character()
+}
+
 #' The spread identity `<iso2>_long_rate == 1*<iso2>_spread + 1*<policy rate>`
 #'
 #' Shared by [financial_block()] and stage 2c's [country_block()] so the two
@@ -1003,11 +1028,7 @@ spread_policy_rate <- function(iso2, policy_rate = "ea_policy_rate") {
 #' @keywords internal
 long_rate_identity <- function(iso2, opts = stage2_options()) {
   iso2 <- tolower(iso2)
-  policy_rate <- if (identical(iso2, "us") && isTRUE(opts$policy_rule)) {
-    "us_policy_rate"
-  } else {
-    "ea_policy_rate"
-  }
+  policy_rate <- spread_policy_rate(iso2, policy_rate_map(opts))
   stats::setNames(c(1, 1), c(country_var(iso2, "spread"), policy_rate))
 }
 
@@ -1044,7 +1065,12 @@ long_rate_identity <- function(iso2, opts = stage2_options()) {
 #'   estimating it, which is what the term means anyway -- a sovereign yield is
 #'   the risk-free path plus a premium.
 #' - A spread is **stationary** where a rate level is not, so the own lag has no
-#'   unit root to run to.
+#'   unit root to run to. **Measured, this one does not hold.** Estimating the
+#'   spread for all eleven countries (stage 2c) gives own lags of 0.932-0.981
+#'   against the long-rate levels' 0.910-0.964 in stage 2b -- as persistent, and
+#'   for Spain (0.961 -> 0.981) and Portugal (0.964 -> 0.980) more so. The
+#'   argument for the spread rests on the other three points; this one was an
+#'   expectation, and the data does not support it.
 #' - It cuts the competing regressors from five to three, leaving `cc_govdebt`
 #'   far more room to be identified.
 #' - It costs **nothing** in degrees of freedom: the long rate loses its own lag
@@ -1441,6 +1467,86 @@ covid_dummy <- function(name, template) {
   )
 }
 
+#' How badly each identity fails to hold in the panel
+#'
+#' koma has **no identity-consistency check**. It parses an identity, stores
+#' its weights, and enforces it during estimation -- but never verifies that
+#' the series it is handed actually satisfy it. Every silent mis-specification
+#' this project has hit came through that gap: `+ -0.4*x` storing the wrong
+#' weights, a level-space `foreign_demand` index, and a `<iso2>_spread` built
+#' against a different policy rate than its own identity names. This function
+#' does the arithmetic koma does not.
+#'
+#' **Which space the comparison happens in matters.** koma estimates on
+#' growth rates, so an identity over `level`/`diff_log` series is a statement
+#' about `diff(log())` and is checked with [koma::rate()]. An identity over
+#' `rate`/`none` series (the long-rate/spread/policy-rate family) is a literal
+#' linear combination of levels, since level and rate space coincide when
+#' `method = "none"`. Mixing the two is not checkable and is skipped.
+#'
+#' **Not every identity is meant to be exact.** `<iso2>_gdp` holds only up to
+#' the statistical discrepancy, and `<iso2>_domestic_demand` is deliberately
+#' inexact under `include_government = FALSE`, where the shares are
+#' renormalised to sum to 1 and the identity explains about 89% of
+#' domestic-demand growth. Those are reported with their error but never
+#' flagged; `inexact` is the pattern that decides.
+#'
+#' @param sys_eq A `koma::koma_seq`.
+#' @param panel Named list of `koma_ts`.
+#' @param tolerance Maximum absolute error, in the identity's own units, an
+#'   identity may show before it is flagged.
+#' @param inexact Regular expression matching identity names that are inexact
+#'   by construction and must not be flagged.
+#'
+#' @return A `data.frame` with one row per checkable identity: `identity`,
+#'   `space`, `max_abs_error`, `exact_expected`, `ok`.
+#' @export
+identity_consistency <- function(sys_eq, panel,
+                                 tolerance = 1e-8,
+                                 inexact = "_(gdp|domestic_demand)$") {
+  rows <- lapply(names(sys_eq$identities), function(nm) {
+    id <- sys_eq$identities[[nm]]
+    terms <- names(id$components)
+    # A lagged component (the stock-flow accumulation idiom) would need the
+    # series shifted before differencing; out of scope, so skip rather than
+    # report a spurious failure.
+    if (any(grepl("\\.L\\(", terms)) || is.null(panel[[nm]]) ||
+        !all(terms %in% names(panel))) {
+      return(NULL)
+    }
+    # koma keys `weights` by its own theta symbols and `components` by variable
+    # name; the two line up positionally.
+    w <- stats::setNames(unlist(id$weights, use.names = FALSE), terms)
+
+    series <- panel[c(nm, terms)]
+    types <- vapply(series, function(x) attr(x, "series_type") %||% NA_character_, character(1))
+    methods <- vapply(series, function(x) attr(x, "method") %||% NA_character_, character(1))
+    literal <- all(types == "rate", na.rm = TRUE) && all(methods == "none", na.rm = TRUE)
+    if (!literal && !all(types == "level", na.rm = TRUE)) return(NULL)
+
+    space <- if (literal) "level" else "rate"
+    cmp <- if (literal) series else lapply(series, koma::rate)
+    m <- stats::na.omit(do.call(cbind, cmp))
+    if (nrow(m) == 0) return(NULL)
+
+    err <- max(abs(as.numeric(m[, 1]) - as.numeric(m[, -1, drop = FALSE] %*% w[terms])))
+    exact <- !grepl(inexact, nm)
+    data.frame(
+      identity = nm, space = space, max_abs_error = err,
+      exact_expected = exact, ok = !exact || err <= tolerance,
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, Filter(Negate(is.null), rows))
+  if (is.null(out)) {
+    return(data.frame(identity = character(), space = character(),
+                      max_abs_error = numeric(), exact_expected = logical(),
+                      ok = logical(), stringsAsFactors = FALSE))
+  }
+  rownames(out) <- NULL
+  out[order(-out$max_abs_error), ]
+}
+
 #' Pre-flight checks on a stage-2 system before committing to estimation
 #'
 #' Answers, up front and with a readable message, the questions koma either
@@ -1455,7 +1561,10 @@ covid_dummy <- function(name, template) {
 #'   inside `estimate()`, after building the design matrices;
 #' - **the system is identified**. `koma::model_identification()` fills the
 #'   free coefficients with `rnorm` draws, so a single pass proves very
-#'   little; this repeats it across `seeds` and reports how many passed.
+#'   little; this repeats it across `seeds` and reports how many passed;
+#' - **every identity meant to be exact actually holds in the panel**, via
+#'   [identity_consistency()]. koma never checks this, and every silent
+#'   mis-specification this project has hit came through that gap.
 #'
 #' @param sys_eq A `koma::koma_seq`, e.g. from [build_stage2_system()].
 #' @param panel Named list of `koma_ts`.
@@ -1533,6 +1642,17 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
   df_residual <- if (is.na(n_obs)) NA_integer_ else n_obs - k
   df_ok <- if (is.na(df_residual)) NA else df_residual > 0
 
+  # The arithmetic koma never does. Only meaningful once every series is
+  # present, so it is skipped rather than reported when the panel is short.
+  consistency <- if (length(missing_series) == 0) {
+    identity_consistency(sys_eq, panel)
+  } else {
+    identity_consistency(sys_eq, panel)[0, ]
+  }
+  checked <- consistency[consistency$exact_expected, ]
+  broken <- checked[!checked$ok, ]
+  identities_hold <- if (nrow(checked) == 0) NA else nrow(broken) == 0
+
   data.frame(
     check = c(
       "identity RHS variables all resolve",
@@ -1542,7 +1662,8 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
       "identities declared last",
       "no lagged endogenous name prefixes another",
       "system identified",
-      "k < T (x'x invertible, Wishart df > 0)"
+      "k < T (x'x invertible, Wishart df > 0)",
+      "exact identities hold in the panel"
     ),
     ok = c(
       length(unresolved) == 0,
@@ -1552,7 +1673,8 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
       identities_last,
       names_ok,
       all(identified),
-      df_ok
+      df_ok,
+      identities_hold
     ),
     detail = c(
       if (length(unresolved) == 0) "-" else paste(unresolved, collapse = ", "),
@@ -1570,6 +1692,16 @@ stage2_preflight <- function(sys_eq, panel, seeds = 1:10, dates = NULL) {
         paste0("k = ", k, " (pass `dates` to check against T)")
       } else {
         paste0("k = ", k, ", T = ", n_obs, ", df = ", df_residual)
+      },
+      if (nrow(checked) == 0) {
+        "no identity checkable against the panel"
+      } else if (nrow(broken) == 0) {
+        paste0(nrow(checked), " checked, worst |error| ",
+               format(max(checked$max_abs_error), digits = 3, scientific = TRUE))
+      } else {
+        paste0(nrow(broken), " of ", nrow(checked), " violated: ",
+               paste(sprintf("%s (%.3g)", broken$identity, broken$max_abs_error),
+                     collapse = ", "))
       }
     ),
     row.names = NULL,
@@ -1687,8 +1819,12 @@ fit_stage2 <- function(sys_eq, panel, dates, options = list(), workers = NULL) {
 #' @param tau Optional per-equation `tau` overrides, as in
 #'   [build_system_equations()].
 #' @param opts A [stage2_options()] list. Defaults reproduce stage 2a.
-#' @param threshold,ireland_proxy Passed to [stage2_linkage_weights()].
-#' @param dummies Passed to [build_stage2_panel()].
+#' @param threshold,ireland_proxy,demand_concept Passed to
+#'   [stage2_linkage_weights()]. `demand_concept` defaults to `"gdp"`, which
+#'   is what stages 2a and 2b use; stage 2c passes `"imports"`.
+#' @param dummies,spread_countries Passed to [build_stage2_panel()].
+#'   `spread_countries` must match `opts$spread_countries`, or the system will
+#'   reference a `<iso2>_spread` series the panel does not carry.
 #' @param workers Passed to [fit_stage2()].
 #'
 #' @return A list with `fit`, `sys_eq`, `spec`, `linkage_weights`, `panel`
@@ -1697,11 +1833,15 @@ fit_stage2 <- function(sys_eq, panel, dates, options = list(), workers = NULL) {
 fit_stage2_pilot <- function(countries, panel, dates, trade_weights, gdp_weights,
                              options = list(), tau = NULL, opts = stage2_options(),
                              threshold = 0, ireland_proxy = FALSE,
-                             dummies = character(), workers = NULL) {
+                             dummies = character(), workers = NULL,
+                             demand_concept = c("gdp", "imports"),
+                             spread_countries = character()) {
   countries <- tolower(countries)
+  demand_concept <- match.arg(demand_concept)
   linkage_weights <- stage2_linkage_weights(
     countries, trade_weights, gdp_weights,
-    threshold = threshold, ireland_proxy = ireland_proxy
+    threshold = threshold, ireland_proxy = ireland_proxy,
+    demand_concept = demand_concept
   )
   shares <- stats::setNames(
     lapply(countries, function(cc) expenditure_shares(panel, cc, dates)),
@@ -1709,7 +1849,11 @@ fit_stage2_pilot <- function(countries, panel, dates, trade_weights, gdp_weights
   )
   spec <- stage2_spec(countries, shares, linkage_weights, opts = opts)
   sys_eq <- build_stage2_system(spec, tau = tau)
-  stage2_panel <- build_stage2_panel(panel, linkage_weights, dummies = dummies)
+  # The panel's `<iso2>_spread` and the system's long-rate identity must
+  # subtract the SAME policy rate; `policy_rate_map()` is the single source.
+  stage2_panel <- build_stage2_panel(panel, linkage_weights, dummies = dummies,
+                                    spread_countries = spread_countries,
+                                    policy_rate = policy_rate_map(opts))
 
   preflight <- stage2_preflight(sys_eq, stage2_panel, dates = dates)
   # which() drops NAs, so a check that could not be run (`ok` is NA) is
@@ -1770,9 +1914,10 @@ stage2b_dummies <- function() {
 
 #' Configuration for stage 2c: the refined linked core system
 #'
-#' Stage 2b's structure with five refinements applied to **every** country, all
+#' Stage 2b's structure with four refinements applied to **every** country, all
 #' of which cost **zero** additional `k`. `k` stays at 76 against `T = 98`, so
-#' stage 2c is the same size as stage 2b and directly comparable to it. The
+#' stage 2c is the same size as stage 2b and directly comparable to it -- unlike
+#' every stage-3 block, which bought structure with degrees of freedom. The
 #' equation *count* is unchanged at 68 stochastic (the long-rate level equation
 #' is swapped for a spread equation, not added to); identities go 35 -> 46.
 #'
@@ -1780,17 +1925,30 @@ stage2b_dummies <- function() {
 #' |---|---|---|
 #' | 1 | `prices` gains `<iso2>_gdp` | The Phillips curve. Without it prices are a closed exogenous block and monetary policy is an open loop. |
 #' | 2 | `foreign_demand` over partner **imports** | Partner GDP nets out imports, so a partner importing more currently *lowers* its neighbours' foreign demand. |
-#' | 3 | Model the **spread**; `long_rate` becomes an identity | The level equation's policy-rate loading is insignificant in all eleven countries while its own lag sits at 0.91-0.96. |
+#' | 3 | Model the **spread**; `long_rate` becomes an identity | The level equation's policy-rate loading straddles zero in all eleven countries while its own lag sits at 0.91-0.96. |
 #' | 4 | `consumption` gains `<iso2>_long_rate` | Intertemporal substitution -- a second monetary channel. |
-#' | 5 | `imports` gains `<iso2>_exports` | The import content of exports. |
 #'
-#' Refinements 1, 4 and 5 add only *contemporaneous endogenous* regressors,
-#' which cost no column: `k = 1 + (one lag per stochastic equation) +
-#' (exogenous)`. Refinement 2 re-weights an existing identity. Refinement 3 is
-#' `k`-neutral by construction. The second constraint is also slack --
-#' `draw_omega_j()` draws `riwish(T - k, .)` on a matrix that is
-#' `(endogenous regressors in *that* equation + 1)` square, so the binding
-#' requirement is `df >= 3` here against `df = 22`.
+#' Refinements 1 and 4 add only *contemporaneous endogenous* regressors, which
+#' cost no column: `k = 1 + (one lag per stochastic equation) + (exogenous)`.
+#' Refinement 2 re-weights an existing identity. Refinement 3 is `k`-neutral by
+#' construction. The second constraint is also slack -- `draw_omega_j()` draws
+#' `riwish(T - k, .)` on a matrix that is `(endogenous regressors in *that*
+#' equation + 1)` square, so the binding requirement is `df >= 3` here against
+#' `df = 22`.
+#'
+#' **The fifth refinement, and why it is off by default.** A sixth candidate
+#' gave `<iso2>_imports` a contemporaneous `<iso2>_exports` term -- the import
+#' content of exports -- and it is `import_content = TRUE`. It was estimated and
+#' **rejected**: it collapses the domestic-demand elasticity in the imports
+#' equation in **9 of 11 countries**, Germany from 0.382 to 0.049 and Austria
+#' from 0.450 to -0.104, while *halving* those equations' in-sample RMSE.
+#' Removing it recovers all eleven elasticities, and repairs four sign checks in
+#' equations it never touched. This is the same failure `<iso2>_import_prices`
+#' produced four times over in stage 3a (0.38 -> 0.08, see `CLAUDE.md`): a
+#' contemporaneous regressor correlated with the dependent variable buys fit by
+#' taking variance from the structural term. It stays reachable so the finding
+#' can be reproduced, not because it should be used. See
+#' `reports/stage2c_refined_core.qmd` Sec. 4.
 #'
 #' Everything is opt-in through [stage2_options()], so stage 2a and 2b keep
 #' reproducing byte-for-byte from their cached fits.
@@ -1803,14 +1961,20 @@ stage2b_dummies <- function() {
 #'   is inert on the `"imports"` basis stage 2c uses -- it works around a
 #'   distortion in Irish measured GDP and its investment component, not in
 #'   Irish imports.
+#' @param import_content Add the rejected fifth refinement. `FALSE` by default;
+#'   see above.
 #'
-#' @return A list with `opts`, `threshold`, `ireland_proxy`, `dummies` and
-#'   `demand_concept`, in the shape [benchmark_stage2()] and the `_targets.R`
-#'   stage-2c chain consume.
+#' @return A list with `opts`, `threshold`, `ireland_proxy`, `dummies`,
+#'   `demand_concept`, `spread_countries` and `refinements` (the
+#'   [stage2c_refinements()] subset this configuration carries, for
+#'   `sign_checks(stage2c = )`), in the shape [benchmark_stage2()] and the
+#'   `_targets.R` stage-2c chain consume.
 #' @export
-stage2c_config <- function(countries = modelled_countries, ireland_proxy = FALSE) {
+stage2c_config <- function(countries = modelled_countries, ireland_proxy = FALSE,
+                           import_content = FALSE) {
   countries <- tolower(countries)
   b2b <- stage2b_config(ireland_proxy = ireland_proxy)
+  import_content_countries <- if (isTRUE(import_content)) countries else character()
   list(
     opts = stage2_options(
       include_government = FALSE,
@@ -1819,14 +1983,19 @@ stage2c_config <- function(countries = modelled_countries, ireland_proxy = FALSE
       fx = b2b$opts$fx,
       phillips_countries = countries,
       consumption_rate_countries = countries,
-      import_content_countries = countries,
+      import_content_countries = import_content_countries,
       spread_countries = countries
     ),
     threshold = b2b$threshold,
     ireland_proxy = ireland_proxy,
     dummies = b2b$dummies,
     demand_concept = "imports",
-    spread_countries = countries
+    spread_countries = countries,
+    refinements = if (isTRUE(import_content)) {
+      stage2c_refinements()
+    } else {
+      setdiff(stage2c_refinements(), "import_content")
+    }
   )
 }
 
@@ -1981,7 +2150,12 @@ benchmark_stage2 <- function(steps, panel, dates, trade_weights, gdp_weights,
       countries, panel, dates, trade_weights, gdp_weights,
       options = options, opts = config$opts, threshold = config$threshold,
       ireland_proxy = config$ireland_proxy, dummies = config$dummies,
-      workers = workers
+      workers = workers,
+      # Absent from a stage-2a/2b config, present in a stage-2c one; defaulting
+      # here rather than in stage2b_config() keeps the cached 2a/2b fits
+      # reproducing from an unchanged argument list.
+      demand_concept = config$demand_concept %||% "gdp",
+      spread_countries = config$spread_countries %||% character()
     )
     elapsed <- as.numeric(difftime(Sys.time(), started, units = "secs"))
     peak_mb <- sum(gc()[, "max used"] * c(8, 8) / 1024^2)

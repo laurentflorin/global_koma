@@ -1,0 +1,752 @@
+---
+title: "Stage 2c: the refined linked core"
+subtitle: "Four refinements at zero cost in degrees of freedom — closing the monetary loop, and the fifth refinement that had to be thrown away"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2c_refined_core.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir2c  <- file.path("data", "cache", "stage2c")
+dir_2b <- file.path("data", "cache", "stage2b")
+
+# `rec` is the recommended stage-2c system (four refinements). `with_ic` also
+# carries refinement 5, the import-content term this report rejects. Cache file
+# names predate the decision: `full_*` is the five-refinement run.
+rec     <- readRDS(file.path(dir2c, "noic_full_tuned.rds"))
+with_ic <- readRDS(file.path(dir2c, "full_tuned.rds"))
+b2b     <- readRDS(file.path(dir_2b, "full_tuned.rds"))
+
+shape        <- readRDS(file.path(dir2c, "noic_shape.rds"))
+acc_rec      <- readRDS(file.path(dir2c, "noic_acceptance.rds"))
+acc_before   <- readRDS(file.path(dir2c, "acceptance_untuned.rds"))
+lag_rec      <- readRDS(file.path(dir2c, "noic_lag_stability.rds"))
+coefs_rec    <- readRDS(file.path(dir2c, "noic_coef.rds"))
+coefs_ic     <- readRDS(file.path(dir2c, "coef_full.rds"))
+signs_rec    <- readRDS(file.path(dir2c, "noic_signs.rds"))
+signs_ic     <- readRDS(file.path(dir2c, "sign_checks.rds"))
+reach        <- readRDS(file.path(dir2c, "noic_reachability.rds"))
+loops        <- readRDS(file.path(dir2c, "noic_monetary_loop.rds"))
+rates        <- readRDS(file.path(dir2c, "noic_rate_equations.rds"))
+elas         <- readRDS(file.path(dir2c, "noic_import_elasticity.rds"))
+moved        <- readRDS(file.path(dir2c, "noic_coef_movement.rds"))
+moved_ic     <- readRDS(file.path(dir2c, "coef_movement.rds"))
+insample     <- readRDS(file.path(dir2c, "noic_insample.rds"))
+insample_ic  <- readRDS(file.path(dir2c, "insample_rmse.rds"))
+fd           <- readRDS(file.path(dir2c, "foreign_demand_basis.rds"))
+tuning_history <- readRDS(file.path(dir2c, "tuning_history.rds"))
+
+# --- the spillover battery, run on the recommended system ---------------
+dir_sp   <- file.path("data", "cache", "stage2c_spillovers")
+dir_sp2b <- file.path("data", "cache", "spillovers")
+mon_2c    <- readRDS(file.path(dir_sp, "noic_monetary_a.rds"))
+mon_2b    <- readRDS(file.path(dir_sp2b, "diffs_monetary.rds"))
+oil_2c    <- readRDS(file.path(dir_sp, "noic_oil_a.rds"))
+mat_2c    <- readRDS(file.path(dir_sp, "noic_matrix_a.rds"))
+mat_2b    <- readRDS(file.path(dir_sp2b, "spillover_matrix.rds"))
+sanity_2c <- readRDS(file.path(dir_sp, "noic_sanity_a.rds"))
+sanity_2b <- readRDS(file.path(dir_sp2b, "sanity.rds"))
+mon_failed <- readRDS(file.path(dir_sp, "noic_monetary_failed_draws.rds"))
+explosive  <- readRDS(file.path(dir_sp, "noic_baseline_explosive.rds"))
+mat_2c_b  <- readRDS(file.path(dir_sp, "noic_matrix_b.rds"))
+mon_2c_b  <- readRDS(file.path(dir_sp, "noic_monetary_b.rds"))
+PLACEBO_SRC <- c("de", "fr", "it", "nl")
+
+response <- function(d, concept) {
+  vars <- country_var(countries, concept)
+  x <- d[d$variable %in% vars, ]
+  x$country <- sub(paste0("_", concept, "$"), "", x$variable)
+  x[order(x$country, x$horizon), ]
+}
+peak_table <- function(d, concept) {
+  x <- response(d, concept)
+  do.call(rbind, lapply(split(x, x$country), function(z) data.frame(
+    country = z$country[1],
+    peak_horizon = z$horizon[which.max(abs(z$median_diff))],
+    peak = z$median_diff[which.max(abs(z$median_diff))],
+    cumulative = sum(z$median_diff), stringsAsFactors = FALSE)))
+}
+
+countries <- modelled_countries
+sys_eq <- rec$sys_eq
+
+# Substantive coefficients only. A constant or COVID impulse dummy that was near
+# zero in stage 2b makes any relative-change ranking meaningless.
+behavioural <- moved[!grepl("^covid_|^constant$", moved$term), ]
+touched <- country_var(countries, c("prices", "consumption"))
+elasticity <- function(tab, eq_concept, term_concept) {
+  x <- tab[tab$equation %in% country_var(countries, eq_concept) &
+           tab$term %in% country_var(countries, term_concept), ]
+  x[order(x$equation), ]
+}
+imports_is <- insample$equation %in% country_var(countries, "imports")
+imports_is_ic <- insample_ic$equation %in% country_var(countries, "imports")
+```
+
+## Summary
+
+Stage 2c refines stage 2b's eleven-country system. Its defining property is
+that **the refinements are free**: `k` stays at 76 against `T = 98`, so
+`df = 22` in both systems. Every stage-3 block in this project bought structure
+with degrees of freedom — stage 3a went to `df = 15`, then 6; stage 3b to 8;
+stage 3c could not be validated at all. Stage 2c is the one extension that can
+be compared against its predecessor with no size caveat attached.
+
+Five refinements were estimated. **Four are adopted; one is rejected.**
+
+| # | Refinement | Verdict |
+|---|---|---|
+| 1 | `prices` gains `<iso2>_gdp` (Phillips curve) | **Adopted.** The monetary loop closes: `ea_policy_rate` goes from reaching **no price variable at all** to reaching every one. 10 of 11 correctly signed. |
+| 2 | `foreign_demand` over partner **imports** | **Adopted.** Largely a rescaling — partner imports are ~1.8x as volatile as partner GDP — though the US index genuinely changes. |
+| 3 | Model the **spread**; `long_rate` becomes an identity | **Adopted.** Motivation confirmed emphatically: all eleven stage-2b policy-rate loadings straddle zero. One stated benefit is not delivered. |
+| 4 | `consumption` gains `<iso2>_long_rate` | **Adopted, weak.** 8 of 11 correctly signed, and the loadings are small. |
+| 5 | `imports` gains `<iso2>_exports` (import content) | **Rejected.** Collapses the domestic-demand elasticity in **9 of 11** countries while halving the imports equations' RMSE. |
+
+The recommended system is clean on every sampler diagnostic:
+`r sum(acc_rec$flagged, na.rm = TRUE)` acceptance-rate flags of
+`r sum(acc_rec$has_mh_step)`, `r sum(lag_rec$flagged, na.rm = TRUE)`
+lag-stability flags, and `r sum(!signs_rec$ok)` sign-check failures of
+`r nrow(signs_rec)`.
+
+**The most useful thing this stage produced is the rejection.** Refinement 5
+improves in-sample fit dramatically and breaks the model, and it took three
+separate diagnostics — an elasticity comparison, a re-estimation without it, and
+a sign-check count corrected for absent terms — to see that. Section 4 is the
+substance of this report.
+
+## 1. Four refinements, none of which costs a degree of freedom
+
+```{r shape}
+kable(shape, row.names = FALSE,
+      caption = "All three systems are the same size. Only the identity count moves.")
+```
+
+The equation *count* is unchanged at 68 stochastic, because the long-rate level
+equation is **swapped** for a spread equation rather than added to. Identities go
+35 → 46: eleven new `<iso2>_long_rate == 1*<iso2>_spread + 1*<policy rate>`.
+
+Why each refinement is free:
+
+- **1 and 4** add only *contemporaneous endogenous* regressors. `k = 1 + (one
+  lag per stochastic equation) + (exogenous)`, and a contemporaneous endogenous
+  term is none of those three.
+- **2** re-weights an existing identity; the weights are fixed trade shares.
+- **3** is `k`-neutral by construction: the long rate loses its own lag column
+  and the spread gains one.
+
+The second `k` constraint is slack too. `draw_omega_j()` draws `riwish(T - k, .)`
+on a matrix that is `(endogenous regressors in that equation + 1)` square, so the
+binding requirement here is `df >= 3` against `df = 22`.
+
+### 1.1 A silent identity violation, found and closed off
+
+Stage 2c is the first configuration to put the **US** in `spread_countries`, and
+that exposed a live trap. `<iso2>_long_rate == <iso2>_spread + <policy rate>` is
+written in two places that must agree: the identity, and the `<iso2>_spread`
+series the panel builder constructs. The identity resolved `us_policy_rate` for
+the US under `policy_rule = TRUE`; the panel builder's scalar default subtracted
+`ea_policy_rate` for everyone. **The US identity was violated by the entire
+EA–US policy-rate gap — up to 3.25 percentage points — and koma said nothing**,
+because koma has no identity-consistency check at all.
+
+Both sides now resolve through one `policy_rate_map()`, and
+`stage2_preflight()` gained a ninth check, `identity_consistency()`, which does
+the arithmetic koma does not: it recomputes every identity from the panel and
+reports its worst absolute error, in level space for the `rate`/`none` rate
+family and in rate space for everything else. On the stage-2c panel, 23 exact
+identities hold to a worst error of 1.05e-13. `<iso2>_gdp` and
+`<iso2>_domestic_demand` are reported but never flagged — the first holds only
+up to the statistical discrepancy, the second is deliberately inexact under
+`include_government = FALSE`.
+
+## 2. The loop that was open
+
+`CLAUDE.md` has recorded since stage 1 that "making a variable endogenous does
+not give it a transmission channel". Stage 2b gave `ea_policy_rate` its own
+Taylor rule; `reports/stage2_spillovers.qmd` §4 then found no monetary
+transmission at all, and §7.2 recorded the sanity check failing as a genuine
+property of the fitted system rather than a code defect.
+
+`contemporaneous_reachability()` says exactly where the break was.
+
+```{r reach}
+kable(reach, row.names = FALSE,
+      caption = "Endogenous variables reachable from ea_policy_rate through contemporaneous links.")
+```
+
+Stage 2b's policy rate reaches 91 of 103 endogenous variables — **and not one of
+them is a price**. It is even reachable from *itself*, through the Taylor rule's
+`ea_gdp` term, so a naive "is the loop closed?" test would have passed. The
+rule's **output** term was closed all along; its **inflation** term was the open
+one, responding to a variable nothing the rule did could influence.
+
+The price equation was the break. In stage 2b its contemporaneous endogenous
+regressor set was empty — own lag, COVID dummies, `eur_usd` and `oil_price`, all
+exogenous. Adding `<iso2>_gdp` closes it, and stage 2c's policy rate reaches
+**all 114** endogenous variables, all 12 price variables included.
+
+There is a second, mechanical confirmation. An equation with no contemporaneous
+endogenous regressor gets no Metropolis step, so koma reports
+`count_accepted = NA` for it:
+
+```{r mh}
+mh_2b <- check_acceptance_rates(b2b$fit)
+kable(data.frame(
+  system = c("stage 2b", "stage 2c"),
+  with_metropolis_step = c(sum(mh_2b$has_mh_step), sum(acc_rec$has_mh_step)),
+  without = c(sum(!mh_2b$has_mh_step), sum(!acc_rec$has_mh_step)),
+  which_without = c(paste(mh_2b$equation[!mh_2b$has_mh_step], collapse = ", "), "—")
+), caption = "The eleven stage-2b equations with no Metropolis step were exactly the price equations.")
+```
+
+**Structure is not magnitude.** Reachability says a path exists, not that
+anything travels along it — §4.5 and §8 put numbers on that.
+
+## 3. Estimation and the sampler
+
+```{r tuning}
+kable(tuning_history, row.names = FALSE,
+      caption = "Equations outside the 20-60% acceptance band at each tune_tau_system() round.")
+```
+
+Both configurations converge, the recommended one in two rounds. Two things
+about that table are worth stating rather than glossing.
+
+First, the five-refinement run's iteration 0 flags **14** where a separately
+estimated untuned fit of the same system flagged
+`r sum(acc_before$flagged, na.rm = TRUE)`. That is not a change:
+`model_identification()` consumes RNG, so two estimations of the same system give
+slightly different acceptance rates, and a dozen equations sit within a
+percentage point of the 60% boundary. Reading 9 → 14 as a finding would be
+reading noise.
+
+Second, the tuned recommended system has
+`r sum(acc_rec$flagged, na.rm = TRUE)` equations outside the band and
+`r sum(lag_rec$flagged, na.rm = TRUE)` lag-stability flags. The sampler is not
+the explanation for anything in what follows.
+
+## 4. Refinement 5, and why it had to go
+
+This is the substance of the report, so it is worth stating the shape of the
+argument before the tables. The import-content term — giving `<iso2>_imports` a
+contemporaneous `<iso2>_exports` regressor, on the sound reasoning that exports
+require imported intermediates — passes its own sign check in **11 of 11
+countries** and improves the imports equations' in-sample fit **dramatically**.
+It is still wrong, and three separate diagnostics were needed to establish that.
+
+### 4.1 The sign check saw one failure; nine elasticities were being gutted
+
+```{r imports-elas}
+kable(elas[, c("equation", "stage2b", "stage2c_full", "stage2c_noIC")],
+      row.names = FALSE, digits = 3, col.names =
+        c("equation", "stage 2b", "with import content", "recommended"),
+      caption = "imports ~ domestic_demand. The elasticity the equation exists to measure.")
+```
+
+With the term in, nine of eleven elasticities fall and two are destroyed:
+Germany from 0.382 to **0.049**, Austria from 0.450 to **−0.104**. Only Austria
+crosses zero, so `sign_checks()` — which looks at one coefficient at a time —
+reported exactly one failure while most of the block was being hollowed out.
+
+`CLAUDE.md` already contains this lesson in the abstract ("a wrong sign is often
+not the first symptom — a neighbouring coefficient moving is") and this failure
+in the concrete: four attempts at putting an import *price* into this same
+equation, of which the contemporaneous one "collapses the domestic-demand
+elasticity from 0.38 to 0.08". Substituting `exports` for `import_prices` lands
+German demand elasticity at 0.049 — the same number, by the same mechanism.
+Exports and imports share the trade cycle, so a contemporaneous export term is an
+excellent predictor of imports and a direct competitor to domestic demand for the
+same variance.
+
+### 4.2 The improved fit is the symptom, not the reassurance
+
+```{r imports-fit}
+imp_fit <- insample_ic[imports_is_ic, ]
+kable(imp_fit[order(imp_fit$ratio), c("equation", "rmse_stage2b", "rmse_stage2c", "ratio")],
+      row.names = FALSE, digits = 4, col.names =
+        c("equation", "stage 2b RMSE", "with import content", "ratio"),
+      caption = "In-sample RMSE of the imports equations. Ratio below 1 is a better fit.")
+```
+
+Belgium's imports equation fits **2.8x better** and the Netherlands' **2.0x
+better**, while their structural elasticities fall. That is what a
+contemporaneous regressor correlated with the dependent variable does, whether or
+not it belongs there. Had this stage been judged on in-sample fit — the
+five-refinement system fits better in
+`r round(100 * mean(insample_ic$better == "stage2c"))`% of shared equations — the
+term would have been adopted.
+
+### 4.3 Removing it recovers every elasticity, and repairs equations it never touched
+
+```{r recovered}
+kable(data.frame(
+  check = c("import_elasticity_positive", "phillips_curve_positive",
+            "consumption_rate_channel_negative", "spread_loads_on_prices_positive",
+            "mpc_in_0_1", "TOTAL (of 55 comparable checks)"),
+  with_import_content = c(
+    sum(!signs_ic$ok & signs_ic$check == "import_elasticity_positive"),
+    sum(!signs_ic$ok & signs_ic$check == "phillips_curve_positive"),
+    sum(!signs_ic$ok & signs_ic$check == "consumption_rate_channel_negative"),
+    sum(!signs_ic$ok & signs_ic$check == "spread_loads_on_prices_positive"),
+    sum(!signs_ic$ok & signs_ic$check == "mpc_in_0_1"),
+    sum(!signs_ic$ok)),
+  recommended = c(
+    sum(!signs_rec$ok & signs_rec$check == "import_elasticity_positive"),
+    sum(!signs_rec$ok & signs_rec$check == "phillips_curve_positive"),
+    sum(!signs_rec$ok & signs_rec$check == "consumption_rate_channel_negative"),
+    sum(!signs_rec$ok & signs_rec$check == "spread_loads_on_prices_positive"),
+    sum(!signs_rec$ok & signs_rec$check == "mpc_in_0_1"),
+    sum(!signs_rec$ok))
+), row.names = FALSE, caption = "Sign-check failures. Both columns are over the same 55 checks.")
+```
+
+All eleven elasticities move back toward their stage-2b values (Germany 0.320
+against 0.382, France 1.215 against 1.245, the US 1.782 against 1.798) — the same
+recovery stage 3a saw when the import-price term was lagged, "0.386 vs 0.382".
+
+The wider effect is the interesting one. Removing a term from the **imports**
+equation repairs two Phillips-curve sign checks and two consumption-rate sign
+checks, in equations it does not appear in. In a simultaneous system with a
+system-wide residual covariance, one badly specified equation is not a local
+problem — which is the other half of a lesson `CLAUDE.md` already carries from
+stage 3a phase B: "a bad specification in one equation can masquerade as a
+systemic problem". Here it masqueraded as two.
+
+The one thing that gets worse is Ireland's MPC, which crosses from +0.001 to
+−0.005. Ireland's consumption–GDP loading is ~0 in all three systems (0.017 in
+stage 2b), so this is a coefficient that is not identified rather than one that
+broke; it is reported here rather than explained away.
+
+### 4.4 A reporting trap this exposed
+
+Read naively, `sign_checks(stage2c = TRUE)` reports **19 failures of 66** for the
+recommended system against **12 of 66** for the rejected one — the opposite of
+the truth. Eleven of those nineteen are `import_content_positive` scoring
+`NA`/`FALSE` because the term is not in the model.
+
+That default is right for the stage-3 blocks it was designed for ("a check that
+could not be evaluated is not a check that passed") and wrong for a deliberately
+dropped refinement. `sign_checks(stage2c = )` now takes a subset of
+`stage2c_refinements()`, and `stage2c_config()` returns the subset it carries.
+
+### 4.5 The monetary loop is closed, and nearly inert
+
+```{r loops}
+kable(loops[, c("iso2", "median", "q05", "q95", "share_ge_1",
+                "consumption_long_rate", "phillips", "taylor")],
+      row.names = FALSE, digits = 4,
+      caption = "monetary_loop(): policy rate -> long rate -> consumption -> GDP -> prices -> ea_prices -> policy rate.")
+```
+
+No draw in any country reaches a round-trip gain of 1, so the loop stage 2c adds
+is not a stability risk. `CLAUDE.md` warns against reading that as reassurance —
+"a quiet loop is not necessarily a stable one" — so the per-link means are in the
+table, and they are the point:
+
+- The **Taylor rule's** inflation loading is `r sprintf("%.3f", loops$taylor[1])`,
+  positive and sensible, shared by every country.
+- The **Phillips curve** link is positive in 9 of the 10 euro-area countries, up
+  to `r sprintf("%.3f", max(loops$phillips))`. Germany is the exception, at
+  `r sprintf("%.3f", loops$phillips[loops$iso2 == "de"])`.
+- The **consumption rate channel** is the weak link: correctly signed in most
+  countries but tiny, and positive in Austria and France.
+
+A six-link chain of coefficients this small multiplies out to a contemporaneous
+gain around 1e-5. That is a statement about *within-quarter feedback*, not about
+whether a monetary shock has any effect over a horizon — the dynamic response
+accumulates through the lag structure, which is what §8 measures.
+
+## 5. The rate block: from a level equation to a spread equation
+
+```{r rates}
+kable(rates, row.names = FALSE, digits = 3,
+      caption = "The stage-2b long-rate equation against the stage-2c spread equation.")
+```
+
+The motivation for refinement 3 is confirmed, and more strongly than the design
+note claimed. **All eleven** stage-2b policy-rate loadings have 90% credible
+intervals straddling zero, while the long rate's own lag sits at 0.910–0.964. The
+level equation was an AR(1) with decoration, and imposing the pass-through at 1
+is strictly better than estimating it into insignificance.
+
+One of the four stated benefits does not survive contact with the data. The
+design note argued that "a spread is stationary where a rate level is not, so the
+own lag has no unit root to run to". The stage-2c spread own lags run
+**0.933–0.983** — as persistent as the levels they replaced, and for Spain
+(0.961 → 0.983) and Portugal (0.964 → 0.979) more so. The other three arguments
+are unaffected. The roxygen for `financial_block()` has been corrected to say so.
+
+## 6. What happened to the equations that were already there
+
+```{r moved}
+kable(data.frame(
+  set = c("touched equations (prices, consumption)", "untouched equations"),
+  behavioural_terms = c(sum(behavioural$equation %in% touched),
+                        sum(!behavioural$equation %in% touched)),
+  sign_flips = c(sum(behavioural$sign_flip[behavioural$equation %in% touched]),
+                 sum(behavioural$sign_flip[!behavioural$equation %in% touched]))
+), row.names = FALSE,
+caption = "Behavioural coefficients only -- constants and COVID dummies excluded, since a near-zero stage-2b value makes any relative comparison meaningless.")
+```
+
+```{r stable}
+kable(rbind(
+  cbind(block = "MPC (consumption ~ gdp)",
+        elasticity(behavioural, "consumption", "gdp")[, c("equation", "estimate_2b", "estimate_2c", "delta")]),
+  cbind(block = "investment ~ long_rate",
+        elasticity(behavioural, "investment", "long_rate")[, c("equation", "estimate_2b", "estimate_2c", "delta")])
+), row.names = FALSE, digits = 3,
+caption = "Two behavioural blocks stage 2c does not modify.")
+```
+
+The MPC is stable and stays inside `(0, 1)` in ten of eleven (Ireland's is the
+unidentified one from §4.3), the price equations' own lags move by at most 0.036,
+and the investment channel is essentially unchanged. The refinements are not
+disruptive once refinement 5 is out.
+
+## 7. In-sample fit
+
+```{r insample-summary}
+kable(data.frame(
+  measure = c("equations where stage 2c fits better",
+              "median RMSE ratio, all shared equations",
+              "median RMSE ratio, imports equations",
+              "median RMSE ratio, everything except imports"),
+  recommended = c(sprintf("%d of %d (%.0f%%)", sum(insample$ratio < 1), nrow(insample),
+                          100 * mean(insample$ratio < 1)),
+                  sprintf("%.4f", stats::median(insample$ratio)),
+                  sprintf("%.4f", stats::median(insample$ratio[imports_is])),
+                  sprintf("%.4f", stats::median(insample$ratio[!imports_is]))),
+  with_import_content = c(
+    sprintf("%d of %d (%.0f%%)", sum(insample_ic$ratio < 1), nrow(insample_ic),
+            100 * mean(insample_ic$ratio < 1)),
+    sprintf("%.4f", stats::median(insample_ic$ratio)),
+    sprintf("%.4f", stats::median(insample_ic$ratio[imports_is_ic])),
+    sprintf("%.4f", stats::median(insample_ic$ratio[!imports_is_ic])))
+), row.names = FALSE,
+caption = "Against stage 2b. Both systems estimated on the identical 2000Q1-2024Q4 window.")
+```
+
+Read the two columns together and the case against refinement 5 completes itself.
+The rejected system's headline is better on every summary line — until the
+imports equations are separated out, at which point **its entire advantage is
+there and nowhere else**: every other equation's median ratio is ~1.000.
+
+The recommended system's improvement is the opposite shape: small, and spread
+across the equations that are *not* imports (median ratio
+`r sprintf("%.4f", stats::median(insample$ratio[!imports_is]))` against
+`r sprintf("%.4f", stats::median(insample$ratio[imports_is]))` for imports, which
+is unchanged because nothing in refinement 1–4 touches that equation). That is
+what a genuine structural improvement looks like: modest, diffuse, and not
+concentrated in the equation that gained a regressor.
+
+```{r best-worst}
+kable(rbind(utils::head(insample[, c("equation", "rmse_2b", "rmse_noIC", "ratio")], 5),
+            utils::tail(insample[, c("equation", "rmse_2b", "rmse_noIC", "ratio")], 3)),
+      row.names = FALSE, digits = 4,
+      caption = "Recommended system: the five largest improvements and three largest deteriorations.")
+```
+
+## 8. The monetary shock, re-run
+
+The whole point of refinement 1 was `reports/stage2_spillovers.qmd` §4: a
++100bp/4-quarter `ea_policy_rate` shock produced "no evidence of a real
+transmission channel" on the stage-2b system, and §7.2 recorded the sanity
+check failing as a genuine property of the fitted linkage. Stage 2c closes the
+structural gap. This section asks whether that changed the numbers.
+
+The battery is run exactly as stage 2b's was — same 8-quarter horizon, same
+shock definitions, same `scenario_diff()` common-random-numbers pairing.
+
+### 8.1 The failing draws, recovered rather than worked around
+
+The sustained 4-quarter restriction makes koma's conditional solve singular for
+`r attr(mon_failed, "n_failed")` of `r attr(mon_failed, "n_draws")` draws:
+restricting four horizons at once requires inverting `R %*% Omega %*% t(R)`, and
+for a numerically rank-deficient draw no valid conditional innovation exists.
+koma drops those by subsetting the list, so `scenario_diff()` aborts on the
+draw-count mismatch rather than silently mispair the two legs.
+
+`failed_restriction_draws()` re-derives the indices by tracing
+`koma:::forecast_draw()` and asking, per draw, whether it returned normally. Two
+verifications before using them:
+
+- The verification stage 2b applied holds here too: **all
+  `r attr(mon_failed, "n_failed")` are also flagged explosive** in the
+  unconditional baseline (`r length(explosive)` of 1000 draws exceed
+  `|de_gdp| > 100` at horizon 8). The same badly-behaved population surfaces as
+  an outright failure under a demanding restriction and as a blow-up without
+  one — not a new failure mode.
+- The failing set is **identical at both seeds** — the same 40 indices, not
+  merely the same count. That is the prediction the mechanism makes (failure
+  depends on the draw's posterior `Omega`, which carries no RNG; the innovation
+  draw is what the seed controls), and it holds on the production system rather
+  than only on a test fixture.
+
+### 8.2 GDP: a real channel, barely
+
+```{r mon-gdp}
+g2b <- peak_table(mon_2b, "gdp"); g2c <- peak_table(mon_2c, "gdp")
+p2b <- peak_table(mon_2b, "prices"); p2c <- peak_table(mon_2c, "prices")
+g <- merge(g2b, g2c, by = "country", suffixes = c("_2b", "_2c"))
+kable(g[, c("country", "peak_horizon_2b", "peak_2b", "cumulative_2b",
+            "peak_horizon_2c", "peak_2c", "cumulative_2c")],
+      row.names = FALSE, digits = 3,
+      caption = "GDP response to +100bp for 4 quarters. Cumulative is the sum of median_diff over 8 quarters.")
+```
+
+```{r mon-gdp-summary}
+kable(data.frame(
+  measure = c("peaks at horizon 1", "peak is negative", "cumulative 8q effect is negative"),
+  stage2b = c(sum(g$peak_horizon_2b == 1), sum(g$peak_2b < 0), sum(g$cumulative_2b < 0)),
+  stage2c = c(sum(g$peak_horizon_2c == 1), sum(g$peak_2c < 0), sum(g$cumulative_2c < 0))
+), row.names = FALSE, caption = "Out of 11 countries.")
+```
+
+Read on its own, this looks like progress: cumulative GDP moves from negative in
+`r sum(g$cumulative_2b < 0)` of 11 to `r sum(g$cumulative_2c < 0)` of 11, and
+Germany, Greece and Ireland now peak *negative* at horizons 4, 6 and 2 rather
+than showing a positive horizon-1 spike and nothing after. Greece's path is the
+most transmission-shaped thing in the battery: −0.15, −0.18, −0.18, −0.23,
+−0.27, −0.18, −0.27 from horizon 2 on — persistent, negative, not decaying.
+
+**Most of that is the seed.** `CLAUDE.md` requires a placebo before reporting
+any such change, and here it removes the headline outright.
+
+```{r mon-placebo}
+gb <- peak_table(mon_2c_b, "gdp")
+kable(data.frame(
+  measure = c("GDP cumulative negative", "GDP peak negative", "price peak negative"),
+  stage2b = c(sum(g2b$cumulative < 0), sum(g2b$peak < 0), sum(p2b$peak < 0)),
+  stage2c_seedA = c(sum(g2c$cumulative < 0), sum(g2c$peak < 0), sum(p2c$peak < 0)),
+  stage2c_seedB = c(sum(gb$cumulative < 0), sum(gb$peak < 0),
+                    sum(peak_table(mon_2c_b, "prices")$peak < 0))
+), row.names = FALSE,
+caption = "Out of 11. Seeds A and B are the SAME stage-2c fit -- any gap between those two columns is noise.")
+```
+
+The count of countries with a negative cumulative GDP response is
+`r sum(g2c$cumulative < 0)` at seed A and `r sum(gb$cumulative < 0)` at seed B —
+and `r sum(g2b$cumulative < 0)` in stage 2b. The stage-2c "improvement" is
+smaller than the distance between two runs of stage 2c itself, so **it is not a
+finding**.
+
+Per country, the same comparison:
+
+```{r mon-placebo-country}
+cmp <- merge(g2c[, c("country", "cumulative")], gb[, c("country", "cumulative")],
+             by = "country", suffixes = c("_seedA", "_seedB"))
+cmp <- merge(cmp, g2b[, c("country", "cumulative")], by = "country")
+names(cmp)[4] <- "cumulative_2b"
+cmp$seed_gap <- abs(cmp$cumulative_seedA - cmp$cumulative_seedB)
+cmp$system_gap <- abs(cmp$cumulative_seedA - cmp$cumulative_2b)
+cmp$survives <- cmp$system_gap > 2 * cmp$seed_gap
+kable(cmp, row.names = FALSE, digits = 3,
+      caption = "A change survives only if the stage-2b-to-2c gap clearly exceeds the seed-to-seed spread on the same fit.")
+```
+
+Mean seed-to-seed gap `r sprintf("%.3f", mean(cmp$seed_gap))` against a mean
+cross-system gap of `r sprintf("%.3f", mean(cmp$system_gap))` — the same order of
+magnitude. For `r sum(cmp$system_gap < cmp$seed_gap)` of the eleven the
+cross-system gap is *smaller* than the seed spread, and
+`r sum(sign(cmp$cumulative_seedA) != sign(cmp$cumulative_seedB))` cumulative
+responses flip sign between the two seeds.
+
+**What does survive** is `r paste(cmp$country[cmp$survives], collapse = ", ")`.
+Two of those are substantive: Greece's cross-system gap is 1.78 against a seed
+spread of 0.19, and Ireland's 1.05 against 0.32, both moving strongly more
+contractionary under stage 2c — and both are among the three countries whose
+response peaks at a later horizon. Portugal clears the same 2x bar only because
+its seed spread happens to be unusually small (0.030); its actual movement is
+0.17pp and in the *opposite* direction, slightly less contractionary, so it is
+better read as a country the placebo cannot resolve than as a third finding.
+Germany's gap (0.43) is not clearly above its seed spread (0.37) and should not
+be claimed at all.
+
+What has **not** changed at all is the horizon-1 echo. Eight of eleven still
+peak at horizon 1 with a positive value, which §1.3 of the stage-2b report
+diagnosed as a same-quarter simultaneity artefact of imposing an exact-value
+restriction, not a transmission effect.
+
+### 8.3 Prices: the loop is closed and the sign is wrong
+
+```{r mon-prices}
+pp <- merge(p2b, p2c, by = "country", suffixes = c("_2b", "_2c"))
+kable(pp[, c("country", "peak_horizon_2b", "peak_2b", "cumulative_2b",
+             "peak_horizon_2c", "peak_2c", "cumulative_2c")],
+      row.names = FALSE, digits = 4,
+      caption = "Price response to the same shock.")
+```
+
+**Every one of the eleven price peaks is positive**, in both systems — a
+monetary tightening appearing to raise prices. Stage 2c did not fix this; if
+anything it is marginally worse (`r sum(pp$peak_2b < 0)` negative peaks in stage
+2b, `r sum(pp$peak_2c < 0)` in stage 2c).
+
+The mechanism is legible from §4.5's per-link means, and it is not that the
+price block is broken. The Phillips-curve link is positive and correctly signed
+in 10 of 11 countries: prices rise when GDP rises. But the policy shock's effect
+on GDP is *positive at horizon 1* — the simultaneity echo — and the price
+response is almost entirely a horizon-1 effect that decays to zero rather than
+turning negative. Prices are faithfully tracking the wrong part of the GDP path.
+
+The cost-push channel, by contrast, is correctly signed and substantial:
+
+```{r oil}
+kable(peak_table(oil_2c, "prices"), row.names = FALSE, digits = 3,
+      caption = "Price response to a sustained +50% oil price level (stage 2c).")
+```
+
+All eleven positive, cumulative 0.8–2.3pp. So the price equation responds
+sensibly to a genuine cost shock and perversely to a policy rate. That
+localises the remaining problem: it is not the price block, it is that the
+policy rate's route into GDP is dominated by a within-quarter artefact rather
+than by a lagged demand channel.
+
+## 9. The spillover matrix, and the seed placebo
+
+```{r matrix}
+kable(round(mat_2c, 3), caption = "Stage 2c: cumulative 8-quarter GDP response, source (row) x receiver (column).")
+```
+
+```{r sanity}
+sc <- data.frame(check = sanity_2b$check,
+                 stage2b = paste0(ifelse(sanity_2b$ok, "PASS", "FAIL"), " — ", sanity_2b$detail),
+                 stage2c = paste0(ifelse(sanity_2c$ok, "PASS", "FAIL"), " — ", sanity_2c$detail))
+kable(sc, row.names = FALSE, caption = "The three spillover sanity checks, both systems.")
+```
+
+**One of the three checks goes from fail to pass, and it is the structural one.**
+Stage 2b's own-effect check failed for four countries: a French, German or
+Belgian demand shock moved *Austrian* GDP more than it moved the source's own,
+an indirect two-hop path through Germany that §7.1 of that report analysed at
+length and concluded was a legitimate property of a simultaneous system rather
+than a defect. Under stage 2c the own effect dominates in **11 of 11**, and the
+diagonals are far more uniform (0.955–1.553 against stage 2b's 0.782–1.662).
+
+The trade-weight correlation more than doubles, from ρ = 0.141 to ρ = 0.292,
+though it still misses the 0.3 threshold.
+
+That number would not exist at all without a fix made for this stage.
+`spillover_sanity_checks()` looked each source up as `<source>_gdp` in the
+receiver's `foreign_demand` weights. Stage 2c's identity loads partner
+**imports**, so every lookup missed, the weight column came out all zeros, and
+the reported correlation was computed against a constant — a meaningless verdict
+rather than an error. The lookup now matches on the ISO-2 prefix, which also
+repairs the same latent bug under `ireland_proxy`.
+
+### 9.1 Placebo: how much of this is the seed?
+
+`CLAUDE.md` is emphatic that an individual spillover cell is not a reliable
+number at 1000 draws — re-running the same battery on the *same* fit with only
+the seed changed moves an off-diagonal cell by 0.35pp on average and flips the
+sign of 7–10 of 30. So before reading anything above as a stage-2c effect, the
+same four source countries were re-run at a second seed on the same fit.
+
+```{r placebo}
+d_seed <- abs(mat_2c[PLACEBO_SRC, ] - mat_2c_b[PLACEBO_SRC, ])
+d_sys  <- abs(mat_2c[PLACEBO_SRC, ] - mat_2b[PLACEBO_SRC, ])
+kable(data.frame(
+  comparison = c("seed A vs seed B, same stage-2c fit (noise)",
+                 "stage 2c vs stage 2b, same seed (the claim)"),
+  mean_abs_diff = c(mean(d_seed), mean(d_sys)),
+  max_abs_diff = c(max(d_seed), max(d_sys)),
+  sign_flips = c(sum(sign(mat_2c[PLACEBO_SRC, ]) != sign(mat_2c_b[PLACEBO_SRC, ])),
+                 sum(sign(mat_2c[PLACEBO_SRC, ]) != sign(mat_2b[PLACEBO_SRC, ])))
+), row.names = FALSE, digits = 3,
+caption = "Four source countries (de, fr, it, nl) x 11 receivers = 44 cells.")
+```
+
+Unlike §8.2, the matrix survives its placebo. The cross-system difference
+(mean `r sprintf("%.3f", mean(d_sys))`) is **more than three times** the
+seed-to-seed spread (`r sprintf("%.3f", mean(d_seed))`), and
+`r sum(d_sys > 2 * d_seed)` of the 44 cells move by more than twice the noise.
+
+There is a second, more interesting reading of that same table.
+`CLAUDE.md` records the stage-2b matrix's own seed sensitivity: re-running it at
+a second seed moved an off-diagonal cell by **0.35pp on average, up to 1.85, and
+flipped the sign of 7–10 of 30**. The equivalent numbers for stage 2c are
+`r sprintf("%.3f", mean(d_seed))`, `r sprintf("%.3f", max(d_seed))`, and
+**`r sum(sign(mat_2c[PLACEBO_SRC, ]) != sign(mat_2c_b[PLACEBO_SRC, ]))` of 44**.
+The stage-2c spillover matrix is roughly **three times more reproducible** than
+stage 2b's. That is not a claim that can itself be dismissed as noise — it is a
+measurement *of* the noise, and it is the strongest single result in this
+report.
+
+```{r placebo-diag}
+kable(data.frame(
+  country = PLACEBO_SRC,
+  own_2b = diag(mat_2b)[PLACEBO_SRC],
+  own_2c_seedA = diag(mat_2c)[PLACEBO_SRC],
+  own_2c_seedB = diag(mat_2c_b)[PLACEBO_SRC],
+  seed_spread = abs(diag(mat_2c)[PLACEBO_SRC] - diag(mat_2c_b)[PLACEBO_SRC]),
+  system_gap = abs(diag(mat_2c)[PLACEBO_SRC] - diag(mat_2b)[PLACEBO_SRC])
+), row.names = FALSE, digits = 3,
+caption = "Own diagonals: is the stage-2b-to-2c gap larger than the seed-to-seed spread?")
+```
+
+Cell by cell the diagonals behave as the placebo would demand: France, Italy and
+the Netherlands move by ~10x their seed spread and can be reported; **Germany's
+diagonal moves by less than its own seed spread (0.103 against 0.183) and must
+not be**. That is the same discipline the stage-3c report applied, and it lands
+on a different country this time.
+
+## 10. Verdict
+
+**Adopt stage 2c, with four refinements, not five.** It is the first extension
+in this project that costs nothing: `k = 76` and `df = 22`, identical to stage
+2b, so nothing here trades structure against degrees of freedom. `stage2c_config()`
+and the `_targets.R` stage-2c chain build the recommended system.
+
+What it demonstrably buys:
+
+1. **A structurally closed monetary loop.** `ea_policy_rate` reaches all 114
+   endogenous variables including all 12 prices, against 91 of 103 and *zero*
+   prices in stage 2b. This is exact and verifiable, not estimated.
+2. **A materially better spillover structure.** The own-effect sanity check goes
+   from 7/11 (fail) to 11/11 (pass); the stage-2b Austria artefact is gone; the
+   trade-weight correlation more than doubles (0.141 → 0.292, still short of the
+   0.3 threshold).
+3. **A three-times more reproducible spillover matrix** — mean seed-to-seed
+   movement 0.119 against stage 2b's 0.35, and 1 sign flip in 44 cells against
+   7–10 in 30. For a battery whose individual cells `CLAUDE.md` warns should
+   never be read one at a time, this is the most useful improvement of the
+   three.
+4. **A tidier rate block.** All eleven stage-2b policy-rate loadings straddled
+   zero; imposing the pass-through at 1 and modelling the spread removes eleven
+   coefficients that were never identified.
+
+What it does **not** buy, stated plainly:
+
+- **A working monetary transmission.** The price response to a +100bp tightening
+  is positive at peak in all eleven countries — the wrong sign — and the GDP
+  response still concentrates in a horizon-1 simultaneity echo. The apparent
+  improvement in cumulative GDP sign (6/11 → 8/11) **does not survive the seed
+  placebo**: the same fit gives 6/11 at a second seed. Only Greece and Ireland
+  show a change larger than seed noise. Closing a loop structurally is necessary
+  and, on this evidence, nowhere near sufficient.
+- **A better in-sample fit.** Median RMSE ratio
+  `r sprintf("%.4f", stats::median(insample$ratio))`; the improvement is real but
+  small and diffuse.
+- **A stationary spread.** Refinement 3's persistence argument is contradicted by
+  its own estimates (own lags 0.933–0.983 against 0.910–0.964).
+
+**And the most valuable thing the stage produced is a rejection.** Refinement 5
+— the import-content term — improves in-sample fit in the imports equations by
+up to 2.8x and passes its own sign check 11 of 11, while collapsing the
+domestic-demand elasticity in 9 of 11 countries and corrupting four sign checks
+in equations it never touches. Every diagnostic that looks at *the term itself*
+approves it. Only comparing it against the specification without it exposes it.
+That is the third time this project has met the same failure in the same
+equation, and the standing conclusion holds: **the imports volume equation takes
+domestic demand and its own lag, and nothing contemporaneous.**

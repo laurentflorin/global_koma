@@ -157,3 +157,93 @@ readable_coefficient_table <- function(fit, equation_order = NULL) {
   rownames(ct) <- NULL
   ct[, c("equation", "equation_readable", "term", "term_readable", "estimate", "ci_low", "ci_high")]
 }
+
+# --- country-generic ("template") views --------------------------------
+# The per-country equations in this project are generated from one template
+# per concept, so a report that lists 68 stochastic equations one by one buries
+# the fact that there are really only a handful of distinct forms. These build
+# the template view -- and, importantly, VERIFY it rather than assert it: any
+# country whose equation does not collapse to the shared form shows up as its
+# own group rather than being silently absorbed.
+
+#' Replace one country's own ISO-2 prefix with a generic placeholder.
+#'
+#' Only prefixes at a token boundary are replaced, so `de_gdp` becomes
+#' `cc_gdp` while a partner reference inside another country's identity is
+#' left alone.
+templatise <- function(x, iso2, placeholder = "cc") {
+  gsub(paste0("(?<![A-Za-z0-9_])", iso2, "_"), paste0(placeholder, "_"), x, perl = TRUE)
+}
+
+#' Group every country's stochastic equations by their country-generic form.
+#'
+#' @return A `data.frame` with one row per (concept, distinct form): `concept`,
+#'   `form`, `n_countries`, `countries`. A concept with more than one row is a
+#'   concept where the countries genuinely differ.
+template_groups <- function(spec, countries, placeholder = "cc") {
+  rows <- do.call(rbind, lapply(countries, function(cc) {
+    own <- grep(paste0("^", cc, "_"), names(spec$stochastic), value = TRUE)
+    if (length(own) == 0) return(NULL)
+    do.call(rbind, lapply(own, function(dep) data.frame(
+      concept = sub(paste0("^", cc, "_"), "", dep), iso2 = cc,
+      form = templatise(koma_string_stochastic(dep, spec$stochastic[[dep]]), cc, placeholder),
+      stringsAsFactors = FALSE)))
+  }))
+  grouped <- do.call(rbind, lapply(split(rows, list(rows$concept, rows$form), drop = TRUE), function(g)
+    data.frame(concept = g$concept[1], form = g$form[1], n_countries = nrow(g),
+               countries = paste(sort(g$iso2), collapse = ", "), stringsAsFactors = FALSE)))
+  grouped <- grouped[order(grouped$concept, -grouped$n_countries), ]
+  rownames(grouped) <- NULL
+  grouped
+}
+
+#' The component structure of one identity, country-generic and weight-free.
+#'
+#' Weights are dropped (they are country-specific shares) but their SIGNS are
+#' kept, because a sign is structural: `- w*imports` is part of the accounting
+#' identity, not a fitted quantity.
+identity_structure <- function(dep, weights, iso2, placeholder = "cc") {
+  comps <- names(weights)
+  txt <- vapply(seq_along(comps), function(i) {
+    sign <- if (is.character(weights[[i]]) || weights[[i]] >= 0) "+" else "-"
+    paste0(sign, " w*", templatise(comps[i], iso2, placeholder))
+  }, character(1))
+  out <- paste(txt, collapse = " ")
+  paste0(templatise(dep, iso2, placeholder), " == ", sub("^\\+ ", "", out))
+}
+
+#' Group every country's identities by their country-generic component
+#' structure, and report the range each weight takes across countries.
+identity_template_groups <- function(spec, countries, placeholder = "cc") {
+  rows <- do.call(rbind, lapply(countries, function(cc) {
+    own <- grep(paste0("^", cc, "_"), names(spec$identities), value = TRUE)
+    if (length(own) == 0) return(NULL)
+    do.call(rbind, lapply(own, function(dep) data.frame(
+      concept = sub(paste0("^", cc, "_"), "", dep), iso2 = cc,
+      structure = identity_structure(dep, spec$identities[[dep]], cc, placeholder),
+      n_components = length(spec$identities[[dep]]),
+      stringsAsFactors = FALSE)))
+  }))
+  grouped <- do.call(rbind, lapply(split(rows, list(rows$concept, rows$structure), drop = TRUE), function(g)
+    data.frame(concept = g$concept[1], structure = g$structure[1], n_countries = nrow(g),
+               components = if (length(unique(g$n_components)) == 1) as.character(g$n_components[1])
+                            else paste0(min(g$n_components), "-", max(g$n_components)),
+               countries = paste(sort(g$iso2), collapse = ", "), stringsAsFactors = FALSE)))
+  grouped <- grouped[order(grouped$concept, -grouped$n_countries), ]
+  rownames(grouped) <- NULL
+  grouped
+}
+
+#' Range of one identity's weight on a named component across countries.
+identity_weight_range <- function(spec, countries, concept, component) {
+  vals <- vapply(countries, function(cc) {
+    w <- spec$identities[[country_var(cc, concept)]]
+    if (is.null(w)) return(NA_real_)
+    nm <- country_var(cc, component)
+    if (!nm %in% names(w)) return(NA_real_)
+    as.numeric(w[[nm]])
+  }, numeric(1))
+  vals <- vals[!is.na(vals)]
+  if (length(vals) == 0) return(data.frame(min = NA_real_, median = NA_real_, max = NA_real_))
+  data.frame(min = min(vals), median = stats::median(vals), max = max(vals))
+}

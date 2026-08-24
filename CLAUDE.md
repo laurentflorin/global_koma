@@ -296,7 +296,151 @@ This specifically means, for the EA-MD/QD port in `data_eamdqd.R`:
   the two `long_rate` equations, which are terminal — the stage-1 "a rate
   rise cannot move GDP" finding survived unchanged. It is `<iso2>_long_rate`
   appearing in the *investment* equation that actually closes the loop.
-  Check reachability on `sys_eq$character_gamma_matrix` rather than assuming.
+  Use `contemporaneous_reachability()` (`diagnostics.R`) rather than assuming;
+  it is the test-local BFS over `sys_eq$character_gamma_matrix` promoted to
+  tested package code.
+- **Self-reachability is not the loop you care about.** Stage 2b's
+  `ea_policy_rate` *is* reachable from itself — through the Taylor rule's
+  `ea_gdp` term — while reaching **no price variable at all** (91 of 103
+  endogenous variables, zero of them prices). So "the loop is closed" was true
+  of the rule's output term and false of its inflation term at the same time,
+  and that is the structural cause of the monetary sanity-check failure in
+  `reports/stage2_spillovers.qmd` §7.2. Count what is reached, not whether the
+  start point comes back.
+
+## Stage 2c: the refined linked core (`stage2_system.R`)
+
+Stage 2b's structure with **four** refinements applied to every country, all of
+which cost **zero** additional `k` — `k = 76`, `T = 98`, `df = 22`, identical
+to stage 2b and therefore directly comparable to it, unlike every stage-3 block.
+68 stochastic equations (unchanged: the long-rate level equation is *swapped*
+for a spread equation, not added to); identities 35 -> 46. `stage2c_config()`
+carries the settings. See `reports/stage2c_refined_core.qmd`.
+
+- **A fifth refinement was estimated and rejected: `<iso2>_imports` gaining a
+  contemporaneous `<iso2>_exports` term** (the import content of exports,
+  `stage2c_config(import_content = TRUE)`). It collapses the domestic-demand
+  elasticity in the imports equation in **9 of 11 countries** — Germany 0.382
+  -> **0.049**, Austria 0.450 -> **−0.104** — while *halving* those equations'
+  in-sample RMSE (Belgium fits 2.8x better). Re-estimating without it recovers
+  **all eleven** elasticities toward their stage-2b values (Germany 0.320,
+  France 1.215 against 1.245, the US 1.782 against 1.798). This is the same
+  failure `<iso2>_import_prices` produced four times in stage 3a (0.38 -> 0.08):
+  a contemporaneous regressor correlated with the dependent variable buys fit by
+  taking variance from the structural term. **The improved fit is the symptom,
+  not the reassurance.**
+- **That one bad term contaminated equations it never touched.** With it in, 3
+  Phillips-curve and 5 consumption-rate sign checks failed; without it, 1 and 3.
+  Only Austria's import elasticity actually crossed zero, so `sign_checks()`
+  reported *one* failure while nine elasticities were being gutted — the
+  now-familiar lesson that a neighbouring coefficient moving is the first
+  symptom, and that a bad specification in one equation masquerades as a
+  systemic problem.
+- **`sign_checks(stage2c = )` takes a refinement subset, not just `TRUE`.** A
+  rule whose term is absent scores `NA`/`FALSE`, so `TRUE` on a system without
+  the import-content term turns eleven deliberate absences into eleven reported
+  failures (19 of 66 rather than the true 8 of 55). Pass
+  `stage2c_config()$refinements`.
+- **The spread's own lag is not less persistent than the level's, contrary to
+  the design note.** Refinement 3's motivation is confirmed exactly — all eleven
+  stage-2b policy-rate loadings have 90% intervals straddling zero, with own
+  lags 0.910–0.964 — but the stage-2c spread own lags run **0.932–0.981**, and
+  for Spain and Portugal they are *higher* than the levels they replaced. The
+  other three arguments for the spread (imposed pass-through, fewer competing
+  regressors, `k`-neutral) are unaffected.
+- **A closed loop can be arithmetically inert.** `monetary_loop()` +
+  `loop_gain()` give a contemporaneous round-trip gain around **1e-5** in every
+  country, with no draw anywhere near 1. That is a six-link chain of small
+  coefficients multiplying out, and it measures within-quarter feedback
+  (stability), *not* whether a monetary shock transmits over the horizon. Read
+  the per-link means, not the product: the Taylor rule's inflation loading is a
+  healthy 0.227, but 3 of 11 consumption-rate links are wrong-signed.
+- **Stage 2c's spillover matrix is ~3x more seed-reproducible than stage 2b's.**
+  The seed placebo on the same fit moves an off-diagonal cell by **0.119 on
+  average (max 0.356) and flips 1 sign of 44**, against the 0.35 / 1.85 / 7-10
+  of 30 recorded above for stage 2b. This is the strongest stage-2c result
+  precisely because it is a measurement *of* the noise and so cannot itself be
+  dismissed as noise. The `own effect dominates` sanity check also goes 7/11
+  (fail) -> 11/11 (pass) -- stage 2b's Austria two-hop artefact is gone -- and
+  the trade-weight correlation goes 0.141 -> 0.292, still under the 0.3 bar.
+- **Closing the monetary loop structurally did not make the monetary shock
+  work, and the placebo is what showed it.** Reachability is exact and
+  verifiable; the response is not. Prices peak **positive in 11 of 11** under a
+  +100bp tightening (wrong sign) in both systems, and the apparent gain in GDP
+  cumulative sign (2b 6/11 -> 2c 8/11 negative) **collapses to 6/11 at a second
+  seed on the same fit**. Only Greece and Ireland move by more than seed noise.
+  The oil shock, by contrast, is correctly signed in all eleven (cumulative
+  0.8-2.3pp), which localises the fault: the price block responds sensibly to a
+  cost shock and perversely to a policy rate, because the policy rate's route
+  into GDP is dominated by the horizon-1 simultaneity echo rather than a lagged
+  demand channel.
+- **Closing the monetary loop cost the price forecast, and the two are the same
+  fact.** In stage 2b `<iso2>_prices` had *no* contemporaneous endogenous
+  regressor, which made it effectively a univariate AR with exogenous cost-push
+  terms and therefore **structurally immune** to the explosive-draw population:
+  its explosive share in the backtest is **0.0000 at horizon 1 and 0.0026 at
+  horizon 8**. Stage 2c's Phillips curve couples it to `<iso2>_gdp`, whose share
+  reaches 0.76, and prices inherit it: **0.016 rising to 0.634**. GDP's own share
+  is unchanged. Price CRPS goes from 0.62 to 3.99 at horizon 8 and stage 2b wins
+  the Diebold-Mariano CRPS comparison at `p < 0.002` from horizon 3 on, while
+  GDP forecasts are *better* under 2c and MAE is roughly a draw. Making prices
+  reachable from the policy rate necessarily makes them reachable from
+  everything else that reaches GDP. **Use stage 2c for mechanism and stage 2b
+  for a price fan chart.**
+- **`backtest_stage2c()` is the only unconfounded head-to-head in the
+  evaluation.** Every refinement is `k`-neutral, so stage 2c has *identical* `k`,
+  `df`, feasibility verdict and usable-origin set to stage 2b at every origin
+  (verified, both annual and quarterly, including the shared `df = 3` failure at
+  2019Q1). Every other pair in `reports/evaluation.qmd` differs in sample size,
+  capacity, or both.
+- **Five annual origins signed the 2b-vs-2c comparison the wrong way.** On the
+  annual sample stage 2c looked *better* at long horizons (h=8 MAE 1.33 vs
+  1.61); on the 20-origin quarterly sample it is clearly worse (ratio 1.36).
+  Treat the five-origin annual stage-2 window as unable to sign a comparison at
+  all, not merely as imprecise.
+- **`diebold_mariano()`'s HAC correction is order-dependent, and a pooled panel
+  has no natural order.** It sums autocovariances of the loss differential at
+  lags `1..h-1` *in the order the vector is given*, so pooling over (origin x
+  country x concept) makes every `h > 1` statistic depend on how the rows were
+  sorted -- `h = 1` is order-free, which is how this was diagnosed. Sort by
+  `(variable, origin)` before testing, so each series' own origin sequence is
+  contiguous and in time order.
+- **Stage 2c's in-sample gain was entirely the imports equations.** With
+  refinement 5 in, 77% of shared equations fit better and the median ratio is
+  0.995 — but every non-imports equation's ratio is ~1.000. Splitting the
+  summary by equation family is what exposed that; the headline percentage did
+  not.
+
+- **The spread identity has two sides, and only one of them ever saw `opts`.**
+  `<iso2>_long_rate == <iso2>_spread + <policy rate>` is written by
+  `long_rate_identity()` *and* implied by the `<iso2>_spread` series
+  `build_stage2_panel()` constructs. The identity resolved `us_policy_rate`
+  for the US under `policy_rule = TRUE`; the panel builder's scalar
+  `policy_rate` default subtracted `ea_policy_rate` for everybody. The US
+  identity was therefore violated by the entire EA–US policy-rate gap —
+  **verified at up to 3.25 percentage points** — with no error, because koma
+  has no identity-consistency check. Both sides now derive the mapping from
+  `policy_rate_map(opts)`. This only bites once the US is in
+  `spread_countries`, which stage 2c is the first configuration to do.
+- **`stage2_preflight()` now does the arithmetic koma never does.**
+  `identity_consistency()` recomputes every identity from the panel and
+  reports its worst absolute error. It picks the space from the series'
+  attributes: `rate`/`none` identities (the long-rate/spread/policy-rate
+  family) are literal linear combinations of levels, everything else is
+  compared after `koma::rate()`, and a mixed-attribute or lagged identity is
+  skipped rather than reported wrong. `<iso2>_gdp` and
+  `<iso2>_domestic_demand` are **reported but never flagged** — the first
+  holds only up to the statistical discrepancy, the second is deliberately
+  inexact under `include_government = FALSE`. On the stage-2c panel: 23 exact
+  identities, worst error 1.05e-13; the inexact ones run up to 17.7pp
+  (Ireland's domestic demand).
+- **The Phillips curve gives every price equation a Metropolis step for the
+  first time.** In stage 2b all eleven `<iso2>_prices` equations had an empty
+  contemporaneous endogenous regressor set, so `count_accepted` was `NA` and
+  `check_acceptance_rates()` never had anything to say about them — **57 of 68
+  equations had a Metropolis step, and the eleven that did not were exactly
+  the price equations**. Adding `<iso2>_gdp` takes stage 2c to 68 of 68, so a
+  stage-2c acceptance table is not row-comparable to a stage-2b one.
 
 ## Stage 3a: labour market and disaggregated prices (`stage2_system.R`)
 
@@ -505,6 +649,27 @@ unconditional, one with `restrictions = `), differenced.
   they do nothing about sampling error in the level of the estimand itself,
   which is a median over draws of which a third have exploded by horizon 8.
   Read the matrix as a pattern (sign, rough ordering), never cell by cell.
+- **`spillover_sanity_checks()`'s trade-weight check must not assume the
+  `foreign_demand` basis.** It used to look the source country up as
+  `<source>_gdp`, but a `foreign_demand` identity does not always load a
+  partner's GDP: stage 2c loads partner **imports**, and `ireland_proxy` loads
+  `ie_consumption`. Under either, every lookup missed, the weight column came
+  out all zeros, and the reported Spearman correlation was computed against a
+  constant — a meaningless verdict rather than an error. It now matches on the
+  ISO-2 prefix, which covers every basis and still excludes the `row_gdp`
+  residual (not a bilateral pair).
+- **A sustained restriction's failing draws can be recovered, not just
+  worked around.** koma's per-draw `safely()` wrapper drops a failed draw by
+  *subsetting the list*, recording nothing about which index it was, which is
+  why `scenario_diff()` aborts rather than mispair. `failed_restriction_draws()`
+  re-derives the indices by tracing `koma:::forecast_draw()` and checking
+  `returnValue()` per draw; feed them to `scenario_diff(drop_baseline_draws = )`.
+  Two traps in writing that: `trace()` **deparses and re-parses** the expression
+  it is given, so an environment inlined with `bquote()` does not survive — the
+  exit code then silently records nothing, which reads as "no draw failed"
+  rather than as an error (hence the abort when the log comes back empty). And
+  the trace only patches the binding in *this* process, so a multi-process
+  `future` plan runs the untraced function and produces the same empty log.
 - **Before reporting that a change moved the spillover matrix, run the
   seed placebo**: re-run a few source countries on both fits at a second
   seed and compare the cross-system difference against the seed-to-seed
@@ -612,9 +777,11 @@ from `test-stage3_blocks.R`.
 
 `stage2_system.R` implements **stage 2a** (the two-country DE + FR pilot of
 the linkage mechanism), **stage 2b** (all eleven economies: 68 stochastic
-equations and 35 identities in one `system_of_equations()`) and **stage 3a**
-(the German labour and disaggregated-price block, `labour_block()`). See
-`reports/stage2a_pilot.qmd`, `reports/stage2b_full_system.qmd` and
+equations and 35 identities in one `system_of_equations()`), **stage 2c**
+(the same eleven economies with five zero-cost refinements, 68 stochastic
+equations and 46 identities) and **stage 3a** (the German labour and
+disaggregated-price block, `labour_block()`). See `reports/stage2a_pilot.qmd`,
+`reports/stage2b_full_system.qmd`, `reports/stage2c_refined_core.qmd` and
 `reports/stage3a_labour_prices.qmd`.
 
 Stage 2b needs its **own** estimation window — `stage2b_dates()`, ending

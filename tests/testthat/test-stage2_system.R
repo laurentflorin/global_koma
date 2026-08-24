@@ -666,6 +666,36 @@ test_that("stage2c_config keeps k identical to stage 2b", {
   expect_equal(cfg$dummies, stage2b_dummies())
 })
 
+test_that("stage2c_config leaves the rejected import-content refinement off", {
+  # Refinement 5 collapses the imports equation's domestic-demand elasticity in
+  # 9 of 11 countries (see the roxygen); it is reachable, not default.
+  cfg <- stage2c_config()
+  expect_length(cfg$opts$import_content_countries, 0)
+  expect_false("import_content" %in% cfg$refinements)
+  expect_setequal(cfg$refinements, c("phillips", "consumption_rate", "spread"))
+
+  with_ic <- stage2c_config(import_content = TRUE)
+  expect_setequal(with_ic$opts$import_content_countries, modelled_countries)
+  expect_setequal(with_ic$refinements, stage2c_refinements())
+
+  # Either way the system is the same size -- that is what made the refinement
+  # worth testing, and what makes rejecting it cost nothing.
+  k_of <- function(cfg) {
+    lw <- stage2_linkage_weights(c("de", "fr"), stage2_test_trade_weights(),
+                                 stage2_test_gdp_weights(),
+                                 demand_concept = cfg$demand_concept)
+    opts <- cfg$opts
+    opts$phillips_countries <- c("de", "fr")
+    opts$consumption_rate_countries <- c("de", "fr")
+    opts$spread_countries <- c("de", "fr")
+    opts$import_content_countries <- intersect(opts$import_content_countries, c("de", "fr"))
+    opts$extra_regressors <- list()
+    sys <- build_stage2_system(stage2_spec(c("de", "fr"), stage2_test_shares(), lw, opts = opts))
+    length(sys$total_exogenous_variables)
+  }
+  expect_equal(k_of(cfg), k_of(with_ic))
+})
+
 # --- the k < T guard ---------------------------------------------------
 
 test_that("stage2_preflight fails loudly when k >= T", {
@@ -708,4 +738,74 @@ test_that("project_stage2_runtime recovers a known exponent", {
   expect_equal(proj$exponent, 1.5, tolerance = 1e-6)
   expect_equal(proj$projected_seconds, 2 * 160^1.5, tolerance = 1e-4)
   expect_error(project_stage2_runtime(bench[1, ], 160), "at least two")
+})
+
+# --- the spread identity's two sides must name the same policy rate -----
+
+test_that("the panel's spread and the system's identity resolve one policy rate", {
+  # The bug this pins: build_stage2_panel()'s scalar `policy_rate` default
+  # subtracted ea_policy_rate for EVERY country, while long_rate_identity()
+  # gave the US `us_policy_rate` under policy_rule = TRUE. koma has no
+  # identity-consistency check, so the US identity was violated by the whole
+  # EA-US rate gap -- 3.25pp on the production sample -- in silence.
+  opts <- stage2_options(policy_rule = TRUE, spread_countries = modelled_countries)
+  for (cc in modelled_countries) {
+    from_identity <- setdiff(names(long_rate_identity(cc, opts)), country_var(cc, "spread"))
+    from_panel <- spread_policy_rate(cc, policy_rate_map(opts))
+    expect_equal(from_panel, from_identity, info = cc)
+  }
+  expect_equal(spread_policy_rate("us", policy_rate_map(opts)), "us_policy_rate")
+  expect_equal(spread_policy_rate("de", policy_rate_map(opts)), "ea_policy_rate")
+  # Without its own rule the US falls back with everyone else.
+  expect_equal(spread_policy_rate("us", policy_rate_map(stage2_options())), "ea_policy_rate")
+})
+
+# --- identity_consistency ----------------------------------------------
+
+test_that("identity_consistency reproduces an exact identity and catches a broken one", {
+  cc <- c("de", "fr")
+  panel <- stage2_test_panel()
+  lw <- stage2_linkage_weights(cc, stage2_test_trade_weights(), stage2_test_gdp_weights())
+  opts <- stage2_options(spread_countries = cc)
+  sys_eq <- build_stage2_system(stage2_spec(cc, stage2_test_shares(cc), lw, opts = opts))
+
+  good <- build_stage2_panel(panel, lw, spread_countries = cc)
+  res <- identity_consistency(sys_eq, good)
+
+  # long_rate is rate/none throughout, so its identity is a literal
+  # subtraction and must hold to machine precision.
+  lr <- res[res$identity == "de_long_rate", ]
+  expect_equal(lr$space, "level")
+  expect_lt(lr$max_abs_error, 1e-12)
+  expect_true(lr$ok)
+  # foreign_demand is chained in rate space and must reproduce exactly too.
+  fd <- res[res$identity == "de_foreign_demand", ]
+  expect_equal(fd$space, "rate")
+  expect_lt(fd$max_abs_error, 1e-10)
+
+  # gdp and domestic_demand are inexact by construction: reported, never
+  # flagged, so a real statistical discrepancy cannot fail the pre-flight.
+  gdp <- res[res$identity == "de_gdp", ]
+  expect_false(gdp$exact_expected)
+  expect_true(gdp$ok)
+
+  # Now break de_spread by subtracting a different series, exactly the way the
+  # US bug did, and confirm it is caught.
+  broken <- good
+  broken$de_spread <- koma::as_ets(
+    stats::ts(as.numeric(good$de_long_rate) - as.numeric(good$de_prices) / 100,
+              start = stats::start(good$de_long_rate), frequency = 4),
+    series_type = "rate", method = "none"
+  )
+  bad <- identity_consistency(sys_eq, broken)
+  bad_lr <- bad[bad$identity == "de_long_rate", ]
+  expect_gt(bad_lr$max_abs_error, 1e-6)
+  expect_false(bad_lr$ok)
+
+  # and that the pre-flight surfaces it rather than passing the system through
+  pf <- stage2_preflight(sys_eq, broken, seeds = 1:2,
+                         dates = list(estimation = list(start = c(2000, 1), end = c(2015, 4))))
+  row <- pf[pf$check == "exact identities hold in the panel", ]
+  expect_false(row$ok)
+  expect_match(row$detail, "de_long_rate")
 })

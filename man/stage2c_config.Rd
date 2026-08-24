@@ -4,7 +4,11 @@
 \alias{stage2c_config}
 \title{Configuration for stage 2c: the refined linked core system}
 \usage{
-stage2c_config(countries = modelled_countries, ireland_proxy = FALSE)
+stage2c_config(
+  countries = modelled_countries,
+  ireland_proxy = FALSE,
+  import_content = FALSE
+)
 }
 \arguments{
 \item{countries}{Character vector of ISO-2 codes the refinements apply to.
@@ -16,16 +20,22 @@ uniform, unlike the stage-3 blocks, because each one is either free or
 is inert on the \code{"imports"} basis stage 2c uses -- it works around a
 distortion in Irish measured GDP and its investment component, not in
 Irish imports.}
+
+\item{import_content}{Add the rejected fifth refinement. \code{FALSE} by default;
+see above.}
 }
 \value{
-A list with \code{opts}, \code{threshold}, \code{ireland_proxy}, \code{dummies} and
-\code{demand_concept}, in the shape \code{\link[=benchmark_stage2]{benchmark_stage2()}} and the \verb{_targets.R}
-stage-2c chain consume.
+A list with \code{opts}, \code{threshold}, \code{ireland_proxy}, \code{dummies},
+\code{demand_concept}, \code{spread_countries} and \code{refinements} (the
+\code{\link[=stage2c_refinements]{stage2c_refinements()}} subset this configuration carries, for
+\code{sign_checks(stage2c = )}), in the shape \code{\link[=benchmark_stage2]{benchmark_stage2()}} and the
+\verb{_targets.R} stage-2c chain consume.
 }
 \description{
-Stage 2b's structure with five refinements applied to \strong{every} country, all
+Stage 2b's structure with four refinements applied to \strong{every} country, all
 of which cost \strong{zero} additional \code{k}. \code{k} stays at 76 against \code{T = 98}, so
-stage 2c is the same size as stage 2b and directly comparable to it. The
+stage 2c is the same size as stage 2b and directly comparable to it -- unlike
+every stage-3 block, which bought structure with degrees of freedom. The
 equation \emph{count} is unchanged at 68 stochastic (the long-rate level equation
 is swapped for a spread equation, not added to); identities go 35 -> 46.
 }
@@ -34,18 +44,31 @@ is swapped for a spread equation, not added to); identities go 35 -> 46.
    # \tab Refinement \tab Rationale \cr
    1 \tab \code{prices} gains \verb{<iso2>_gdp} \tab The Phillips curve. Without it prices are a closed exogenous block and monetary policy is an open loop. \cr
    2 \tab \code{foreign_demand} over partner \strong{imports} \tab Partner GDP nets out imports, so a partner importing more currently \emph{lowers} its neighbours' foreign demand. \cr
-   3 \tab Model the \strong{spread}; \code{long_rate} becomes an identity \tab The level equation's policy-rate loading is insignificant in all eleven countries while its own lag sits at 0.91-0.96. \cr
+   3 \tab Model the \strong{spread}; \code{long_rate} becomes an identity \tab The level equation's policy-rate loading straddles zero in all eleven countries while its own lag sits at 0.91-0.96. \cr
    4 \tab \code{consumption} gains \verb{<iso2>_long_rate} \tab Intertemporal substitution -- a second monetary channel. \cr
-   5 \tab \code{imports} gains \verb{<iso2>_exports} \tab The import content of exports. \cr
 }
 
 
-Refinements 1, 4 and 5 add only \emph{contemporaneous endogenous} regressors,
-which cost no column: \verb{k = 1 + (one lag per stochastic equation) + (exogenous)}. Refinement 2 re-weights an existing identity. Refinement 3 is
-\code{k}-neutral by construction. The second constraint is also slack --
-\code{draw_omega_j()} draws \code{riwish(T - k, .)} on a matrix that is
-\verb{(endogenous regressors in *that* equation + 1)} square, so the binding
-requirement is \code{df >= 3} here against \code{df = 22}.
+Refinements 1 and 4 add only \emph{contemporaneous endogenous} regressors, which
+cost no column: \verb{k = 1 + (one lag per stochastic equation) + (exogenous)}.
+Refinement 2 re-weights an existing identity. Refinement 3 is \code{k}-neutral by
+construction. The second constraint is also slack -- \code{draw_omega_j()} draws
+\code{riwish(T - k, .)} on a matrix that is \verb{(endogenous regressors in *that* equation + 1)} square, so the binding requirement is \code{df >= 3} here against
+\code{df = 22}.
+
+\strong{The fifth refinement, and why it is off by default.} A sixth candidate
+gave \verb{<iso2>_imports} a contemporaneous \verb{<iso2>_exports} term -- the import
+content of exports -- and it is \code{import_content = TRUE}. It was estimated and
+\strong{rejected}: it collapses the domestic-demand elasticity in the imports
+equation in \strong{9 of 11 countries}, Germany from 0.382 to 0.049 and Austria
+from 0.450 to -0.104, while \emph{halving} those equations' in-sample RMSE.
+Removing it recovers all eleven elasticities, and repairs four sign checks in
+equations it never touched. This is the same failure \verb{<iso2>_import_prices}
+produced four times over in stage 3a (0.38 -> 0.08, see \code{CLAUDE.md}): a
+contemporaneous regressor correlated with the dependent variable buys fit by
+taking variance from the structural term. It stays reachable so the finding
+can be reproduced, not because it should be used. See
+\code{reports/stage2c_refined_core.qmd} Sec. 4.
 
 Everything is opt-in through \code{\link[=stage2_options]{stage2_options()}}, so stage 2a and 2b keep
 reproducing byte-for-byte from their cached fits.

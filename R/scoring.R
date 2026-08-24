@@ -688,8 +688,14 @@ backtest_stage1 <- function(panel, countries, origins, horizon, concepts, option
 #'   into, or `NULL`.
 #' @param panel_extra_fn Function `(dummies) -> list(...)` of extra
 #'   `build_stage2_panel()` arguments (`labour_countries`, `hicp_weights`,
-#'   `external_countries`, `financial_countries`) -- empty by default
-#'   (stage 2).
+#'   `external_countries`, `financial_countries`, `spread_countries`,
+#'   `policy_rate`) -- empty by default (stage 2). Called as
+#'   `panel_extra_fn(dummies, opts)`, because a stage-2c panel needs the
+#'   policy-rate map derived from that origin's own `opts` to keep the
+#'   constructed `<iso2>_spread` series and the long-rate identity in step.
+#'   `config$demand_concept` (default `"gdp"`) selects the `foreign_demand`
+#'   basis, so a stage-2c backtest re-weights the identity the same way its
+#'   production fit does.
 #' @param spec_label Character scalar recorded in `meta$spec`.
 #'
 #' @return A list with `scores` (long `data.frame`) and `meta` (one row per
@@ -697,10 +703,13 @@ backtest_stage1 <- function(panel, countries, origins, horizon, concepts, option
 #' @keywords internal
 backtest_joint_system <- function(panel, countries, trade_weights, gdp_weights, origins, horizon, concepts,
                                   opts_fn, config = stage2b_config(), tau = NULL, workers = NULL,
-                                  options = list(), cache_dir = NULL, panel_extra_fn = function(dummies) list(),
+                                  options = list(), cache_dir = NULL,
+                                  panel_extra_fn = function(dummies, opts) list(),
                                   spec_label = "stage2") {
   lw <- stage2_linkage_weights(countries, trade_weights, gdp_weights,
-                               threshold = config$threshold %||% 0, ireland_proxy = config$ireland_proxy %||% FALSE)
+                               threshold = config$threshold %||% 0,
+                               ireland_proxy = config$ireland_proxy %||% FALSE,
+                               demand_concept = config$demand_concept %||% "gdp")
   results <- lapply(origins, function(origin) {
     lbl <- origin_label(origin)
     cached_origin_result(cache_dir, origin, function() {
@@ -716,7 +725,7 @@ backtest_joint_system <- function(panel, countries, trade_weights, gdp_weights, 
       )
       spec <- stage2_spec(countries, shares, lw, opts = opts)
       sys_eq <- build_stage2_system(spec, tau = tau)
-      panel_extra <- panel_extra_fn(dummies)
+      panel_extra <- panel_extra_fn(dummies, opts)
       stage_panel <- do.call(build_stage2_panel, c(
         list(panel = panel, linkage_weights = lw, dummies = dummies), panel_extra
       ))
@@ -779,6 +788,51 @@ backtest_stage2 <- function(panel, countries, trade_weights, gdp_weights, origin
                         cache_dir = cache_dir, spec_label = "stage2")
 }
 
+#' Pseudo-out-of-sample backtest of the stage-2c refined core system
+#'
+#' The same eleven countries and window logic as [backtest_stage2()], with
+#' stage 2c's four refinements ([stage2c_config()]). Because every refinement
+#' is `k`-neutral, **stage 2c has exactly the same `k` as stage 2b at every
+#' origin**, so the two share a feasibility profile and are scored on an
+#' identical origin set -- which is what makes the comparison in
+#' `reports/evaluation.qmd` clean rather than confounded by different
+#' usable-origin counts.
+#'
+#' Note the two things this must thread through that a stage-2 backtest does
+#' not: `config$demand_concept` (partner imports rather than partner GDP in
+#' the `foreign_demand` identity) and, via `panel_extra_fn`, the
+#' `spread_countries` panel series plus the [policy_rate_map()] the long-rate
+#' identity is written against. Getting the second wrong violates the US
+#' identity silently -- see `CLAUDE.md`.
+#'
+#' @inheritParams backtest_joint_system
+#' @param spread_countries Which countries model the spread. Defaults to
+#'   `countries`, matching the production configuration.
+#' @export
+backtest_stage2c <- function(panel, countries, trade_weights, gdp_weights, origins, horizon, concepts,
+                             config = stage2c_config(), tau = NULL, workers = NULL, options = list(),
+                             cache_dir = NULL, spread_countries = NULL) {
+  spread_countries <- spread_countries %||% countries
+  opts_fn <- function(origin, dummies) {
+    b <- config$opts
+    stage2_options(
+      include_government = FALSE, extra_regressors = dummies,
+      policy_rule = b$policy_rule %||% FALSE, fx = b$fx %||% character(),
+      phillips_countries = b$phillips_countries %||% character(),
+      consumption_rate_countries = b$consumption_rate_countries %||% character(),
+      import_content_countries = b$import_content_countries %||% character(),
+      spread_countries = b$spread_countries %||% character()
+    )
+  }
+  panel_extra_fn <- function(dummies, opts) {
+    list(spread_countries = spread_countries, policy_rate = policy_rate_map(opts))
+  }
+  backtest_joint_system(panel, countries, trade_weights, gdp_weights, origins, horizon, concepts,
+                        opts_fn, config = config, tau = tau, workers = workers, options = options,
+                        cache_dir = cache_dir, panel_extra_fn = panel_extra_fn,
+                        spec_label = "stage2c")
+}
+
 #' Pseudo-out-of-sample backtest of the stage-3 extended system
 #'
 #' Germany-only labour/external/fiscal/financial blocks, matching the fitted
@@ -813,9 +867,10 @@ backtest_stage3 <- function(panel, countries, trade_weights, gdp_weights, hicp_w
       financial_countries = financial_countries
     )
   }
-  panel_extra_fn <- function(dummies) {
+  panel_extra_fn <- function(dummies, opts) {
     list(labour_countries = labour_countries, hicp_weights = hicp_weights,
-        external_countries = external_countries, financial_countries = financial_countries)
+        external_countries = external_countries, financial_countries = financial_countries,
+        policy_rate = policy_rate_map(opts))
   }
   backtest_joint_system(panel, countries, trade_weights, gdp_weights, origins, horizon, concepts,
                         opts_fn, config = config, tau = tau, workers = workers, options = options,

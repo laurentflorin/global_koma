@@ -24,6 +24,14 @@ checks (see \code{\link[=stage3a_sign_rules]{stage3a_sign_rules()}}). \code{FALS
 without the block has none of those equations and every row would be
 \code{NA}/\code{FALSE}, which reads as fifteen failures rather than "not
 applicable".}
+
+\item{stage2c}{Which stage-2c refinements the system carries: \code{FALSE} for
+none, \code{TRUE} for all of \code{\link[=stage2c_refinements]{stage2c_refinements()}}, or a character subset.
+\strong{Pass the subset when a refinement has been dropped.} The stage-2c
+refinements are individually optional -- refinement 5 (import content) is
+dropped in the recommended configuration -- and a rule whose term is not in
+the model scores \code{NA}/\code{FALSE}, so \code{TRUE} on a system without it turns
+eleven deliberate absences into eleven reported failures.}
 }
 \value{
 A \code{data.frame} with columns \code{check}, \code{equation}, \code{term},

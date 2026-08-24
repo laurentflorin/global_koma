@@ -47,7 +47,12 @@ Modelling the spread fixes the cause rather than the symptom:
 estimating it, which is what the term means anyway -- a sovereign yield is
 the risk-free path plus a premium.
 \item A spread is \strong{stationary} where a rate level is not, so the own lag has no
-unit root to run to.
+unit root to run to. \strong{Measured, this one does not hold.} Estimating the
+spread for all eleven countries (stage 2c) gives own lags of 0.932-0.981
+against the long-rate levels' 0.910-0.964 in stage 2b -- as persistent, and
+for Spain (0.961 -> 0.981) and Portugal (0.964 -> 0.980) more so. The
+argument for the spread rests on the other three points; this one was an
+expectation, and the data does not support it.
 \item It cuts the competing regressors from five to three, leaving \code{cc_govdebt}
 far more room to be identified.
 \item It costs \strong{nothing} in degrees of freedom: the long rate loses its own lag

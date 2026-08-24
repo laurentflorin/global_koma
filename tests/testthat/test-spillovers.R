@@ -349,3 +349,94 @@ test_that("spillover_sanity_checks catches spillover magnitude out of line with 
   expect_true(ok_result$ok[grepl("trade weight", ok_result$check)])
   expect_false(bad_result$ok[grepl("trade weight", bad_result$check)])
 })
+
+test_that("the trade-weight check reads a non-GDP foreign_demand basis", {
+  countries <- c("de", "fr", "it")
+  monetary <- data.frame(variable = character(0), horizon = integer(0), median_diff = numeric(0))
+
+  # Stage 2c's basis: partners enter foreign_demand as IMPORTS, not GDP. The
+  # ranking is identical to the GDP-basis fixture above, so a lookup that finds
+  # the weights must return the same verdict -- and one that hard-codes `_gdp`
+  # returns a constant zero weight column instead.
+  lw <- list(foreign_demand = list(
+    de = c(fr_imports = 0.30, it_imports = 0.10, row_gdp = 0.60),
+    fr = c(de_imports = 0.25, it_imports = 0.05, row_gdp = 0.70),
+    it = c(de_imports = 0.20, fr_imports = 0.02, row_gdp = 0.78)
+  ))
+  concordant <- matrix(c(
+    3.0, 0.30, 0.20,
+    0.25, 3.0, 0.02,
+    0.10, 0.05, 3.0
+  ), 3, 3, byrow = TRUE, dimnames = list(countries, countries))
+  inverted <- matrix(c(
+    3.0, 0.02, 0.30,
+    0.05, 3.0, 0.25,
+    0.20, 0.10, 3.0
+  ), 3, 3, byrow = TRUE, dimnames = list(countries, countries))
+
+  expect_true(spillover_sanity_checks(concordant, monetary, countries, lw)$ok[3])
+  expect_false(spillover_sanity_checks(inverted, monetary, countries, lw)$ok[3])
+})
+
+test_that("the trade-weight check reads the ireland_proxy basis too", {
+  countries <- c("de", "ie")
+  monetary <- data.frame(variable = character(0), horizon = integer(0), median_diff = numeric(0))
+  lw <- list(foreign_demand = list(
+    de = c(ie_consumption = 0.04, row_gdp = 0.96),
+    ie = c(de_gdp = 0.20, row_gdp = 0.80)
+  ))
+  mat <- matrix(c(3, 0.04, 0.20, 3), 2, 2, dimnames = list(countries, countries))
+
+  res <- spillover_sanity_checks(mat, monetary, countries, lw)
+  # With two pairs the Spearman correlation is degenerate, but the point is
+  # that the weight column is not silently all-zero: a constant column makes
+  # cor() return NA, and isTRUE(NA > 0.3) is FALSE for the wrong reason.
+  expect_false(grepl("rho = NA", res$detail[3]))
+})
+
+# --- failed_restriction_draws -------------------------------------------
+
+test_that("failed_restriction_draws accounts for every draw koma attempted", {
+  skip_on_cran()
+  fx <- diagnostics_synthetic_fit(ndraws = 60)
+  base_fc <- suppressMessages(koma::forecast(
+    fx$fit, dates = fx$fit$dates,
+    options = list(approximate = FALSE, probs = c(0.05, 0.95))))
+  rest <- gdp_demand_shock(base_fc, "de", size = 1)
+
+  failed <- suppressMessages(failed_restriction_draws(fx$fit, rest, horizon = 4, seed = 42))
+
+  # The invariant that makes this usable as a drop_baseline_draws source:
+  # attempted - failed must equal the number of draws koma actually kept.
+  set.seed(42)
+  fc <- suppressMessages(suppressWarnings(koma::forecast(
+    fx$fit, dates = fx$fit$dates, restrictions = rest,
+    options = list(approximate = FALSE, probs = c(0.05, 0.95)))))
+  expect_equal(attr(failed, "n_draws") - attr(failed, "n_failed"),
+               length(fc$forecasts))
+  expect_equal(attr(failed, "n_failed"), length(failed))
+  expect_true(is.integer(failed) || is.numeric(failed))
+  expect_false(is.unsorted(failed))
+  # Indices must be addressable positions in the unsubsetted draw list.
+  if (length(failed) > 0) {
+    expect_true(all(failed >= 1 & failed <= attr(failed, "n_draws")))
+  }
+
+  # It untraces itself: a second, unrelated forecast must not accumulate a log.
+  expect_false(inherits(koma:::forecast_draw, "functionWithTrace"))
+})
+
+test_that("failed_restriction_draws is deterministic for a given fit and restriction", {
+  skip_on_cran()
+  fx <- diagnostics_synthetic_fit(ndraws = 60)
+  base_fc <- suppressMessages(koma::forecast(
+    fx$fit, dates = fx$fit$dates,
+    options = list(approximate = FALSE, probs = c(0.05, 0.95))))
+  rest <- gdp_demand_shock(base_fc, "de", size = 1)
+
+  # Which draws fail depends on each draw's posterior Omega, not on the
+  # innovation draw, so even a different seed must give the same set.
+  a <- suppressMessages(failed_restriction_draws(fx$fit, rest, horizon = 4, seed = 42))
+  b <- suppressMessages(failed_restriction_draws(fx$fit, rest, horizon = 4, seed = 99))
+  expect_equal(as.integer(a), as.integer(b))
+})

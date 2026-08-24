@@ -1,6 +1,6 @@
 ---
 title: "Backtesting and scoring: which specification, for what"
-subtitle: "An expanding-window pseudo-out-of-sample comparison of stage 1, stage 2, stage 3 and a naive benchmark"
+subtitle: "An expanding-window pseudo-out-of-sample comparison of stage 1, stage 2b, stage 2c, stage 3 and a naive benchmark"
 format:
   html:
     toc: true
@@ -43,14 +43,21 @@ upper bound on real-time performance, not an estimate of it.
   still leaves a full 8-quarter horizon inside the panel, which ends
   2026Q1), horizons 1-8 quarters, **re-estimating at every origin** -- this
   is not a fixed-coefficient rolling forecast.
-- **Four specifications**: a closed-form naive AR(1) (growth-rate concepts) /
+- **Five specifications**: a closed-form naive AR(1) (growth-rate concepts) /
   driftless random-walk (rate/none concepts) benchmark, dispatched by each
-  series' own tag; Stage 1 (eleven independent per-country models); Stage 2
-  (the eleven-country linked core system); Stage 3 (the DE-only extended
+  series' own tag; Stage 1 (eleven independent per-country models); Stage 2b
+  (the eleven-country linked core system); **Stage 2c (the refined core --
+  the same eleven countries with the four refinements
+  `reports/stage2c_refined_core.qmd` adopted)**; Stage 3 (the DE-only extended
   system -- labour, external, fiscal and financial blocks -- the same
   configuration `reports/stage3b_external_fiscal_financial.qmd` and
   `reports/stage3c_rollout.qmd` established; the full eleven-country rollout
   was found infeasible there and is not re-attempted here).
+- **Stage 2c is the one comparison in this report with no confound.** Its
+  refinements are all `k`-neutral, so it has *exactly* the same `k` as stage
+  2b at every origin, hence the same feasibility gate, the same usable
+  origins, and the same sample. Every other pairwise comparison here differs
+  in sample size, model capacity, or both. See §6.
 - **Scoring space**: point and density scores (RMSE, MAE, CRPS, log score)
   are computed in **rate space** -- each quarter's growth-rate forecast
   against that quarter's realised growth -- because compounding posterior
@@ -163,22 +170,23 @@ sometimes far behind) that MAE resolves: RMSE is dominated by a handful of
 extreme misses on **both** sides, not a real difference in typical
 accuracy -- see §5.3. MAE is the number to read here.
 
-### 4.2 Naive vs. Stage 1 vs. Stage 2, annual, common window
+### 4.2 Naive vs. Stage 1 vs. Stage 2b vs. Stage 2c, annual, common window
 
 Restricted to the five annual origins (2020-2024) where Stage 2 actually
 produces a forecast (§2), so this is a fair, identical-origin comparison
-across all three -- not Stage 2's full requested range.
+across all four -- not Stage 2's full requested range.
 
 ```{r hh-annual-common}
 kable(a$lb_annual_common[order(a$lb_annual_common$horizon, a$lb_annual_common$variant), ],
       row.names = FALSE, digits = 4, caption = "n = 110 (5 origins x 11 countries x 2 concepts) per row.")
 ```
 
-Stage 2 is worse than both Stage 1 and naive on every metric at every
+Stage 2b is worse than both Stage 1 and naive on every metric at every
 horizon here -- roughly 1.5-2x the RMSE, 3-5x the CRPS. This is a much
 smaller, more volatile sample (5 origins, all post-2019) than §4.1, so the
 margin should not be over-read quantitatively, but the direction is
-unambiguous and consistent across all eight horizons.
+unambiguous and consistent across all eight horizons. Stage 2c's position
+relative to stage 2b is the subject of §6, on the larger quarterly sample.
 
 ### 4.3 Stage 3's one usable origin
 
@@ -214,6 +222,16 @@ this is the one clean DM comparison the backtest has real power for (the
 Stage 2/3 samples are far too thin for a DM test to mean anything regardless
 of nesting -- 5 and 1 origins respectively).
 
+**A second, mechanical caveat.** `diebold_mariano()`'s HAC correction sums
+autocovariances of the loss differential at lags `1..h-1`, computed on the
+vector *in the order it is given*. A pooled panel has no single natural order,
+so the statistic at `h > 1` depends on how the rows happen to be sorted --
+which is a property of the test applied to pooled data, not of the data. The
+table below fixes the order explicitly: sorted by `(variable, origin)`, so each
+series' own origin sequence is contiguous and in time order, which is the only
+ordering under which those autocovariance terms mean what the test assumes. At
+`h = 1` there is no lag term and the statistic is order-free.
+
 ```{r dm-table}
 kable(a$dm_table, row.names = FALSE, digits = c(0, 0, 4, 4, 3, 4, 3, 4, 3, 4),
       caption = "Naive vs. Stage 1, quarterly, n = 1254 per horizon. Negative dm_stat favours naive; positive favours Stage 1.")
@@ -232,7 +250,7 @@ direction, is the problem. §5.3 diagnoses why.
 **Naive is significantly better at horizon 1** (`dm_stat = -3.84`,
 `p < 0.001`) -- the one genuinely significant result in this report, and it
 runs against the structural system, not for it. From horizon 2 onward the
-CRPS difference is not significant either way (`p > 0.3` throughout).
+CRPS difference is not significant either way (`p > 0.2` throughout).
 
 Read together with §5.1's mean-squared-error point estimates favouring
 Stage 1 at longer horizons, this is a specific, defensible claim: **Stage
@@ -271,7 +289,176 @@ figures (naive 0.94 to 7.15 growing with horizon vs. Stage 1's flat
 0.86-0.97) actually support the "Stage 1 pulls ahead on point forecasts
 from horizon 2" reading above.
 
-## 6. Verdict: forecasting vs. scenario analysis
+## 6. Stage 2b vs Stage 2c: the one clean comparison
+
+Every other head-to-head in this report is confounded. Stage 1 vs Stage 2
+changes the sample (57 usable origins vs 20) *and* the model. Stage 2 vs
+Stage 3 changes the sample dramatically (20 vs 1) *and* the degrees of
+freedom (`df` 22 vs 8). Stage 2b vs Stage 2c changes **neither**: every
+stage-2c refinement is `k`-neutral, so the two systems have the same `k`,
+the same `T`, the same `df`, the same feasibility gate and the same usable
+origins at every point in the backtest.
+
+```{r k-identity}
+if (!is.null(a$k_identity_quarterly)) {
+  ki <- a$k_identity_quarterly
+  kable(data.frame(
+    check = c("origins compared", "k identical at every origin",
+              "df identical at every origin", "feasibility verdict identical"),
+    result = c(nrow(ki), all(ki$k_2b == ki$k_2c), all(ki$df_2b == ki$df_2c),
+               all(ki$feasible_2b == ki$feasible_2c))
+  ), row.names = FALSE, caption = "Quarterly origins. The claim that makes this comparison clean, checked rather than asserted.")
+}
+```
+
+### 6.1 Head-to-head on the common quarterly window
+
+`r if (!is.null(a$stage2c_quarterly_keys)) sprintf("The %d quarterly origins where both systems produce a scoreable forecast -- four times the annual sample of §4.2.", length(a$stage2c_quarterly_keys)) else ""`
+
+```{r hh-2b-2c}
+if (!is.null(a$lb_quarterly_2b_2c)) {
+  z <- a$lb_quarterly_2b_2c
+  kable(z[order(as.integer(z$horizon), z$variant), ], row.names = FALSE, digits = 4,
+        caption = "All horizons pooled across origins, countries and both concepts.")
+}
+```
+
+```{r hh-2b-2c-calm}
+if (!is.null(a$lb_quarterly_2b_2c_calm)) {
+  z <- a$lb_quarterly_2b_2c_calm
+  kable(z[order(as.integer(z$horizon), z$variant), ], row.names = FALSE, digits = 4,
+        caption = "Calm-period horizons only (target quarter outside 2020Q1-2021Q4).")
+}
+```
+
+```{r ratio-2b-2c}
+if (!is.null(a$lb_quarterly_2b_2c)) {
+  z <- a$lb_quarterly_2b_2c
+  w <- merge(z[z$variant == "stage2", c("horizon", "rmse", "mae", "crps", "log_score")],
+             z[z$variant == "stage2c", c("horizon", "rmse", "mae", "crps", "log_score")],
+             by = "horizon", suffixes = c("_2b", "_2c"))
+  w <- w[order(as.integer(w$horizon)), ]
+  out <- data.frame(horizon = w$horizon,
+                    rmse_ratio = w$rmse_2c / w$rmse_2b,
+                    mae_ratio = w$mae_2c / w$mae_2b,
+                    crps_ratio = w$crps_2c / w$crps_2b)
+  kable(out, row.names = FALSE, digits = 4,
+        caption = "Stage 2c relative to stage 2b. Below 1 favours stage 2c. MAE is the metric to read -- see 5.3.")
+}
+```
+
+The headline is that **stage 2c forecasts worse than stage 2b**, and the gap
+widens with horizon: the CRPS ratio rises monotonically from 0.97 at horizon 1
+to 1.31 at horizon 8. The MAE ratio is close to 1 for most horizons and 1.36 at
+horizon 8. Only at horizon 1 is stage 2c ahead on all three metrics.
+
+Note that this **contradicts the five-origin annual sample** of §4.2, where
+stage 2c looked *better* than stage 2b at long horizons (h=8 MAE 1.33 vs 1.61).
+Twenty origins and four hundred and forty observations per horizon is the
+sample to believe; five origins is not enough to sign this comparison, and the
+fact that it signs it the other way is a useful calibration on how much weight
+§4.2's Stage 2 numbers can bear.
+
+### 6.2 The entire degradation is in prices
+
+```{r by-concept}
+if (!is.null(a$lb_quarterly_by_concept)) {
+  z <- a$lb_quarterly_by_concept
+  kable(z[order(z$concept, as.integer(z$horizon), z$variant),
+          c("concept", "variant", "horizon", "rmse", "mae", "crps", "log_score", "n")],
+        row.names = FALSE, digits = 4,
+        caption = "Stage 2b vs stage 2c, split by concept.")
+}
+```
+
+Split by concept, the aggregate picture resolves into two opposite ones.
+
+**GDP forecasts are no worse and arguably better.** Stage 2c's CRPS is lower at
+every horizon (4.07 vs 4.67 at horizon 1, 6.48 vs 7.16 at 4, 7.69 vs 8.33 at 8)
+and its MAE is better at horizon 1.
+
+**Price forecasts are dramatically worse**, and worsen with horizon: CRPS 0.91
+vs 0.48 at horizon 1, 2.63 vs 0.62 at horizon 4, and 3.99 vs 0.62 at horizon 8
+— a factor of six. RMSE at horizon 8 is 3.90 against 1.04.
+
+### 6.3 Why: the Phillips curve exposed prices to the explosive draws
+
+This is not a mystery, and it is not a bug. It follows mechanically from the
+one term stage 2c added to the price equation.
+
+```{r explosive-concept}
+if (!is.null(a$explosive_by_concept)) {
+  kable(a$explosive_by_concept, row.names = FALSE, digits = 4,
+        col.names = c("Concept", "Horizon", "Stage 2b", "Stage 2c"),
+        caption = "Share of posterior draws flagged explosive, averaged over origins and countries.")
+}
+```
+
+In **stage 2b the price equation had no contemporaneous endogenous regressor at
+all** — own lag, COVID dummies, `oil_price` and `eur_usd`, every one of them
+exogenous. That made it effectively a univariate AR with cost-push terms, and
+it was therefore **structurally immune** to the explosive-draw population that
+this project has documented throughout: its explosive share is 0.0000 at
+horizon 1 and 0.0026 at horizon 8. Essentially none.
+
+Stage 2c's Phillips curve couples prices to `cc_gdp` — whose own explosive
+share reaches 0.76 by horizon 8 — and prices inherit it wholesale: **0.016 at
+horizon 1 rising to 0.634 at horizon 8**. GDP's own share is unchanged (0.764
+vs 0.752). The price forecast did not get worse because the Phillips curve is
+mis-specified; it got worse because prices are now connected to the rest of the
+system, and the rest of the system has heavy-tailed draws.
+
+That is the same term, and the same coupling, that closes the monetary loop.
+`reports/stage2c_refined_core.qmd` §2 reports the benefit —
+`ea_policy_rate` goes from reaching no price variable to reaching all twelve.
+This is the bill for it. **One cannot be had without the other**: making prices
+reachable from the policy rate necessarily makes them reachable from everything
+else that reaches GDP, explosive draws included.
+
+### 6.4 Diebold-Mariano, stage 2b vs stage 2c
+
+The nesting caveat of §5 applies **less** here than anywhere else in this
+report, which is worth stating precisely. Stage 2c is *not* a structural
+superset of stage 2b: it removes eleven long-rate regressions and replaces them
+with identities, while adding contemporaneous terms elsewhere. Neither model
+nests the other, so the classical DM asymptotics are not invalidated by the
+Clark-McCracken degeneracy that makes the Stage 1/2/3 comparisons unusable. The
+sample is also the largest any stage-2 comparison in this report has.
+
+The same explicit-ordering caveat from §5 applies to the `h > 1` rows.
+
+```{r dm-2b-2c}
+if (!is.null(a$dm_2b_vs_2c)) {
+  kable(a$dm_2b_vs_2c, row.names = FALSE, digits = c(0, 0, 4, 4, 3, 4, 3, 4, 3, 4),
+        caption = "Stage 2b vs stage 2c. Negative dm_stat favours stage 2b; positive favours stage 2c.")
+}
+```
+
+**On CRPS the result is significant and consistent: stage 2b is better**, at
+`p < 0.02` at every horizon except 2, and at `p < 0.002` from horizon 3 onward.
+This is the only comparison in the entire report with both a large sample and a
+defensible non-nested DM test, and it goes against the newer specification.
+
+On MAE nothing is significant at conventional levels (the closest are horizons
+4 and 8, `p = 0.058` and `p = 0.080`, both favouring stage 2b). So the point
+forecast is roughly a draw and the **predictive distribution** is where stage
+2c loses — which is exactly what a jump from 0.3% to 63% explosive draws
+predicts.
+
+## 7. Verdict: forecasting vs. scenario analysis
+
+**Stage 2c is a better model of the system and a worse forecaster than Stage
+2b, and §6.3 shows those are the same fact.** Its refinements close the
+monetary loop, fix the spillover matrix's largest anomaly, and make that matrix
+three times more reproducible across seeds
+(`reports/stage2c_refined_core.qmd`, `reports/stage2c_spillovers.qmd`). The
+mechanism that delivers all of that -- coupling prices to GDP -- is also what
+takes the price forecast's explosive-draw share from 0.3% to 63% at horizon 8,
+and loses the CRPS comparison at `p < 0.002`. This is the cleanest
+structure-versus-forecast trade-off in the project, and the cleanest comparison
+in this report: identical `k`, identical `df`, identical usable origins, so
+nothing else can be blamed for it. **Use Stage 2c for mechanism and Stage 2b
+for a price fan chart**, and do not pretend one specification does both.
 
 **For forecasting, use Stage 1 -- with a real caveat, not an endorsement.**
 It is the only specification with a fully powered, favourable comparison
@@ -281,19 +468,23 @@ structural specs to run (§3). But §5.2 is the qualifier that keeps this
 from being a clean win: naive's *density* forecast is significantly better
 at horizon 1 and not significantly worse at any other horizon, so Stage 1's
 advantage is in the point median, not in a demonstrably better-calibrated
-predictive distribution. Stage 2 does not clear this bar at all -- worse
-than both naive and Stage 1 on every metric at every horizon in the one
-window it can be tested on (§4.2) -- and Stage 3's single usable origin
-(§4.3) is worse still. Neither should be preferred over Stage 1 for pure
-forecasting on this evidence, thin as the Stage 2/3 evidence is.
+predictive distribution. Neither Stage 2 variant clears this bar -- both are
+worse than naive and Stage 1 on every metric at every horizon in the annual
+window (§4.2), and Stage 2c is worse than Stage 2b on the larger quarterly
+window (§6) -- and Stage 3's single usable origin (§4.3) is worse still. None
+should be preferred over Stage 1 for pure forecasting on this evidence, thin as
+the Stage 3 evidence in particular is.
 
 **For scenario analysis, the calculus is different, and this backtest does
 not overturn it.** Stage 2's and Stage 3's entire reason to exist is
 mechanisms Stage 1 cannot represent at all: cross-country trade and
-monetary spillovers (Stage 2), and the wage-price loop, competitiveness
+monetary spillovers (Stage 2b/2c), and the wage-price loop, competitiveness
 channel and debt-to-spread link (Stage 3, per `reports/stage3c_rollout.qmd`
 §4.5's placebo-controlled finding that Stage 3's own-country amplification
-is real). A single-country model has no spillover to ask about and no
+is real). Within that use, **Stage 2c is the better instrument despite §6**:
+a monetary scenario run on Stage 2b is being run on a system where the policy
+rate provably cannot reach any price at all, which is a worse defect for
+scenario work than a wider price fan is. A single-country model has no spillover to ask about and no
 fiscal-financial loop to stress-test, regardless of how well it forecasts.
 That said, this backtest adds a genuinely new, unfavourable data point for
 Stage 3 specifically: its one testable origin was not just uncompetitive but

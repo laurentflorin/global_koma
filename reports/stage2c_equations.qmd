@@ -1,0 +1,492 @@
+---
+title: "Stage 2c equations: the template, the full system, and the fitted coefficients"
+subtitle: "Eight equation forms, applied to eleven countries — what each one says economically, and every equation in full"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2c_equations.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+source("reports/_equation_overview_helpers.R")
+
+# `noic_full_tuned.rds` is the RECOMMENDED stage-2c fit (four refinements);
+# the cache name predates the decision to drop refinement 5. See
+# reports/stage2c_refined_core.qmd Sec. 4.
+f2c <- readRDS(file.path("data", "cache", "stage2c", "noic_full_tuned.rds"))
+f2b <- readRDS(file.path("data", "cache", "stage2b", "full_tuned.rds"))
+
+spec <- f2c$spec
+spec2b <- f2b$spec
+countries <- modelled_countries
+eq_order <- names(c(spec$stochastic, spec$identities))
+ov <- equation_overview(spec)
+ov2b <- equation_overview(spec2b)
+ct <- readable_coefficient_table(f2c$fit, eq_order)
+
+# --- the country-generic template, derived from the spec, not asserted ---
+tg <- template_groups(spec, countries)
+ig <- identity_template_groups(spec, countries)
+form <- function(concept) {
+  x <- tg$form[tg$concept == concept]
+  if (length(x) == 0) NA_character_ else x[1]
+}
+istruct <- function(concept) {
+  x <- ig$structure[ig$concept == concept & ig$n_countries == max(ig$n_countries[ig$concept == concept])]
+  if (length(x) == 0) NA_character_ else x[1]
+}
+ea_rule <- koma_string_stochastic("ea_policy_rate", spec$stochastic[["ea_policy_rate"]])
+
+# --- what changed relative to stage 2b ---
+new_stochastic <- setdiff(names(spec$stochastic), names(spec2b$stochastic))
+dropped_stochastic <- setdiff(names(spec2b$stochastic), names(spec$stochastic))
+common_stoch <- intersect(names(spec$stochastic), names(spec2b$stochastic))
+changed_stochastic <- common_stoch[vapply(common_stoch, function(nm)
+  !identical(spec$stochastic[[nm]], spec2b$stochastic[[nm]]), logical(1))]
+touched_stochastic <- c(new_stochastic, changed_stochastic)
+new_identities <- setdiff(names(spec$identities), names(spec2b$identities))
+common_ident <- intersect(names(spec$identities), names(spec2b$identities))
+changed_identities <- common_ident[vapply(common_ident, function(nm)
+  !identical(spec$identities[[nm]], spec2b$identities[[nm]]), logical(1))]
+
+n_stoch <- nrow(ov[ov$kind == "stochastic", ])
+n_ident <- nrow(ov[ov$kind == "identity", ])
+
+wrange <- function(concept, component) {
+  r <- identity_weight_range(spec, countries, concept, component)
+  sprintf("%.3f to %.3f (median %.3f)", r$min, r$max, r$median)
+}
+```
+
+Stage 2c is the refined eleven-country linked core: `r n_stoch` stochastic
+equations and `r n_ident` identities in one `koma::system_of_equations()` call,
+`k = 76` against `T = 98`, `df = 22` — the same size as stage 2b, because every
+refinement is `k`-neutral.
+
+**`r n_stoch` equations is not `r n_stoch` different models.** There are eight
+distinct behavioural forms, six of which are applied identically to all eleven
+countries. Section 1 gives those forms generically, with what each one is
+claiming economically. Sections 3–5 then list every equation individually, in
+full, including the ones stage 2c did not change.
+
+Two conventions apply throughout and are easy to trip over:
+
+- **Everything is estimated in growth-rate space.** koma applies each series'
+  own `diff_log` transform, so a coefficient on a level/index series is an
+  **elasticity**, and an identity is a statement about growth rates, not levels.
+- **Rate-type series are the exception.** `long_rate`, `spread` and the policy
+  rates are tagged `series_type = "rate"`, `method = "none"`, so koma leaves
+  them alone: level and rate space coincide, and their coefficients are in
+  percentage points per percentage point.
+
+## 1. The equation template
+
+### 1.1 Behavioural equations
+
+For a generic country `cc`, six equations, each estimated separately for all
+eleven economies:
+
+```{r template-summary}
+kable(data.frame(
+  concept = c("Consumption", "Investment", "Exports", "Imports", "Prices",
+              "Sovereign spread", "Policy rule (euro area)", "Policy rule (US)"),
+  form = c(form("consumption"), form("investment"), form("exports"),
+           form("imports"), form("prices"), form("spread"),
+           ea_rule, form("policy_rate")),
+  applies_to = c(rep("all 11", 6), "one shared equation", "US only")
+), row.names = FALSE, col.names = c("Equation", "General form", "Applies to"),
+caption = "The eight behavioural forms. 66 country equations + 2 policy rules = 68.")
+```
+
+#### Consumption
+
+```
+cc_consumption ~ cc_gdp + cc_long_rate + <COVID dummies> + cc_consumption.L(1)
+```
+
+A consumption function with two channels and persistence. The loading on
+`cc_gdp` is the **marginal propensity to consume** out of current income — the
+Keynesian core of the equation, and the one coefficient here with a hard prior:
+it must lie in `(0, 1)`, which `sign_checks()` enforces as `mpc_in_0_1`. A
+value near 1 says households are liquidity-constrained and spend income as it
+arrives; a low value says they smooth.
+
+The loading on `cc_long_rate` is **intertemporal substitution**: a higher
+return on saving should defer consumption, so the coefficient must be
+**negative**. This term is one of stage 2c's four refinements, and its purpose
+is structural rather than cosmetic — it gives monetary policy a *second* route
+to the real economy alongside investment. In practice it is the weakest of the
+four: correctly signed in 8 of 11 countries and small everywhere.
+
+The own lag captures habit persistence and adjustment costs, and absorbs
+whatever serial correlation the two structural terms leave behind.
+
+#### Investment
+
+```
+cc_investment ~ cc_gdp + cc_long_rate + <COVID dummies> + cc_investment.L(1)
+```
+
+The accelerator plus the user cost of capital. `cc_gdp` is the accelerator
+term: firms invest when demand is growing, and the elasticity is typically well
+above 1 because investment is the most cyclical expenditure component.
+`cc_long_rate` is the **cost of capital** and must be negative — and in stages
+1 through 2b this was the *only* channel by which a policy rate could reach
+output at all, which is why so much of this project's monetary diagnosis turns
+on it. The own lag reflects time-to-build and adjustment costs.
+
+#### Exports
+
+```
+cc_exports ~ cc_foreign_demand + <COVID dummies> + cc_exports.L(1)
+```
+
+Export demand. Volumes track a trade-weighted index of partner activity — that
+index is an identity, defined in §1.2 — and the elasticity is normally above 1,
+because trade grows faster than output over the cycle.
+
+Note what is **absent**: there is no relative-price or competitiveness term at
+stage 2c. Exports respond to how much partners are buying, not to how cheaply
+this country sells. A price-competitiveness channel exists only in the
+Germany-only stage-3a/3b external block (`reports/stage3a_labour_prices.qmd`),
+which could not be rolled out to eleven countries within the degrees-of-freedom
+budget.
+
+#### Imports
+
+```
+cc_imports ~ cc_domestic_demand + <COVID dummies> + cc_imports.L(1)
+```
+
+Import demand as a function of domestic absorption, with an elasticity near 1 —
+imports are roughly proportional to what the economy spends.
+
+Note what is **deliberately** absent, because it is the most-tested negative
+result in this project. This equation carries **no price term and no
+contemporaneous export term**. An import-price term has been tried four
+separate times (stage 3a) and a contemporaneous exports term once (stage 2c's
+rejected fifth refinement); in every case the added regressor is highly
+correlated with imports, improves fit substantially, and **collapses the
+domestic-demand elasticity** — Germany's fell from 0.382 to 0.049 under the
+exports term. The improved fit is the symptom, not the reassurance. See
+`reports/stage2c_refined_core.qmd` §4.
+
+#### Prices
+
+```
+cc_prices ~ eur_usd + oil_price + cc_gdp + <COVID dummies> + cc_prices.L(1)
+```
+
+A Phillips curve with two imported cost-push terms and inflation persistence.
+
+`cc_gdp` is **stage 2c's headline refinement**. In growth-rate space this is a
+"speed-limit" Phillips curve: faster output growth implies faster price growth,
+so the coefficient must be positive. Its importance is structural rather than
+quantitative. In stage 2b this equation had **no contemporaneous endogenous
+regressor at all** — prices were driven only by their own lag and exogenous
+variables — which meant `ea_policy_rate` could reach 91 of 103 endogenous
+variables and *not one price*. The Taylor rule was responding to an inflation
+rate that nothing it did could influence. Adding this one term closes that loop
+and costs nothing, because GDP is already endogenous.
+
+`oil_price` is the direct energy cost-push channel. `eur_usd` is exchange-rate
+pass-through: a weaker euro raises import prices and thence the HICP. Both are
+exogenous. The own lag is inflation persistence — indexation, staggered
+contracts, and expectations anchored on recent inflation — and it is the
+largest coefficient in the equation in every country.
+
+One inherited quirk: the **US** price equation also uses `eur_usd`, not a
+dollar-effective exchange rate. That is a stage-2b decision (the
+three-variable exogenous spec) carried forward unchanged, and it breaks
+continuity with the US block in stages 1 and 2a.
+
+#### Sovereign spread
+
+```
+cc_spread ~ cc_prices + cc_gdp + cc_spread.L(1)
+```
+
+The country's sovereign yield **premium over the common policy rate**. This
+equation replaces stage 2b's long-rate *level* regression, and the replacement
+is stage 2c's third refinement.
+
+The reason is empirical and stark: in stage 2b the long-rate level equation
+regressed `cc_long_rate` on the policy rate and domestic prices, and **all
+eleven policy-rate loadings had 90% credible intervals straddling zero** while
+the own lag sat at 0.910–0.964. The equation was an AR(1) with decoration, and
+the one coefficient it most needed to identify — the pass-through from the
+policy rate to the sovereign yield — it could not. Modelling the spread imposes
+that pass-through at exactly 1 (see the identity in §1.2) instead of estimating
+it into insignificance.
+
+Within the spread equation: `cc_prices` is an **inflation risk premium**, and
+should be positive — investors demand compensation for inflation risk on
+nominal debt. This is the weakest of the four sign priors a priori, since a
+flight-to-quality episode can compress spreads while inflation rises, and it
+fails in 3 of 11 countries. `cc_gdp` is a cyclical credit-risk term: stronger
+growth improves debt dynamics and should compress the spread. The own lag is
+large because risk premia are highly persistent.
+
+One expectation this refinement did **not** deliver: the design argument was
+that a spread is stationary where a rate level is not, so its own lag would
+have no unit root to chase. Measured, the spread own lags run 0.933–0.983 —
+as persistent as the levels they replaced, and for Spain and Portugal more so.
+
+#### Policy rules
+
+```
+`r ea_rule`
+`r form("policy_rate")`
+```
+
+Taylor-type rules with interest-rate smoothing. The central bank raises rates
+when inflation and output growth are high; the own lag is the smoothing term
+and is the dominant coefficient, as it is in essentially every estimated
+policy rule.
+
+There is exactly **one** `ea_policy_rate` equation however many euro-area
+countries the system contains — that is what makes it a genuinely common
+instrument, and it is defined over the area-wide aggregates `ea_prices` and
+`ea_gdp` rather than any member's own. The US runs its own rule over its own
+aggregates.
+
+#### A note on the COVID dummies
+
+Four impulse dummies (2020Q1/Q2/Q3 and 2021Q2) enter the **five real-side
+equations and prices** — consumption, investment, exports, imports, prices —
+and deliberately **not** the spread or either policy rule. Those quarters are
+the only ones whose cross-country mean absolute GDP growth exceeds three times
+the non-COVID baseline; rates and premia show no comparable mechanical break,
+so dummying them would spend degrees of freedom to explain nothing.
+
+Stage 2b uses dummies rather than the conditional-fill trick stages 1 and 2a
+use, because its longer estimation window (to 2024Q4) is what buys the degrees
+of freedom the eleven-country system needs at all.
+
+### 1.2 Identities
+
+Identities are **enforced during estimation**, not fitted. Their weights are
+fixed — expenditure shares, trade shares, GDP shares — and koma has no
+identity-consistency check, so this project verifies them itself with
+`identity_consistency()` inside `stage2_preflight()`.
+
+```{r identity-summary}
+kable(data.frame(
+  identity = c("GDP", "Domestic demand", "Foreign demand", "Long rate",
+               "Euro-area GDP", "Euro-area prices"),
+  form = c(istruct("gdp"), istruct("domestic_demand"),
+           "cc_foreign_demand == sum_j w_j*<partner j>_imports + w_row*row_gdp",
+           istruct("long_rate"),
+           "ea_gdp == sum_i g_i*<member i>_gdp",
+           "ea_prices == sum_i g_i*<member i>_prices"),
+  count = c("11", "11", "11", "11", "1", "1")
+), row.names = FALSE, col.names = c("Identity", "General form", "Count"),
+caption = "44 country identities + 2 euro-area aggregates = 46.")
+```
+
+**GDP** is the expenditure decomposition — absorption plus net exports —
+written in growth-rate space with fixed expenditure shares. It is one of only
+two identities in this system that is **not exact**: real GDP is independently
+observed, and the decomposition holds only up to the statistical discrepancy
+and the fact that the shares are fixed rather than time-varying.
+`identity_consistency()` reports its error but never flags it.
+
+**Domestic demand** is absorption, consumption plus investment. Government is
+**not in this system at all** — dropping it is what buys back the eleven
+exogenous columns without which the eleven-country system cannot be estimated
+on this window. Because the raw shares then sum to about 0.8, they are
+**renormalised to sum to 1**; the cost is real and worth naming: the identity
+now explains roughly 89% of domestic-demand growth rather than ~100%, and the
+model has no fiscal channel whatsoever.
+
+**Foreign demand** is the trade-weighted external demand index each country's
+exports load on, and it is where stage 2c's second refinement lives. Partners
+enter as **imports**, not GDP. The reasoning: partner GDP nets imports *out*
+by construction, so a partner importing more mechanically lowers the measured
+GDP its neighbours are supposed to be selling into — precisely backwards.
+Partner imports are what an exporter actually faces. The partner set is
+country-specific: a country never loads on itself, and partners below a 1%
+trade weight are folded into the residual. Everything not modelled is
+`row_gdp`, the rest-of-world proxy.
+
+**Long rate** is the definition a sovereign yield satisfies: the risk-free
+policy path plus a premium, with both weights **imposed at exactly 1**. This is
+what makes refinement 3 `k`-neutral — the long rate gives up its own lag column
+and the spread gains one. For the ten euro-area countries the policy rate is
+`ea_policy_rate`; for the US it is `us_policy_rate`, and keeping those two in
+step with the constructed spread series is load-bearing (getting it wrong
+violated the US identity by 3.25pp in silence — see
+`reports/stage2c_refined_core.qmd` §1.1).
+
+**Euro-area GDP and prices** are nominal-GDP-weighted aggregates over the ten
+members. They exist so the single policy rule has area-wide arguments to
+respond to, which is what makes it a common instrument rather than eleven
+separate ones.
+
+### 1.3 The template is verified, not asserted
+
+Every claim in §1.1 that a form is shared across countries is checked against
+the spec rather than taken on faith: each country's equation is rewritten with
+its own ISO-2 prefix replaced by `cc`, and identical strings are grouped. A
+country that deviated would appear as its own group.
+
+```{r template-verify}
+kable(tg[, c("concept", "n_countries", "countries")], row.names = FALSE,
+      col.names = c("Concept", "Countries sharing this form", "Which"),
+      caption = "Stochastic equations, grouped by country-generic form. One row per concept means the form is unanimous.")
+```
+
+```{r identity-verify}
+iv <- ig[ig$concept != "foreign_demand", c("concept", "n_countries", "countries")]
+kable(iv, row.names = FALSE,
+      col.names = c("Identity", "Countries sharing this structure", "Which"),
+      caption = "Identities, grouped by country-generic component structure (weights ignored, signs kept). foreign_demand is excluded -- its partner set is country-specific by construction, so eleven distinct structures is the expected result, not a deviation.")
+```
+
+The only deviation anywhere is the **US long-rate identity**, which resolves to
+`us_policy_rate` rather than `ea_policy_rate` — correct, since the US is not in
+the currency union.
+
+### 1.4 What the identity weights actually are
+
+```{r weight-ranges}
+kable(data.frame(
+  identity = c("GDP", "GDP", "GDP", "Domestic demand", "Domestic demand"),
+  weight_on = c("domestic demand", "exports", "imports", "consumption", "investment"),
+  range = c(wrange("gdp", "domestic_demand"), wrange("gdp", "exports"),
+            wrange("gdp", "imports"), wrange("domestic_demand", "consumption"),
+            wrange("domestic_demand", "investment"))
+), row.names = FALSE, col.names = c("Identity", "Weight on", "Range across the eleven countries"),
+caption = "Fixed expenditure shares, computed over each country's own estimation window.")
+```
+
+```{r fd-weights}
+fd <- do.call(rbind, lapply(countries, function(cc) {
+  w <- spec$identities[[country_var(cc, "foreign_demand")]]
+  data.frame(iso2 = cc, partners = sum(names(w) != "row_gdp"),
+             row_gdp_weight = unname(w[["row_gdp"]]),
+             largest_partner = names(w)[which.max(ifelse(names(w) == "row_gdp", -Inf, unlist(w)))],
+             largest_weight = max(unlist(w)[names(w) != "row_gdp"]), stringsAsFactors = FALSE)
+}))
+kable(fd, row.names = FALSE, digits = 3,
+      caption = "Each country's foreign-demand index: how many modelled partners it loads on, how much rides on the unmodelled rest of the world, and its single largest bilateral link.")
+```
+
+### 1.5 Two caveats in the weights, both documented rather than hidden
+
+**Roughly half of every euro-area country's foreign demand is `row_gdp`.**
+The weights above put 0.38–0.57 on the unmodelled rest of the world. The index
+therefore assumes the half of the world this model does not contain behaves
+like a GDP aggregate — a real approximation, not a rounding detail, and it caps
+how much of any country's external cycle the system can attribute to its
+modelled partners.
+
+**The US row is an approximation, and it shows.** The ECB's WTS dataflow has no
+US-reporter series, so `W_trade["us", ]` is built from the reciprocal of each
+euro-area country's own weight on the US, renormalised. The visible consequence
+is in the table above: the US `row_gdp` weight is
+`r sprintf("%.3f", fd$row_gdp_weight[fd$iso2 == "us"])`, against 0.38–0.57 for
+every euro-area country — i.e. the construction implies US foreign demand is
+almost entirely euro-area, which is plainly not true of the actual US export
+market. Ireland's cell in that row is additionally flagged unreliable, inflated
+by the same multinational and tax-redomiciliation distortion behind the 2015
+Irish GDP break. This is warned about at build time by `ecb_trade_weight()`
+rather than silently substituted, and it is the main reason US spillover
+results in this project should be read with more caution than euro-area ones.
+
+## 2. What stage 2c changed relative to stage 2b
+
+```{r changes}
+kable(data.frame(
+  refinement = c("1. Phillips curve", "2. Foreign-demand basis", "3. Spread",
+                 "4. Consumption rate channel"),
+  change = c("`cc_prices` gains `cc_gdp`",
+             "`cc_foreign_demand` re-weighted over partner **imports** instead of partner GDP",
+             "`cc_long_rate` becomes an identity over `cc_spread` + policy rate; the spread gets the equation",
+             "`cc_consumption` gains `cc_long_rate`"),
+  equations = c(length(grep("_prices$", touched_stochastic)),
+                length(changed_identities),
+                length(new_stochastic),
+                length(grep("_consumption$", touched_stochastic)))
+), row.names = FALSE, col.names = c("Refinement", "Change", "Equations affected"),
+caption = "All four are k-neutral, and all four apply to every country.")
+```
+
+```{r moved}
+kable(data.frame(
+  movement = c("stochastic in stage 2b, identity in stage 2c",
+               "new stochastic equations", "new identities",
+               "existing stochastic equations with a new regressor",
+               "existing identities re-weighted"),
+  count = c(length(dropped_stochastic), length(new_stochastic),
+            length(new_identities), length(changed_stochastic),
+            length(changed_identities))
+), row.names = FALSE, caption = "Where the equations moved. The stochastic count is unchanged because eleven long-rate regressions left and eleven spread equations arrived.")
+```
+
+A fifth refinement — a contemporaneous `cc_exports` term in the imports
+equation — was estimated and **rejected**, and is not in the system documented
+here. `stage2c_config(import_content = TRUE)` reproduces it.
+
+## 3. Every equation, as koma parsed them
+
+These are the literal strings passed to `koma::system_of_equations()`, for the
+complete system — unchanged equations included.
+
+```{r koma-stoch}
+kable(ov[ov$kind == "stochastic", c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = paste0("All ", n_stoch, " stochastic equations."))
+```
+
+```{r koma-ident}
+kable(ov[ov$kind == "identity", c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = paste0("All ", n_ident, " identities."))
+```
+
+## 4. Every equation, plain language
+
+```{r readable-stoch}
+kable(ov[ov$kind == "stochastic", c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = paste0("All ", n_stoch, " stochastic equations."))
+```
+
+```{r readable-ident}
+kable(ov[ov$kind == "identity", c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = paste0("All ", n_ident, " identities."))
+```
+
+## 5. Every fitted coefficient
+
+90% credible intervals (`ci_low`–`ci_high`), from `coefficient_table()` applied
+to the cached, tau-tuned fit. All `r n_stoch` stochastic equations appear, in
+the order the system declares them.
+
+Identities carry no estimated coefficients — their weights are fixed and are
+listed in full in §3 and §4. That is the point of refinement 3: the
+policy-rate pass-through into the long rate is imposed at exactly 1 rather than
+estimated, because when stage 2b did estimate it, all eleven credible intervals
+straddled zero.
+
+```{r coef-all}
+#| results: asis
+for (eq in intersect(eq_order, unique(ct$equation))) {
+  sub <- ct[ct$equation == eq, ]
+  print(kable(sub[, c("term_readable", "estimate", "ci_low", "ci_high")],
+              digits = 4, row.names = FALSE,
+              col.names = c("Term", "Estimate", "CI low (5%)", "CI high (95%)"),
+              caption = sub$equation_readable[1]))
+  cat("\n\n")
+}
+```

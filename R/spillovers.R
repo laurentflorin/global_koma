@@ -125,6 +125,101 @@ extend_forecast_horizon <- function(fit, panel, quarters) {
   list(fit = out, dates = dates, panel = out_panel, extension = do.call(rbind, log))
 }
 
+# Where failed_restriction_draws() accumulates its per-draw log. It lives at
+# package level rather than in the function's frame because `trace()` reaches
+# it by name from inside koma's namespace -- see that function's comments.
+.restriction_draw_log <- new.env(parent = emptyenv())
+
+#' Which posterior draws a restriction makes koma's solve fail on
+#'
+#' A sustained multi-quarter restriction can make koma's per-draw conditional
+#' solve fail outright rather than return an extreme value: restricting `h`
+#' horizons at once requires inverting `R %*% Omega %*% t(R)`, built from that
+#' draw's own posterior innovation covariance, and for a numerically
+#' rank-deficient draw no valid conditional innovation exists. koma's
+#' `safely()` wrapper drops those draws from `forecasts` **by subsetting the
+#' list**, recording nothing about which original indices they were, so
+#' [scenario_diff()] cannot realign the two legs and aborts.
+#'
+#' This recovers the indices, so they can be passed to
+#' `scenario_diff(drop_baseline_draws = )`. It works by tracing
+#' `koma:::forecast_draw()` and recording, for each draw index it is called
+#' with, whether it returned normally -- `returnValue()` distinguishes a normal
+#' return from an unwinding one. That is a deliberate choice over reproducing
+#' koma's per-draw loop by hand: the loop's argument list is internal and would
+#' silently drift, whereas a draw that enters and does not return is the
+#' definition of the thing being measured.
+#'
+#' **Runs the scenario forecast once**, at the same cost as any other, and is
+#' deterministic: which draws fail depends on each draw's posterior `Omega`,
+#' not on the innovation draw, so the same fit and restrictions always give the
+#' same set.
+#'
+#' Never set a multi-process `future` plan around this. `trace()` modifies the
+#' binding in koma's namespace in *this* process only, so a `multisession`
+#' worker would run the untraced function and the log would come back empty --
+#' which reads as "no draw failed" rather than as an error.
+#'
+#' @param fit A `koma::koma_estimate`, already horizon-extended if needed.
+#' @param restrictions A `koma::forecast()` restrictions list.
+#' @param horizon Forecast horizon in periods.
+#' @param seed Seed set immediately before the forecast call, matching the
+#'   baseline leg it will be paired against.
+#' @param probs Passed to `koma::forecast(options = )`.
+#'
+#' @return An integer vector of failing draw indices, with attributes
+#'   `n_draws` (how many were attempted) and `n_failed`. Empty if none failed.
+#' @export
+failed_restriction_draws <- function(fit, restrictions, horizon,
+                                     seed = 20240101, probs = c(0.05, 0.95)) {
+  log_env <- .restriction_draw_log
+  log_env$draws <- integer()
+  log_env$ok <- logical()
+
+  # The log has to be reachable *by name* from inside the traced function.
+  # `trace()` deparses and re-parses the expression it is given, so an
+  # environment inlined with bquote() does not survive the round trip -- it
+  # reparses to nothing and the exit code silently records zero draws, which
+  # reads as "no draw failed". Only the package name is interpolated, which is
+  # a string and deparses cleanly. `jx` is NULL for the two approximate-mode
+  # calls, which are not per-draw and must not be logged.
+  pkg <- utils::packageName() %||% "globalkoma"
+  exit_expr <- bquote({
+    if (!is.null(jx)) {
+      .koma_draw_log <- utils::getFromNamespace(".restriction_draw_log", .(pkg))
+      .koma_draw_log$draws <- c(.koma_draw_log$draws, jx)
+      .koma_draw_log$ok <- c(
+        .koma_draw_log$ok,
+        !identical(returnValue("<<koma_forecast_draw_failed>>"),
+                   "<<koma_forecast_draw_failed>>")
+      )
+    }
+  })
+
+  suppressMessages(trace("forecast_draw", where = asNamespace("koma"),
+                         exit = exit_expr, print = FALSE))
+  on.exit(suppressMessages(untrace("forecast_draw", where = asNamespace("koma"))),
+          add = TRUE)
+
+  dates <- fit$dates
+  dates$forecast$end <- advance_periods(dates$forecast$start, horizon - 1,
+                                        stats::frequency(fit$ts_data[[1]]))
+  set.seed(seed)
+  suppressWarnings(koma::forecast(
+    fit, dates = dates, restrictions = restrictions,
+    options = list(approximate = FALSE, probs = probs)
+  ))
+
+  if (length(log_env$draws) == 0) {
+    cli::cli_abort(c(
+      "The trace on {.fn koma:::forecast_draw} recorded nothing.",
+      "i" = "A multi-process {.pkg future} plan runs the untraced function; use a sequential plan."
+    ))
+  }
+  failed <- sort(log_env$draws[!log_env$ok])
+  structure(failed, n_draws = length(log_env$draws), n_failed = length(failed))
+}
+
 #' Difference two conditional forecasts, with credible bands
 #'
 #' The core spillover primitive. Runs `koma::forecast()` twice -- once under
@@ -543,10 +638,24 @@ spillover_sanity_checks <- function(mat, monetary_diff, countries, linkage_weigh
   pairs <- expand.grid(source = countries, receiver = countries, stringsAsFactors = FALSE)
   pairs <- pairs[pairs$source != pairs$receiver, ]
   pairs$spillover <- abs(mapply(function(s, r) mat[s, r], pairs$source, pairs$receiver))
+  # Match the source by its ISO-2 prefix, NOT by a hard-coded `<s>_gdp`. A
+  # foreign_demand identity does not always load a partner's GDP: stage 2c
+  # loads partner IMPORTS (`demand_concept = "imports"`), and `ireland_proxy`
+  # loads `ie_consumption`. Under either, a `_gdp` lookup silently returns no
+  # match for every pair, the weight column is all zeros, and the correlation
+  # this check reports is computed against a constant -- a meaningless verdict
+  # rather than an error. `row_gdp` is the trade-weight residual and matches no
+  # modelled country, which is correct: it is not a bilateral pair.
   pairs$weight <- mapply(function(s, r) {
     w <- linkage_weights$foreign_demand[[r]]
-    v <- w[names(w) == country_var(s, "gdp")]
-    if (length(v) == 0) 0 else unname(v)
+    v <- w[startsWith(names(w), paste0(s, "_"))]
+    if (length(v) == 0) {
+      0
+    } else if (length(v) > 1) {
+      cli::cli_abort("{.val {r}}'s foreign_demand loads {.val {names(v)}} -- ambiguous for source {.val {s}}.")
+    } else {
+      unname(v)
+    }
   }, pairs$source, pairs$receiver)
   trade_cor <- stats::cor(pairs$spillover, pairs$weight, method = "spearman")
   trade_ok <- isTRUE(trade_cor > 0.3)
