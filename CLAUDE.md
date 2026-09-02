@@ -576,10 +576,44 @@ into the `reu` bloc, and China added. 38 stochastic equations and 25 identities;
   `policy_rate_map()` and the panel's `<iso2>_spread` cannot disagree.
 - **All three policy rates reach all 63 endogenous variables and all seven price
   variables.** Stage 2c's structural fix survives the re-partition intact (stage
-  2b reached 91 of 103 and *no* price). As stage 2c already established, that is
-  a claim about reachability, not about the sign or size of the response — a
-  spillover battery with a seed placebo is still the only thing that can settle
-  that, and it has not been run on this system.
+  2b reached 91 of 103 and *no* price). As stage 2c established, that is a claim
+  about reachability, not about the sign or size of the response — see the
+  spillover battery below, which settles it.
+- **Stage 2d's spillover matrix is the first in this project whose cells can be
+  read individually.** The seed placebo on the same fit moves an off-diagonal
+  cell by **0.108 on average (max 0.273) and flips 0 signs of 20**, against
+  stage 2c's 0.119 / 0.356 / 1-of-44 and stage 2b's 0.35 / 1.85 / 7-10-of-30.
+  That is what the ten extra degrees of freedom actually buy, and it is the
+  strongest stage-2d result because it measures the noise rather than asserting
+  something on top of it. `own effect dominates` is 6/6. The trade-weight
+  correlation is **0.138**, still failing the 0.3 bar and worse than stage 2c's
+  0.292 — reported as a failure, not explained away. See
+  `reports/stage2d_spillovers.qmd`, built by
+  `scratch/stage2d_spillovers_build.R`.
+- **A `+100bp` shock to `cn_policy_rate` is not a monetary experiment — it is a
+  horizon-1 accounting adjustment in China's own Taylor rule.** Chinese GDP rises
+  **6.67pp at horizon 1** and decays to nothing by horizon 3 (cumulative +8.17).
+  The restriction forces the rate a point above what the rule wants, and the rule
+  loads only 0.152 on `cn_prices` and 0.015 on `cn_gdp`, so the solver has to move
+  Chinese output and prices enormously to make the quarter consistent. Nothing
+  pushes back, because `cn_domestic_demand`'s loading on `cn_long_rate` is
+  -0.019 with an interval straddling zero — which traces straight to the
+  45%-spliced long rate. `ea_policy_rate` does **not** have this problem: its
+  rule responds to `ea_gdp`/`ea_prices`, identities over four entities, so the
+  adjustment spreads across the area. **Use `spread_countries` without China if
+  a Chinese monetary channel is needed.**
+- **The euro-area monetary shock works for GDP and still fails for prices.**
+  Peak GDP response negative in 6/6, robustly so for the four euro-area entities
+  (Germany -1.32pp cumulative); the US and China cross zero between seeds and
+  should be read as nothing. Prices peak negative in only **1 of 6** — the same
+  wrong sign stage 2c reported in 11 of 11, unchanged by the re-partition because
+  the re-partition does not touch the mechanism. The oil shock is correctly
+  signed **6/6** (0.8-2.6pp), which localises the fault to the policy rate's
+  route in rather than to the price block.
+- **The sustained monetary restriction fails 25 of 1000 draws**, so
+  `scenario_diff()` aborts rather than mispair. That is the documented path, not
+  an obstacle: `failed_restriction_draws()` recovers the indices and
+  `drop_baseline_draws =` re-pairs the baseline against exactly those.
 - **Build the stage-2d panel on the *aligned* `panel`, with `extend = TRUE`.**
   China's merchandise-trade series run a quarter behind the rest, so folding them
   into `build_global_panel()` and letting `align_panel()` pick bounds
