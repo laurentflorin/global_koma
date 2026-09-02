@@ -17,7 +17,10 @@
 country_names <- c(
   at = "Austria", be = "Belgium", de = "Germany", gr = "Greece", es = "Spain",
   fr = "France", ie = "Ireland", it = "Italy", nl = "Netherlands", pt = "Portugal",
-  us = "United States"
+  us = "United States",
+  # Stage 2d. `cn` is a real ISO-2 code; `reu` is a bloc pseudo-country (see
+  # `bloc_codes`), three letters deliberately so it cannot collide with one.
+  cn = "China", reu = "Rest of Euro Area"
 )
 
 concept_names <- c(
@@ -40,7 +43,8 @@ special_names <- c(
   constant = "Constant", oil_price = "Oil Price", row_gdp = "Rest-of-World GDP",
   eur_usd = "EUR/USD Exchange Rate", us_exchange_rate = "USD Exchange Rate (index)",
   ea_policy_rate = "Euro Area Policy Rate", us_policy_rate = "US Policy Rate",
-  ea_gdp = "Euro Area GDP", ea_prices = "Euro Area Prices"
+  ea_gdp = "Euro Area GDP", ea_prices = "Euro Area Prices",
+  cn_policy_rate = "China Policy Rate"
 )
 
 #' Human-readable label for one koma variable name, no lag/weight decoration.
@@ -52,7 +56,10 @@ readable_var <- function(x) {
     parsed <- regmatches(x, regexec("^covid_([0-9]{4})q([1-4])$", x))[[1]]
     return(sprintf("COVID Dummy (%sQ%s)", parsed[2], parsed[3]))
   }
-  m <- regmatches(x, regexec("^([a-z]{2})_(.+)$", x))[[1]]
+  # Two letters for a country, or a bloc code -- `reu` is three, so the
+  # pattern cannot be `[a-z]{2}` alone or every reu_* variable would fall
+  # through to the generic title-case branch and read "Reu Gdp".
+  m <- regmatches(x, regexec("^([a-z]{2,3})_(.+)$", x))[[1]]
   if (length(m) == 3 && !is.na(country_names[m[2]])) {
     concept <- concept_names[m[3]]
     return(paste0(country_names[[m[2]]], ": ", if (is.na(concept)) tools::toTitleCase(gsub("_", " ", m[3])) else concept))

@@ -461,7 +461,9 @@ and `us` kept separate, the other seven modelled euro-area economies collapsed
 into the `reu` bloc, and China added. 38 stochastic equations and 25 identities;
 `k = 46`, `T = 78` (2005Q1–2024Q4), `df = 32`. `stage2d_config()` /
 `stage2d_dates()` / `stage2d_countries()` carry the settings. See
-`reports/stage2d_regional_core.qmd`.
+`reports/stage2d_regional_core.qmd`, with the equation-by-equation view in
+`reports/stage2d_equations.qmd` and the shock battery in
+`reports/stage2d_spillovers.qmd`.
 
 - **This is the first stage that *buys* degrees of freedom.** Every earlier
   structural change traded `df` for detail — stage 3a went 22 → 15 → 6, stage 3b

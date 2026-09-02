@@ -1,0 +1,372 @@
+---
+title: "Stage 2d equations: the same template, a different world"
+subtitle: "Stage 2c's equation forms applied to six entities — a euro-area bloc, China, and the one block that had to change"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2d_equations.qmd`.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+source("reports/_equation_overview_helpers.R")
+
+dir2d <- file.path("data", "cache", "stage2d")
+spec <- readRDS(file.path(dir2d, "spec.rds"))
+sys_eq <- readRDS(file.path(dir2d, "sys_eq.rds"))
+shape <- readRDS(file.path(dir2d, "shape.rds"))
+coefs <- readRDS(file.path(dir2d, "coefs.rds"))
+tuned <- readRDS(file.path(dir2d, "tuned.rds"))
+lw <- readRDS(file.path(dir2d, "linkage_weights.rds"))
+W <- readRDS(file.path(dir2d, "trade_weights.rds"))
+
+f2c <- readRDS(file.path("data", "cache", "stage2c", "noic_full_tuned.rds"))
+spec2c <- f2c$spec
+
+countries <- stage2d_countries()
+eq_order <- names(c(spec$stochastic, spec$identities))
+ov <- equation_overview(spec)
+ct <- readable_coefficient_table(tuned$fit, eq_order)
+
+tg <- template_groups(spec, countries)
+ig <- identity_template_groups(spec, countries)
+form <- function(concept) {
+  x <- tg$form[tg$concept == concept]
+  if (length(x) == 0) NA_character_ else x[1]
+}
+istruct <- function(concept) {
+  rows <- ig[ig$concept == concept, ]
+  if (nrow(rows) == 0) return(NA_character_)
+  rows$structure[which.max(rows$n_countries)]
+}
+ea_rule <- koma_string_stochastic("ea_policy_rate", spec$stochastic[["ea_policy_rate"]])
+
+n_stoch <- nrow(ov[ov$kind == "stochastic", ])
+n_ident <- nrow(ov[ov$kind == "identity", ])
+
+# --- what the re-partition did, relative to stage 2c ---------------------
+concepts_of <- function(sp) unique(sub("^[a-z]{2,3}_", "", names(sp$stochastic)))
+same_forms <- intersect(concepts_of(spec), concepts_of(spec2c))
+
+wrange <- function(concept, component) {
+  r <- identity_weight_range(spec, countries, concept, component)
+  sprintf("%.3f to %.3f (median %.3f)", r$min, r$max, r$median)
+}
+merged <- stage2d_config()$merged_demand_countries
+```
+
+Stage 2d is stage 2c's **equation template on a different partition of the
+world**: `r n_stoch` stochastic equations and `r n_ident` identities in one
+`koma::system_of_equations()` call, `k = `r shape$k`` against
+`T = `r shape$t_obs``, `df = `r shape$df``.
+
+Nothing about the *forms* changed. The speed-limit Phillips curve, foreign
+demand over partner **imports**, the sovereign spread in place of the long-rate
+level, and the intertemporal-substitution term in consumption are all exactly
+as `reports/stage2c_equations.qmd` sets them out, and that document remains the
+reference for what each one claims economically. This one covers what is
+different: **who** the equations are written for, and the single block that had
+to depart from the template because the data does not exist.
+
+| | stage 2c | stage 2d |
+|---|---|---|
+| entities | 11 countries | `de`, `fr`, `it`, `us`, `cn`, `reu` |
+| stochastic equations | 68 | `r n_stoch` |
+| identities | 46 | `r n_ident` |
+| policy rules | `ea_`, `us_` | those plus `cn_policy_rate` |
+| `k` / `T` / `df` | 76 / 98 / 22 | **`r shape$k`** / `r shape$t_obs` / **`r shape$df`** |
+
+The two conventions from stage 2c still apply and are still easy to trip over:
+everything is estimated in **growth-rate space**, so a coefficient on a
+level/index series is an elasticity and an identity is a statement about growth
+rates; and **rate-type series are the exception** — `long_rate`, `spread` and
+the three policy rates are `series_type = "rate"`, `method = "none"`, so koma
+leaves them alone and their coefficients are percentage points per percentage
+point.
+
+## 1. The entity set
+
+Four of the six are ordinary countries. Two are not, and each carries
+consequences for how its equations should be read.
+
+```{r entities}
+kable(data.frame(
+  entity = c("de", "fr", "it", "us", "cn", "reu"),
+  what = c("Germany", "France", "Italy", "United States", "China",
+           "Rest of the euro area: AT, BE, ES, GR, IE, NL, PT"),
+  equations = vapply(c("de", "fr", "it", "us", "cn", "reu"), function(cc)
+    sum(grepl(paste0("^", cc, "_"), names(spec$stochastic))), integer(1)),
+  identities = vapply(c("de", "fr", "it", "us", "cn", "reu"), function(cc)
+    sum(grepl(paste0("^", cc, "_"), names(spec$identities))), integer(1)),
+  note = c("", "", "", "own policy rule", "own policy rule; merged demand equation",
+           "bloc pseudo-country")
+), row.names = FALSE,
+col.names = c("Entity", "What it is", "Stochastic", "Identities", "Note"),
+caption = "The six entities. reu occupies a country slot rather than being an ea_-style aggregate: it has a series for every concept, its own block, and its own row and column in the trade-weight matrix.")
+```
+
+**`reu` is a pseudo-country, not an aggregate.** `ea_gdp` and `ea_prices` are
+identities computed *alongside* the countries they sum; `reu` **replaces** its
+seven members, which contribute no equations at all. Its series are built by
+`aggregate_bloc_panel()` — chained in growth space for volumes and indices,
+weighted-averaged in levels for rates — and its identity weights are its
+members' own expenditure shares averaged, not ratios of its base-100 indices.
+That distinction matters: taking the naive route gives `reu_exports` a weight
+of 1.337 instead of 0.598, and koma would have enforced it in silence.
+
+**`cn` is the one entity whose block departs from the template**, and it
+departs for a data reason. China publishes no quarterly consumption or
+investment anywhere in the public record — verified absent from OECD Quarterly
+National Accounts, the OECD Economic Outlook, IMF IFS, World Bank GEM, FRED and
+the NBS itself — so those two equations collapse into a single estimated
+`cn_domestic_demand`, and the `cn_domestic_demand` **identity is dropped**
+because the variable is now estimated rather than defined. See §3.
+
+## 2. The equation template
+
+### 2.1 Behavioural equations
+
+```{r template-summary}
+kable(data.frame(
+  concept = c("Consumption", "Investment", "Merged domestic demand", "Exports",
+              "Imports", "Prices", "Sovereign spread", "Policy rules"),
+  form = c(form("consumption"), form("investment"), form("domestic_demand"),
+           form("exports"), form("imports"), form("prices"), form("spread"),
+           ea_rule),
+  applies_to = c("de, fr, it, us, reu", "de, fr, it, us, reu", "cn only",
+                 "all 6", "all 6", "all 6", "all 6",
+                 "ea_policy_rate, us_policy_rate, cn_policy_rate")
+), row.names = FALSE, col.names = c("Equation", "General form", "Applies to"),
+caption = "Every behavioural form in the system. The first three are the same equation family: cn merges the first two.")
+```
+
+Each of these is the stage-2c form unchanged; `reports/stage2c_equations.qmd`
+§1.1 explains what each one claims and what the sign priors are. Two things are
+worth restating here because the re-partition changes their reading.
+
+**The `reu` equations are estimated on an aggregate, and one of them does not
+survive it.** `reu_investment`'s accelerator comes out at
+`r round(coefs$estimate[coefs$equation == "reu_investment" & coefs$term == "reu_gdp"], 3)`
+with a 90% interval of
+[`r round(coefs$ci_low[coefs$equation == "reu_investment" & coefs$term == "reu_gdp"], 2)`,
+`r round(coefs$ci_high[coefs$equation == "reu_investment" & coefs$term == "reu_gdp"], 2)`]
+— wrong-signed but far too wide for the sign to mean anything — and its own lag
+has gone to
+`r round(coefs$estimate[coefs$equation == "reu_investment" & coefs$term == "reu_investment.L(1)"], 3)`,
+i.e. mean reversion around noise rather than an accelerator. Ireland's
+investment growth has a standard deviation of 43.0 on this window against 2.2
+for Austria, and Ireland carries 10.9% of the bloc weight, so it contributes
+more variance than every other member combined. Read that equation as
+unidentified, and `reu_domestic_demand` — which inherits it through the
+identity — as correspondingly soft. `reports/stage2d_regional_core.qmd` sets
+out the numbers.
+
+**There are three policy rules, not two.** China is outside both currency
+unions, so without its own rule the `cn_long_rate` identity would price Chinese
+sovereign debt off the ECB's refinancing rate. `stage2_policy_rule_countries()`
+resolves the country set in one place precisely so that `country_block()`,
+`policy_rate_map()` and the constructed `<iso2>_spread` series cannot disagree
+about which rate a given country's spread is measured against.
+
+```{r policy-rules}
+rules <- grep("_policy_rate$", names(spec$stochastic), value = TRUE)
+kable(data.frame(
+  rule = rules,
+  form = vapply(rules, function(r) koma_string_stochastic(r, spec$stochastic[[r]]), character(1))
+), row.names = FALSE, col.names = c("Rule", "koma string"),
+caption = "The three Taylor-type rules. The euro-area rule responds to area-wide aggregates; the US and Chinese rules to their own.")
+```
+
+### 2.2 Identities
+
+```{r identity-summary}
+kable(data.frame(
+  identity = c("GDP", "Domestic demand", "Foreign demand", "Long rate",
+               "Euro-area GDP", "Euro-area prices"),
+  form = c(istruct("gdp"), istruct("domestic_demand"),
+           "cc_foreign_demand == sum_j w_j*<partner j>_imports + w_row*row_gdp",
+           istruct("long_rate"),
+           "ea_gdp == sum_i g_i*<member i>_gdp",
+           "ea_prices == sum_i g_i*<member i>_prices"),
+  count = c(
+    sum(grepl("_gdp$", names(spec$identities)) & !grepl("^ea_", names(spec$identities))),
+    sum(grepl("_domestic_demand$", names(spec$identities))),
+    sum(grepl("_foreign_demand$", names(spec$identities))),
+    sum(grepl("_long_rate$", names(spec$identities))), 1L, 1L)
+), row.names = FALSE, col.names = c("Identity", "General form", "Count"),
+caption = "The identity set. Note there are five domestic-demand identities, not six: China's is dropped because the variable is estimated.")
+```
+
+**`ea_gdp` and `ea_prices` now aggregate four entities, one of which is the
+bloc.** Handing `stage2_linkage_weights()` the eleven-country `W_gdp` alongside
+the stage-2d entity set would have matched only Germany, France and Italy —
+the aggregation identities would then have described three economies while
+claiming to describe the currency union, with no error anywhere.
+`collapse_gdp_weights()` folds the seven members into `reu` first.
+
+```{r ea-weights}
+kable(data.frame(member = toupper(names(lw$ea)), weight = as.numeric(lw$ea)),
+      row.names = FALSE, digits = 3,
+      caption = "The ea_gdp / ea_prices weights: nominal GDP shares over the four euro-area entities, the bloc counted once.")
+```
+
+### 2.3 The template is verified, not asserted
+
+Each entity's equation is rewritten with its own prefix replaced by `cc`, and
+identical strings are grouped. A row per concept means the form is unanimous;
+more than one row means something deviates, and here exactly one thing does.
+
+```{r template-verify}
+kable(tg[, c("concept", "n_countries", "countries")], row.names = FALSE,
+      col.names = c("Concept", "Entities sharing this form", "Which"),
+      caption = "Stochastic equations grouped by entity-generic form.")
+```
+
+The `consumption` and `investment` rows cover five entities rather than six,
+and `domestic_demand` appears as a stochastic form for one — that is China's
+merged block, and it is the only departure from the template in the system.
+
+```{r identity-verify}
+iv <- ig[ig$concept != "foreign_demand", c("concept", "n_countries", "countries")]
+kable(iv, row.names = FALSE,
+      col.names = c("Identity", "Entities sharing this structure", "Which"),
+      caption = "Identities grouped by entity-generic component structure (weights ignored, signs kept). foreign_demand is excluded: its partner set is country-specific by construction, so six distinct structures is the expected result.")
+```
+
+The `long_rate` identity splits three ways rather than one, and correctly so:
+each entity's spread is taken against the policy rate it actually faces —
+`ea_policy_rate` for the four euro-area entities, `us_policy_rate` for the US,
+`cn_policy_rate` for China.
+
+### 2.4 What the identity weights actually are
+
+```{r weight-ranges}
+kable(data.frame(
+  identity = c("GDP", "GDP", "GDP", "Domestic demand", "Domestic demand"),
+  weight_on = c("domestic demand", "exports", "imports", "consumption", "investment"),
+  range = c(wrange("gdp", "domestic_demand"), wrange("gdp", "exports"),
+            wrange("gdp", "imports"), wrange("domestic_demand", "consumption"),
+            wrange("domestic_demand", "investment"))
+), row.names = FALSE, col.names = c("Identity", "Weight on", "Range across the entities"),
+caption = "Fixed expenditure shares over the stage-2d estimation window. The domestic-demand rows cover the five entities that have the split.")
+```
+
+```{r fd-weights}
+fd <- do.call(rbind, lapply(countries, function(cc) {
+  w <- spec$identities[[country_var(cc, "foreign_demand")]]
+  bilateral <- unlist(w)[names(w) != "row_gdp"]
+  data.frame(entity = cc, partners = length(bilateral),
+             row_gdp_weight = unname(w[["row_gdp"]]),
+             largest_partner = names(bilateral)[which.max(bilateral)],
+             largest_weight = max(bilateral), stringsAsFactors = FALSE)
+}))
+kable(fd, row.names = FALSE, digits = 3,
+      caption = "Each entity's foreign-demand index: modelled partners, how much rides on the unmodelled rest of the world, and its single largest bilateral link.")
+```
+
+**The US and Chinese rows are observed here, not approximated**, and that is a
+change from every earlier stage. ECB WTS computes trade weights *for*
+euro-area reporters only, so stages 1–3 build the US row from the reciprocal of
+each euro-area country's own weight on the US, renormalised — which forces the
+modelled partners to account for the reporter's entire trade and gives the US a
+4.6% rest-of-world weight in `data/raw/W_trade.csv`. At six entities that error
+would have dominated rather than distorted: applied to China it would have put
+56% of Chinese trade inside the euro area. Both rows come from observed IMF
+Direction of Trade Statistics instead, which is why the table above shows
+`r sprintf("%.1f%%", 100 * fd$row_gdp_weight[fd$entity == "us"])` and
+`r sprintf("%.1f%%", 100 * fd$row_gdp_weight[fd$entity == "cn"])` on
+`row_gdp` — the trade those two economies genuinely do outside this model.
+
+```{r trade-source}
+kable(data.frame(reporter = names(attr(W, "source")), source = unname(attr(W, "source"))),
+      row.names = FALSE, col.names = c("Reporter", "Weight source"),
+      caption = "Where each row of the stage-2d trade-weight matrix comes from. DOTS is goods-only and a plain trade share; ECB WTS covers services and is double-weighted, so a `direct` row and a `dots` row are not quite the same statistic.")
+```
+
+## 3. China: the one block that changed
+
+```{r cn-block}
+cn_eqs <- grep("^cn_", names(spec$stochastic), value = TRUE)
+cn_ids <- grep("^cn_", names(spec$identities), value = TRUE)
+kable(rbind(
+  data.frame(kind = "stochastic", equation = cn_eqs,
+             koma_string = vapply(cn_eqs, function(e)
+               koma_string_stochastic(e, spec$stochastic[[e]]), character(1)),
+             stringsAsFactors = FALSE),
+  data.frame(kind = "identity", equation = cn_ids,
+             koma_string = vapply(cn_ids, function(e)
+               koma_string_identity(e, spec$identities[[e]]), character(1)),
+             stringsAsFactors = FALSE)
+), row.names = FALSE, col.names = c("Kind", "Equation", "koma string"),
+caption = "China's complete block. Six stochastic equations and three identities -- one fewer of each than a full country, because consumption and investment merge and the domestic-demand identity goes with them.")
+```
+
+The merged equation keeps the rate term **unconditionally**, and that is
+deliberate: `cn_long_rate` was investment's regressor as well as consumption's,
+so dropping it under the merge would have removed China's only monetary channel
+rather than one of two.
+
+**The bound on that equation is `> 0`, not `(0, 1)`.** The obvious rule for a
+demand equation is the marginal propensity to consume's, and China's estimate
+of
+`r round(coefs$estimate[coefs$equation == "cn_domestic_demand" & coefs$term == "cn_gdp"], 3)`
+fails it. But an MPC below one is a claim about *consumption*; total absorption
+also contains investment, which is far more cyclical than output. The five
+entities that do have the split imply domestic-demand elasticities of 0.43
+(`reu`), 0.63 (`de`), 0.96 (`fr`), 0.98 (`it`) and **1.26 (`us`)** — so a
+`(0, 1)` bound would have reported the United States as a failure too.
+`sign_checks(merged_demand = TRUE)` restates the rule rather than leaving a
+permanent red mark against an equation the system deliberately does not have.
+
+## 4. Every equation, as koma parsed them
+
+```{r koma-stoch}
+kable(ov[ov$kind == "stochastic", c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = paste0("All ", n_stoch, " stochastic equations."))
+```
+
+```{r koma-ident}
+kable(ov[ov$kind == "identity", c("equation", "koma_string")],
+      row.names = FALSE, col.names = c("Equation", "koma string"),
+      caption = paste0("All ", n_ident, " identities."))
+```
+
+## 5. Every equation, plain language
+
+```{r readable-stoch}
+kable(ov[ov$kind == "stochastic", c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = paste0("All ", n_stoch, " stochastic equations."))
+```
+
+```{r readable-ident}
+kable(ov[ov$kind == "identity", c("equation", "readable")],
+      row.names = FALSE, col.names = c("Equation", "Plain language"),
+      caption = paste0("All ", n_ident, " identities."))
+```
+
+## 6. Every fitted coefficient
+
+90% credible intervals, from `coefficient_table()` applied to the cached,
+tau-tuned fit. Identities carry no estimated coefficients — their weights are
+fixed and are listed in full in §4 and §5.
+
+```{r coef-all}
+#| results: asis
+for (eq in intersect(eq_order, unique(ct$equation))) {
+  sub <- ct[ct$equation == eq, ]
+  print(kable(sub[, c("term_readable", "estimate", "ci_low", "ci_high")],
+              digits = 4, row.names = FALSE,
+              col.names = c("Term", "Estimate", "CI low (5%)", "CI high (95%)"),
+              caption = sub$equation_readable[1]))
+  cat("\n\n")
+}
+```
