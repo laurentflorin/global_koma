@@ -7,9 +7,9 @@
 country_var(iso2, concept)
 }
 \arguments{
-\item{iso2}{Two-letter lowercase ISO country code, e.g. \code{"de"}. May be a
-vector, e.g. to build every \verb{<iso2>_gdp} name for a set of countries at
-once; \code{concept} is recycled against it.}
+\item{iso2}{Two-letter lowercase ISO country code, e.g. \code{"de"}, or a
+\code{bloc_codes} entry. May be a vector, e.g. to build every \verb{<iso2>_gdp} name
+for a set of countries at once; \code{concept} is recycled against it.}
 
 \item{concept}{Lowercase concept name, e.g. \code{"gdp"}.}
 }
@@ -21,4 +21,9 @@ A character vector of \code{"<iso2>_<concept>"} names, same length as
 Combines an ISO-2 country code and a concept into the project's
 \verb{<iso2>_<concept>} naming convention, and validates the result against
 koma's variable-name grammar (\verb{^[a-zA-Z][a-zA-Z0-9_]*$}).
+}
+\details{
+A \code{bloc_codes} entry (currently only \code{"reu"}) is accepted in place of an
+ISO-2 code: a bloc occupies a country slot and needs every \verb{<code>_<concept>}
+name a real country has. See \code{bloc_codes}.
 }

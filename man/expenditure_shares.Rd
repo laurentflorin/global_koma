@@ -4,7 +4,7 @@
 \alias{expenditure_shares}
 \title{Average expenditure shares for a country's stage-1 identities}
 \usage{
-expenditure_shares(panel, iso2, dates = NULL, digits = 3)
+expenditure_shares(panel, iso2, dates = NULL, digits = 3, components = TRUE)
 }
 \arguments{
 \item{panel}{A named list of \code{koma_ts}, as built by
@@ -17,10 +17,19 @@ over \code{dates$estimation} only, so the identity coefficients never see
 data outside the estimation sample.}
 
 \item{digits}{Number of decimals to round each share to.}
+
+\item{components}{Compute the domestic-demand split
+(consumption/investment/government) as well as the GDP identity. \code{FALSE}
+returns \code{domestic_demand = NULL}, for a country whose domestic demand is
+\strong{estimated} rather than defined -- see \code{\link[=stage2_options]{stage2_options()}}'s
+\code{merged_demand_countries}. China is the only such case, and it is not a
+preference: it has no quarterly consumption or investment series to take
+a share of, so asking for one aborts rather than returning a guess.}
 }
 \value{
 A list with elements \code{gdp} and \code{domestic_demand}, each a named
 numeric vector keyed by full \verb{<iso2>_<concept>} variable name.
+\code{domestic_demand} is \code{NULL} when \code{components = FALSE}.
 }
 \description{
 Computes the identity coefficients for \code{\link[=stage1_spec]{stage1_spec()}} from the data

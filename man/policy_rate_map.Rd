@@ -11,8 +11,8 @@ policy_rate_map(opts = stage2_options())
 }
 \value{
 A named character vector in the shape \code{\link[=spread_policy_rate]{spread_policy_rate()}}
-accepts: an entry per country that departs from \code{ea_policy_rate}, which
-today means the US when it carries its own Taylor rule.
+accepts: an entry per country that departs from \code{ea_policy_rate} -- the US
+when it carries its own Taylor rule, and from stage 2d China as well.
 }
 \description{
 \verb{<iso2>_long_rate == <iso2>_spread + <policy rate>} is written in two

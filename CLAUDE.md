@@ -9,7 +9,11 @@ model built on the [`koma`](docs/koma-api.md) package.
 R/                     package code (roxygen-documented, exported via NAMESPACE)
   data_fred.R             FRED fetch + local cache (FRED_API_KEY -- see below)
   data_eamdqd.R           Euro Area Monthly/Quarterly Database fetch + code mapping
+  data_worldbank.R        World Bank Global Economic Monitor fetch (China's panel)
+  data_oecd.R             OECD SDMX fetch (China's interest rates)
+  data_dbnomics.R         DBnomics fetch, for IMF DOTS bilateral trade
   panel_build.R           combine raw sources into named koma_ts panels
+  panel_stage2d.R         the `reu` bloc aggregate and China's assembled panel
   weights.R               country aggregation weights (GDP/trade) + weighted identities
   stage1_models.R         per-country satellite models
   stage2_system.R         joint multi-country koma system (stage 1 equations + ea_/world_ identities)
@@ -46,6 +50,13 @@ The three-stage structure:
 - **Stage 3** (`stage3_blocks.R`): post-estimation reporting aggregates —
   distinct from the stage-2 identities, which are enforced *during*
   estimation.
+
+Stage 2 has four lettered variants, which differ in the equation template
+(2a → 2b → 2c) or in the country partition (2d), never in both at once —
+that is what keeps any pair of them comparable. **Stage 2d** re-partitions
+rather than re-specifies: it takes stage 2c's equations verbatim and applies
+them to six entities instead of eleven (`de`, `fr`, `it`, `us`, `cn` and the
+`reu` bloc). It is the only stage that *increases* degrees of freedom.
 
 ## Variable naming convention
 
@@ -443,6 +454,137 @@ carries the settings. See `reports/stage2c_refined_core.qmd`.
   the price equations**. Adding `<iso2>_gdp` takes stage 2c to 68 of 68, so a
   stage-2c acceptance table is not row-comparable to a stage-2b one.
 
+## Stage 2d: the regional core with China (`stage2_system.R`, `panel_stage2d.R`)
+
+Stage 2c's **equations**, unchanged, on a re-partitioned world: `de`, `fr`, `it`
+and `us` kept separate, the other seven modelled euro-area economies collapsed
+into the `reu` bloc, and China added. 38 stochastic equations and 25 identities;
+`k = 46`, `T = 78` (2005Q1–2024Q4), `df = 32`. `stage2d_config()` /
+`stage2d_dates()` / `stage2d_countries()` carry the settings. See
+`reports/stage2d_regional_core.qmd`.
+
+- **This is the first stage that *buys* degrees of freedom.** Every earlier
+  structural change traded `df` for detail — stage 3a went 22 → 15 → 6, stage 3b
+  to 8. Collapsing seven countries into one bloc removes enough equations that
+  `k` falls 76 → 46, so even after giving up eighteen quarters at the start of
+  the sample `df` rises 22 → **32**. Consequences are visible: no own lag is
+  flagged (the most persistent is `us_policy_rate` at 0.983), against stage 3b
+  where `de_long_rate` went explosive at `df = 8`.
+- **A bloc is a pseudo-country, not an `ea_`-style aggregate.** `reu` occupies a
+  country slot: it has a `reu_<concept>` series for every concept, its own
+  `country_block()`, its own row *and* column in the trade-weight matrix, and its
+  own `foreign_demand` identity; its members contribute no equations at all.
+  `country_var()` accepts it because `bloc_codes` (in `equations.R`) lists it —
+  three letters deliberately, so no real ISO-2 code can collide and
+  `startsWith(name, "reu_")` cannot accidentally match a country.
+- **`expenditure_shares()` on a bloc returns a plausible number that is wrong by
+  a factor of three, and koma would have enforced it silently.** It forms each
+  share as the mean of a *level* ratio, which works for a real country because
+  its series share a currency and a scale. Every bloc series is a base-100 chain
+  index, so the ratio is the two indices' relative growth since the base period:
+  `mean(reu_exports / reu_gdp)` comes out at **1.337** against a true share of
+  **0.598**, because `reu` exports grew 2.5x since 2000 while its GDP grew 1.6x.
+  `bloc_expenditure_shares()` averages the *members'* own shares instead, and
+  `stage2_shares()` **aborts** rather than falling back — there is no safe
+  default, so `stage2_options(bloc_weights = )` is required for every bloc.
+- **The bloc is the one place Ireland's investment distortion is not worked
+  around, and it breaks `reu_investment`.** Averaging seven economies should
+  *reduce* volatility; instead `reu_investment` has a quarterly growth sd of
+  **6.46** against 2.16–4.08 for `de`/`fr`/`it`/`us`. Ireland's own investment sd
+  is **43.0** on this window (Netherlands 14.0, Austria 2.2) and Ireland carries
+  10.9% of the bloc weight, so it contributes more variance than every other
+  member combined. The equation is consequently **not identified**: its
+  accelerator is -0.170 with a 90% interval of [-2.77, 2.14], its own lag has gone
+  to -0.567 (mean-reversion around noise, not an accelerator), and its in-sample
+  RMSE is 4.34 against 0.78–1.91 elsewhere. `ireland_proxy` cannot help — it
+  swaps a *foreign-demand basis*, and this distortion is inside an estimated
+  equation. **Nothing flagged it**: there is no investment-accelerator rule in
+  `base_sign_rules()`, and it surfaced only from computing the implied
+  domestic-demand elasticity, which came out lowest for `reu` (0.428). Same
+  lesson in a new place — a neighbouring coefficient moving is the first symptom.
+  Read `reu_investment` as unidentified and `reu_domestic_demand` as
+  correspondingly soft; a less Ireland-heavy bloc weighting, or pulling Ireland
+  out of `reu` entirely, is the untried fix.
+- **A bloc's identities carry a dispersion term on top of the statistical
+  discrepancy.** `reu_gdp`'s worst identity error is 5.0pp of quarterly growth
+  against Germany's 2.0 and Italy's 1.9, because the seven members' own
+  expenditure shares differ from the average the identity uses. Bounded, same
+  order as the country-level slack, and `identity_consistency()` reports it under
+  the existing `_(gdp|domestic_demand)$` inexact rule.
+- **China publishes no quarterly consumption or investment, anywhere.** Verified
+  absent from OECD Quarterly National Accounts (China carries `B1GQ` only, and
+  only from 2011Q1), the OECD Economic Outlook (annual except CPI and two rates),
+  IMF IFS, World Bank GEM, FRED (its China coverage was discontinued 2019–2023)
+  and the NBS itself. Hence `stage2_options(merged_demand_countries = "cn")`:
+  the two equations collapse into one estimated `<iso2>_domestic_demand ~ gdp +
+  long_rate + lag`, and the `domestic_demand` **identity is dropped** because the
+  variable is now estimated rather than defined. The rate term is unconditional
+  in the merged form — it was investment's term as well as consumption's and it
+  is the country's only monetary channel.
+- **The bound on a merged demand equation is `> 0`, not `(0, 1)`.** The MPC rule
+  was copied across first and China's 1.101 failed it. But an MPC below one is a
+  claim about *consumption*; total absorption also contains investment, which is
+  far more cyclical than output. The five entities that do have the split imply
+  elasticities of 0.43 (reu), 0.63 (de), 0.96 (fr), 0.98 (it) and **1.26 (us)** —
+  so `(0, 1)` would have failed the United States too. Check what the rule
+  actually claims before reporting a coefficient against it.
+- **GEM's constant-price China trade series is missing every Q1 from 2020**, six
+  of the eighty quarters and all mid-sample, because China's customs
+  administration stopped publishing a separate January figure. The current-price
+  and price-index series are complete, so `cn_real_trade()` recovers the volume as
+  `value / price` — the same quotient GEM computes internally, reproducing the
+  published series to a mean ratio of 0.99985 (sd 4.4e-4). That recovers six real
+  quarters instead of interpolating them; prefer reconstructing a series from its
+  own published components over filling it.
+- **`cn_long_rate` is spliced over 45% of the window and that is its main
+  weakness.** OECD's `IRLT` for China starts only 2014Q1, so
+  `cn_long_rate_series()` shifts `IR3TIB` by the mean `IRLT - IR3TIB` gap before
+  then — **-0.262pp, sd 0.482 over 50 quarters**, a standard deviation nearly
+  twice the mean. The level is right; the independent variation is not, so
+  `cn_spread` is a real term premium after 2014 and a money-market spread plus a
+  constant before it. `stage2d_config(spread_countries = )` is the one-argument
+  way out: `IRSTCI` is complete and needs no splice.
+- **The reciprocal trade-weight row is not good enough at six entities.** ECB WTS
+  computes weights *for* euro-area reporters only, so stages 1–3 build the US row
+  from the reciprocal of each EA country's weight on the US, renormalised — which
+  forces the modelled partners to account for the reporter's whole trade and
+  gives the US a **4.6%** rest-of-world weight in `data/raw/W_trade.csv`. Applied
+  to China it would have given **1.0%** and put 56% of Chinese trade inside the
+  euro area. `build_trade_weight_matrix(dots_reporters = )` takes both rows from
+  observed IMF DOTS instead (US 72.9% rest-of-world, China 78.2%). Note DOTS is
+  **goods only** and a plain trade share, where WTS covers services too and is
+  double-weighted — the `source` attribute records which row is which.
+- **IMF DOTS comes through DBnomics, and that is a deliberate exception.** The
+  IMF's legacy SDMX endpoint no longer responds and `api.imf.org` does not serve
+  the `DOT` dataflow (verified 2026-09: "No such dataflow found"). DBnomics
+  mirrors it keyless and preserves the upstream series identifiers verbatim, so
+  only `fetch_dbnomics_series()` has to change if the IMF restores an endpoint.
+- **`row_gdp` must be rebuilt, not reused.** `row_gdp_weights()` folds China into
+  the rest-of-world aggregate by default. Once China has equations, passing the
+  stage-2b `row_weights` would not error — it would load Chinese demand into every
+  partner's `foreign_demand` identity twice, once directly and once through
+  `row_gdp`. Stage 2d uses `row_gdp_weights(exclude = c("us", "cn"))`, and
+  `build_row_gdp()` now only fetches growth for partners the weight vector still
+  carries.
+- **`policy_rule` is a country vector now, and `TRUE` still means the US alone.**
+  Stage 2d needs a third rule (`cn_policy_rate`) because China is outside both
+  currency unions; without it the spread identity would price Chinese debt off
+  the ECB's refi rate. `stage2_policy_rule_countries()` resolves
+  `FALSE`/`TRUE`/character in one place so `country_block()`,
+  `policy_rate_map()` and the panel's `<iso2>_spread` cannot disagree.
+- **All three policy rates reach all 63 endogenous variables and all seven price
+  variables.** Stage 2c's structural fix survives the re-partition intact (stage
+  2b reached 91 of 103 and *no* price). As stage 2c already established, that is
+  a claim about reachability, not about the sign or size of the response — a
+  spillover battery with a seed placebo is still the only thing that can settle
+  that, and it has not been run on this system.
+- **Build the stage-2d panel on the *aligned* `panel`, with `extend = TRUE`.**
+  China's merchandise-trade series run a quarter behind the rest, so folding them
+  into `build_global_panel()` and letting `align_panel()` pick bounds
+  automatically would take the earliest end across everything and silently
+  truncate every exogenous series — the trap already recorded for stage 3a.
+  `add_stage2d_countries()` pads instead.
+
 ## Stage 3a: labour market and disaggregated prices (`stage2_system.R`)
 
 `labour_block()` gives one country seven behavioural equations and five
@@ -832,6 +974,10 @@ the unit tests for whatever you touched now pass. `data_fred.R`,
 implemented; `stage3_blocks.R` is not, so `tar_make()` will still error
 partway through by design — that is expected, not a regression; make sure
 it errors at the *next* unimplemented stub, not an earlier one you touched.
+`data_worldbank.R`, `data_oecd.R`, `data_dbnomics.R` and `panel_stage2d.R`
+are implemented too; their tests are network-free (the fetchers are exercised
+against their parsers and fixtures, not against the live APIs), so a failure
+there is a real failure and not a flaky endpoint.
 `forecasts.R` is implemented and its tests are network-free too, but they are
 gated behind `skip_on_cran()`: run them with `devtools::test()` (which sets
 `NOT_CRAN`), not a bare `testthat::test_file()`, or all seven silently skip.
@@ -842,10 +988,18 @@ from `test-stage3_blocks.R`.
 the linkage mechanism), **stage 2b** (all eleven economies: 68 stochastic
 equations and 35 identities in one `system_of_equations()`), **stage 2c**
 (the same eleven economies with five zero-cost refinements, 68 stochastic
-equations and 46 identities) and **stage 3a** (the German labour and
+equations and 46 identities), **stage 2d** (stage 2c's equations on six
+entities — `de`, `fr`, `it`, `us`, `cn` and the `reu` bloc — 38 stochastic
+equations and 25 identities, with the bloc and China panels in
+`panel_stage2d.R`) and **stage 3a** (the German labour and
 disaggregated-price block, `labour_block()`). See `reports/stage2a_pilot.qmd`,
-`reports/stage2b_full_system.qmd`, `reports/stage2c_refined_core.qmd` and
-`reports/stage3a_labour_prices.qmd`.
+`reports/stage2b_full_system.qmd`, `reports/stage2c_refined_core.qmd`,
+`reports/stage2d_regional_core.qmd` and `reports/stage3a_labour_prices.qmd`.
+
+Stage 2d's report artefacts are built by `scratch/stage2d_build.R` (about
+seven minutes cold, dominated by the four estimations `tune_tau_system()`
+runs; every step is cached under `data/cache/stage2d/` and skipped if
+present).
 
 Stage 2b needs its **own** estimation window — `stage2b_dates()`, ending
 2024Q4 — because the stage-1/2a window does not leave enough observations

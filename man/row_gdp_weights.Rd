@@ -4,14 +4,24 @@
 \alias{row_gdp_weights}
 \title{Build weights for the \code{row_gdp} aggregate}
 \usage{
-row_gdp_weights(window = 3)
+row_gdp_weights(window = 3, exclude = "us")
 }
 \arguments{
 \item{window}{Number of most recent annual observations to average.}
+
+\item{exclude}{ISO-2 codes of partners that are modelled separately and
+must therefore not leak into \code{row_gdp}. \code{"us"} by default, matching
+stages 1-3. \strong{Stage 2d passes \code{c("us", "cn")}}: once China has its own
+equations, leaving it in the rest-of-world aggregate would double-count
+Chinese demand -- every euro-area country's \code{foreign_demand} identity
+would load China both directly and through \code{row_gdp}. A code that is not
+one of the \code{row_partners} (like \code{"us"}) is only subtracted from the
+denominator; one that is (like \code{"cn"}) is additionally dropped from the
+returned vector, so \code{\link[=build_row_gdp]{build_row_gdp()}} stops fetching its growth rate too.}
 }
 \value{
-A named numeric vector (\code{gb}, \code{ch}, \code{cn}, \code{jp}, \code{pl}, \code{se},
-\code{other}), summing to 1.
+A named numeric vector over the retained \code{row_partners} plus
+\code{other}, summing to 1.
 }
 \description{
 Trade-weighted importance of the UK, Switzerland, China, Japan, Poland

@@ -11,7 +11,9 @@ sign_checks(
   external = FALSE,
   fiscal = FALSE,
   financial = FALSE,
-  stage2c = FALSE
+  stage2c = FALSE,
+  merged_demand = FALSE,
+  policy_var = NULL
 )
 }
 \arguments{
@@ -32,6 +34,20 @@ refinements are individually optional -- refinement 5 (import content) is
 dropped in the recommended configuration -- and a rule whose term is not in
 the model scores \code{NA}/\code{FALSE}, so \code{TRUE} on a system without it turns
 eleven deliberate absences into eleven reported failures.}
+
+\item{merged_demand}{The country's consumption and investment equations are
+merged into one \verb{<iso2>_domestic_demand} equation (see \code{\link[=stage2_options]{stage2_options()}}'s
+\code{merged_demand_countries}, and China, which is the only case). The two
+rules that name \verb{<iso2>_consumption} are restated against the merged
+equation rather than reported as failures against an equation the system
+deliberately does not contain -- the same reasoning as the
+\code{stage2c} refinement subset above.}
+
+\item{policy_var}{Override the policy rate the \code{long_rate} rule is checked
+against. \code{NULL} derives it as \code{us_policy_rate} for the US and
+\code{ea_policy_rate} otherwise; a system with a third policy rule (stage 2d
+gives China one) needs to say so. Inert whenever the \code{spread} refinement
+or the financial block is active, since both drop that rule.}
 }
 \value{
 A \code{data.frame} with columns \code{check}, \code{equation}, \code{term},

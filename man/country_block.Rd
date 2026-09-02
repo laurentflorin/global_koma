@@ -33,6 +33,16 @@ cc_long_rate   ~ cc_prices + <policy rate> + cc_gdp + cc_long_rate.L(1)
 }\if{html}{\out{</div>}}
 
 plus \code{cc_gdp}, \code{cc_domestic_demand} and \code{cc_foreign_demand} identities.
-The US additionally gets \code{us_policy_rate ~ us_prices + us_gdp + us_policy_rate.L(1)} when \code{opts$policy_rule} is set, and loads its own
-\code{long_rate} on \code{us_policy_rate} rather than the shared \code{ea_policy_rate}.
+A country named in \code{opts$policy_rule} additionally gets
+\code{cc_policy_rate ~ cc_prices + cc_gdp + cc_policy_rate.L(1)}, and loads its
+own \code{long_rate} on that rather than on the shared \code{ea_policy_rate} -- the US
+from stage 2b, China as well from stage 2d.
+
+A country named in \code{opts$merged_demand_countries} differs in exactly two
+ways: \code{cc_consumption} and \code{cc_investment} are replaced by a single
+\code{cc_domestic_demand ~ cc_gdp + cc_long_rate + cc_domestic_demand.L(1)}, and
+the \code{cc_domestic_demand} identity is dropped, since the variable is now
+estimated rather than defined. Everything downstream of it -- the imports
+equation, the GDP identity -- is unchanged. See \code{\link[=stage2_options]{stage2_options()}} for why
+this exists (China, and only China).
 }

@@ -19,7 +19,9 @@ stage2_options(
   phillips_countries = character(),
   consumption_rate_countries = character(),
   import_content_countries = character(),
-  spread_countries = character()
+  spread_countries = character(),
+  merged_demand_countries = character(),
+  bloc_weights = list()
 )
 }
 \arguments{
@@ -37,8 +39,13 @@ equation (consumption, investment, exports, imports, prices) -- the
 COVID dummies in stage 2b. Deliberately not added to \code{long_rate} or the
 policy rules, which show no mechanical COVID break.}
 
-\item{policy_rule}{Give the US its own Taylor-type \code{us_policy_rate}
-equation, moving that variable from exogenous to endogenous.}
+\item{policy_rule}{Which countries get their own Taylor-type
+\verb{<iso2>_policy_rate} equation, moving that variable from exogenous to
+endogenous. \code{FALSE} (none, stage 2a), \code{TRUE} (the US alone -- what stages
+2b and 2c mean by it), or a character vector of ISO-2 codes. Stage 2d
+passes \code{c("us", "cn")}: China is outside the currency union and outside
+the Federal Reserve's, so it needs a third policy rate or its long-rate
+identity would price Chinese debt off the ECB's refi rate.}
 
 \item{fx}{Named character vector, \verb{iso2 -> exchange-rate variable}, for
 countries that should not use the default \code{eur_usd}. Stage 1 and 2a gave
@@ -114,6 +121,31 @@ models the stationary term/risk premium instead. Costs no net \code{k}: one
 stochastic equation with an own lag is swapped for another, and the new
 identity carries no lag. A country here must \strong{not} also be in
 \code{financial_countries}, which defines the same identity.}
+
+\item{merged_demand_countries}{Character vector of ISO-2 codes whose
+\code{consumption} and \code{investment} equations collapse into a single estimated
+\verb{<iso2>_domestic_demand} equation, and whose \code{domestic_demand} identity is
+dropped (the variable is now stochastic, not defined). \strong{This exists for
+China and for nothing else.} China publishes no quarterly expenditure-side
+national accounts -- verified absent from OECD QNA, the OECD Economic
+Outlook, IMF IFS, World Bank GEM, FRED and the NBS -- so the alternative
+was to proxy two national-accounts aggregates from indicator series, which
+is precisely the kind of invented data \code{build_cn_panel()} exists to avoid.
+
+The merged equation keeps the rate term both of its parents carried, so
+monetary transmission is unaffected in structure: \verb{<iso2>_domestic_demand ~ <iso2>_gdp + <iso2>_long_rate + lag}. What is given up is the \emph{split} --
+there is no separate consumption MPC or investment accelerator to read off,
+and \code{sign_checks(merged_demand = TRUE)} swaps the two rules that reference
+them for their domestic-demand counterparts rather than reporting them as
+failures. Net cost in equations is -1; net cost in \code{k} is -1 as well, since
+two own lags become one.}
+
+\item{bloc_weights}{Named list, \verb{bloc code -> named numeric weights over that bloc's member countries}, from \code{\link[=bloc_gdp_weights]{bloc_gdp_weights()}}. Required for
+every bloc pseudo-country in the system: \code{\link[=stage2_shares]{stage2_shares()}} uses it to
+average the members' expenditure shares, and there is deliberately no
+fallback, because the fallback (\code{\link[=expenditure_shares]{expenditure_shares()}} on the bloc's own
+base-100 index series) returns a plausible number that is wrong by a
+factor of three. See \code{\link[=bloc_expenditure_shares]{bloc_expenditure_shares()}}.}
 }
 \value{
 A list of options for \code{\link[=country_block]{country_block()}}.

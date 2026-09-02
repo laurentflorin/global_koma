@@ -7,6 +7,8 @@
 build_trade_weight_matrix(
   countries = modelled_countries,
   window = 3,
+  reciprocal_reporters = "us",
+  dots_reporters = character(),
   out_path = file.path("data", "raw", "W_trade.csv")
 )
 }
@@ -15,6 +17,19 @@ build_trade_weight_matrix(
 Defaults to \code{modelled_countries} (the 10 EA countries plus \code{"us"}).}
 
 \item{window}{Number of most recent annual observations to average.}
+
+\item{reciprocal_reporters}{ISO-2 codes with no ECB reporter series of
+their own, whose row is built from the reciprocal approximation described
+above. \code{"us"} by default, which is what stages 1-3 use and what the
+\code{data/raw/W_trade.csv} on disk contains. A code here that \emph{does} have a
+direct series would silently get the worse number, so keep the set minimal.}
+
+\item{dots_reporters}{ISO-2 codes whose row is taken from \strong{observed} IMF
+Direction of Trade Statistics instead (\code{\link[=imf_dots_weights]{imf_dots_weights()}}). This is the
+better construction wherever ECB WTS has no reporter series, and stage 2d
+uses it for both \code{"us"} and \code{"cn"}; the default is empty so that stages
+1-3 keep reproducing from the reciprocal row they were estimated with.
+Must not overlap \code{reciprocal_reporters}.}
 
 \item{out_path}{Where to write the CSV. Defaults to
 \code{data/raw/W_trade.csv}. Pass \code{NULL} to skip writing.}

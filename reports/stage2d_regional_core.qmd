@@ -1,0 +1,672 @@
+---
+title: "Stage 2d: the regional core with China"
+subtitle: "Stage 2c's equations on a re-partitioned world — six entities, a euro-area bloc, and the first economy this project had to assemble from scratch"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage2d_regional_core.qmd`.
+# Artefacts come from scratch/stage2d_build.R.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+
+dir2d <- file.path("data", "cache", "stage2d")
+g <- function(name) readRDS(file.path(dir2d, paste0(name, ".rds")))
+
+shape        <- g("shape")
+preflight    <- g("preflight")
+identity_chk <- g("identity_check")
+acc          <- g("acceptance")
+acc_untuned  <- g("acceptance_untuned")
+tuning       <- g("tuning_history")
+tau          <- g("tau")
+coefs        <- g("coefs")
+signs        <- g("signs")
+lag_stab     <- g("lag_stability")
+reach        <- g("reachability")
+insample     <- g("insample")
+W            <- g("trade_weights")
+lw           <- g("linkage_weights")
+shares       <- g("shares")
+bloc_w       <- g("bloc_weights")
+cn_shares    <- g("cn_shares")
+row_w        <- g("row_weights")
+row_w_2b     <- g("row_weights_2b")
+implied      <- g("implied_demand_elasticity")
+sys_eq       <- g("sys_eq")
+
+cfg <- stage2d_config()
+countries <- stage2d_countries()
+pct <- function(x, d = 1) sprintf(paste0("%.", d, "f%%"), 100 * x)
+n_mh <- sum(acc$has_mh_step)
+```
+
+## What this stage is
+
+Stage 2d changes **who** the model is about, and nothing else. Every equation is
+the one stage 2c settled on — the speed-limit Phillips curve, foreign demand
+over partner *imports*, the sovereign spread in place of the long-rate level,
+and the intertemporal-substitution term in consumption. What changes is the
+partition of the world:
+
+| | stage 2c | stage 2d |
+|---|---|---|
+| entities | 11 countries | `de`, `fr`, `it`, `us`, `cn`, `reu` |
+| estimation window | 2000Q1–2024Q4 (`T = 98`) | 2005Q1–2024Q4 (`T = `r shape$t_obs``) |
+| stochastic equations | 68 | `r shape$stochastic` |
+| identities | 46 | `r shape$identities` |
+| policy rules | `ea_policy_rate`, `us_policy_rate` | those plus `cn_policy_rate` |
+| `k` | 76 | **`r shape$k`** |
+| `df` | 22 | **`r shape$df`** |
+
+Two of the six entities are not ordinary countries.
+
+- **`reu`** is a *bloc*: the seven modelled euro-area economies other than
+  Germany, France and Italy, aggregated into one pseudo-country with its own
+  equations, its own row and column in the trade-weight matrix, and its own
+  `foreign_demand` identity. Its members contribute no equations of their own.
+- **`cn`** is China, the first economy this project has had to assemble rather
+  than fetch. It is also the only one whose block departs from the stage-2c
+  template, and it departs for a data reason, not a modelling preference.
+
+**The headline is the degrees of freedom.** Every earlier structural change in
+this project bought detail at the cost of `df` — stage 3a went from 22 to 15 to
+6, stage 3b to 8. Stage 2d runs the other way: collapsing seven countries into
+one bloc removes enough equations that `k` falls from 76 to `r shape$k`, and
+even after giving up eighteen quarters at the start of the sample `df` rises
+from 22 to **`r shape$df`**. This is the most comfortably identified joint
+system the project has estimated.
+
+## The two constructed entities
+
+### `reu`: the rest of the euro area
+
+```{r bloc-weights}
+kable(
+  data.frame(member = toupper(names(bloc_w)), weight = round(as.numeric(bloc_w), 4)),
+  caption = "Nominal-GDP weights within the reu bloc (bloc_gdp_weights()).",
+  align = "lr"
+)
+```
+
+Every `reu_<concept>` series is built from those weights, with the aggregator
+chosen by the series' own attributes: a **level** concept (every volume, every
+price index) is chained in *growth* space by `chain_weighted_index()`, and a
+**rate** concept (`unemployment`, `long_rate`) is a weighted average of levels.
+The distinction is the one that governs `ea_gdp` and `<iso2>_foreign_demand`
+already — `log(sum_i w_i x_i) != sum_i w_i log(x_i)`, and koma differences
+everything before it estimates.
+
+**The bloc's identity weights are its members' shares averaged, and getting
+that wrong is easy.** `expenditure_shares()` forms each share as the mean of a
+*level* ratio, which works for a real country because its series share a
+currency and a scale. Every bloc series is a base-100 chain index instead, so
+the ratio is not a share at all — it is the two indices' relative growth since
+the base period. Measured on this panel, `mean(reu_exports / reu_gdp)` comes out
+at **1.337**: `reu` exports grew 2.5x since 2000 while its GDP grew 1.6x, and
+the ratio reports that rather than an export share. koma has no
+identity-consistency check, so the wrong weight would have been enforced in
+silence. `bloc_expenditure_shares()` averages the members' own shares instead:
+
+```{r reu-shares}
+kable(
+  data.frame(
+    component = names(shares$reu$gdp),
+    weight = round(as.numeric(shares$reu$gdp), 3)
+  ),
+  caption = "reu_gdp identity weights, from the members' shares. Note reu_exports at 0.598, not 1.337 -- Ireland and the Netherlands carry very large trade shares, so the bloc is more open than the euro area as a whole.",
+  align = "lr"
+)
+```
+
+The name is **rest of the euro *area***, not rest of the EU. The bloc covers the
+seven modelled EA economies, which is what the panel has data for; it is not the
+EU, and it is not the whole euro area either (the six smallest members were never
+in `modelled_countries`). Everything genuinely outside the six stage-2d entities
+still goes to `row_gdp`, so nothing is double-counted — but `reu_gdp` is not a
+published aggregate and should not be compared against one.
+
+### `cn`: China, and the one thing the public data does not have
+
+China publishes **no quarterly expenditure-side national accounts**, and that is
+a fact about the data rather than a gap in the search. Verified absent from:
+
+- **OECD Quarterly National Accounts** — carries `B1GQ` for China and nothing
+  else, and only from 2011Q1;
+- **OECD Economic Outlook** — annual for everything except CPI and two interest
+  rates, and even annually it has no `CPV`/`IGV` for China;
+- **IMF International Financial Statistics** — real GDP from 2011Q1, no
+  expenditure split;
+- **World Bank GEM**, **FRED** (China coverage discontinued between 2019 and
+  2023) and the **NBS** itself.
+
+So `cn_consumption` and `cn_investment` do not exist. The alternative to
+inventing them from indicator proxies — retail sales, fixed-asset investment —
+is to merge them, and that is what `merged_demand_countries` does:
+
+```
+cn_domestic_demand ~ cn_gdp + cn_long_rate + cn_domestic_demand.L(1)
+cn_exports         ~ cn_foreign_demand + cn_exports.L(1)
+cn_imports         ~ cn_domestic_demand + cn_imports.L(1)
+cn_prices          ~ eur_usd + oil_price + cn_gdp + cn_prices.L(1)
+cn_spread          ~ cn_prices + cn_gdp + cn_spread.L(1)
+cn_policy_rate     ~ cn_prices + cn_gdp + cn_policy_rate.L(1)
+
+cn_gdp            == 0.958*cn_domestic_demand + 0.243*cn_exports - 0.201*cn_imports
+cn_long_rate      == 1*cn_spread + 1*cn_policy_rate
+cn_foreign_demand == (trade-weighted partner imports)
+```
+
+The rate term survives the merge unconditionally, because it was investment's
+term as well as consumption's and it is China's only monetary channel. What is
+given up is the *split*: there is no separate MPC or accelerator to read off.
+Net cost is one equation and one column of `k`.
+
+**Sources**, all free and keyless:
+
+| series | source | span (2026-09 vintage) |
+|---|---|---|
+| `cn_gdp` | WB GEM `NYGDPMKTPSAKN`, real GDP, SA | 1995Q1–2025Q4 |
+| `cn_prices` | WB GEM `CPTOTSAXN`, CPI, SA, monthly | 1995M01–2026M02 |
+| `cn_exports` | WB GEM `DXGSRMRCHSACD / DXGSRMRCHSAXD` | 2005Q1–2025Q3 |
+| `cn_imports` | WB GEM `DMGSRMRCHSACD / DMGSRMRCHSAXD` | 1995Q1–2025Q3 |
+| `cn_policy_rate` | OECD `DSD_STES@DF_FINMARK` `IRSTCI` | 1990Q1–2025Q2 |
+| `cn_long_rate` | OECD `IRLT` spliced onto `IR3TIB` | see below |
+
+#### Three constructions, each stated because each is one
+
+**Trade volumes are deflated, not taken as published.** GEM's constant-price
+China trade series are missing **every first quarter from 2020Q1 to 2025Q1** —
+six of the eighty quarters in the window, all in the middle of the sample, where
+koma cannot estimate across them at all. (China's customs administration stopped
+publishing a separate January figure, merging January and February to smooth the
+moving Lunar New Year.) The current-price and price-index series are complete, so
+the volume is recovered as `value / price` — the same quotient GEM computes
+internally, reproducing the published series where both exist to a mean ratio of
+**0.99985** (sd 4.4e-4) for exports and **0.99974** (sd 9.4e-4) for imports. That
+recovers six real quarters instead of interpolating them.
+
+**Units are reconciled by a constant rescaling.** GDP is constant local currency
+and the trade volumes are constant US dollars; the three cannot be added. Both
+volume series are rescaled by a single constant so their window mean equals the
+mean *nominal* trade share of GDP times mean real GDP, the shares coming from
+GEM's own current-dollar series so numerator and denominator share a currency:
+**`r sprintf("%.3f", cn_shares$exports)`** (exports) and
+**`r sprintf("%.3f", cn_shares$imports)`** (imports). A constant multiplicative
+rescaling changes no growth rate, so koma still differences exactly the published
+volume index.
+
+**Domestic demand is the accounting residual**, `cn_gdp - cn_exports +
+cn_imports`, which makes the GDP identity exact in level space (verified to
+3.7e-9). Because the trade series are **merchandise only**, the residual absorbs
+the services balance — for China a persistent services *deficit* — so
+`cn_domestic_demand` is a little larger than true domestic demand and grows a
+little differently. Same class of approximation as `<iso2>_gdp`'s statistical
+discrepancy, and `identity_consistency()` treats it the same way: reported,
+never flagged.
+
+#### The long rate is the weakest series here
+
+```{r cn-splice}
+sp <- cn_shares$long_rate_splice
+kable(
+  data.frame(
+    quantity = c("mean IRLT - IR3TIB", "sd of that gap", "overlapping quarters",
+                 "IRLT begins", "quarters spliced in the window"),
+    value = c(sprintf("%.3f pp", sp$offset), sprintf("%.3f pp", sp$offset_sd),
+              as.character(sp$overlap), paste0(sp$spliced_before[1], "Q", sp$spliced_before[2]),
+              "36 of 80")
+  ),
+  caption = "The cn_long_rate splice, measured.",
+  align = "lr"
+)
+```
+
+OECD publishes a genuine Chinese 10-year government bond rate, `IRLT`, but only
+from **2014Q1** — none of the first 36 quarters of the estimation window. Before
+that, `cn_long_rate` is the three-month interbank rate shifted by the mean gap
+over the overlap. The shift is additive rather than multiplicative because these
+are rates in percentage points that pass through koma untransformed, and a ratio
+splice on a series that can approach zero is not safe.
+
+**The standard deviation of that gap is nearly twice its mean**, so the spliced
+segment reproduces the *level* of a Chinese long rate but not its independent
+variation: before 2014 `cn_long_rate` moves exactly like the three-month
+interbank rate. The consequence is specific — `cn_spread` is a genuine term
+premium over the second half of the sample and a money-market term spread plus a
+constant over the first. If that is not acceptable for a given exercise, the
+clean alternative is `stage2d_config(spread_countries = setdiff(stage2d_countries(), "cn"))`,
+which lets `cn_domestic_demand` load `cn_policy_rate` directly: `IRSTCI` is
+complete over the whole window and needs no splice at all.
+
+One further interpolated observation: `IR3TIB` is missing 2006Q1, which
+`fill_internal_gaps()` fills with a warning naming it.
+
+## Trade weights, and a wart that had to be fixed
+
+```{r trade-weights}
+kable(round(W, 4), caption = "Stage-2d trade weights. Rows are reporters, columns partners plus the rest-of-world residual; every row sums to 1.")
+```
+
+```{r trade-source}
+kable(
+  data.frame(reporter = names(attr(W, "source")), source = unname(attr(W, "source"))),
+  caption = "How each row was built.", align = "ll"
+)
+```
+
+The euro-area rows come from ECB WTS as everywhere else in this project. The
+`reu` row is its members' rows averaged with GDP weights and **intra-bloc trade
+renormalised away** — `r pct(attr(W, "intra_bloc")[["reu"]])` of the averaged
+row, which has no external counterparty once the seven members are one entity.
+
+**The `us` and `cn` rows are the fix.** ECB WTS computes weights *for*
+euro-area reporters only, so stages 1–3 build the US row from the reciprocal of
+each euro-area country's own weight on the US, renormalised. Renormalising is
+where it goes wrong: it forces the modelled partners to account for the
+reporter's entire trade. The stage-2b matrix on disk gives the United States a
+rest-of-world weight of **4.6%** and Ireland a **24.7%** share of US trade —
+both plainly false, and both already recorded in `CLAUDE.md` as
+known-unreliable. With only six entities, and China now among them, applying the
+same construction would have given China a rest-of-world weight of **1.0%** and
+put 56% of Chinese trade inside the euro area.
+
+Both rows therefore come from observed **IMF Direction of Trade Statistics**
+instead (`imf_dots_weights()`), where the world total is published and the
+residual is real: the US at `r pct(W["us","row"])` rest-of-world and China at
+`r pct(W["cn","row"])`, with the US–China pair at `r pct(W["us","cn"])` /
+`r pct(W["cn","us"])`. Two differences from WTS are worth keeping in view, since
+the two statistics now coexist in one matrix: DOTS is **goods only** where WTS
+covers manufactured products *and services*, and DOTS is a plain trade share
+where WTS is a double-weighted effective-exchange-rate weight that also accounts
+for third-market competition.
+
+### China leaves `row_gdp`
+
+```{r row-gdp}
+all_names <- union(names(row_w_2b), names(row_w))
+kable(
+  data.frame(
+    partner = all_names,
+    `stages 1-3` = round(as.numeric(row_w_2b[all_names]), 4),
+    `stage 2d` = round(as.numeric(row_w[all_names]), 4),
+    check.names = FALSE
+  ),
+  caption = "row_gdp_weights(): China is modelled now, so it must come out of the rest-of-world aggregate.",
+  align = "lrr"
+)
+```
+
+Passing the stage-2b `row_weights` to stage 2d would not error. It would just
+load Chinese demand into every partner's `foreign_demand` identity twice — once
+directly and once through `row_gdp` — silently.
+
+## Pre-flight and identities
+
+```{r preflight}
+kable(preflight, caption = "stage2_preflight(): every check passes.")
+```
+
+```{r identity}
+kable(
+  head(identity_chk[order(-identity_chk$max_abs_error), ], 12),
+  row.names = FALSE, digits = 4,
+  caption = "identity_consistency(). The 13 identities meant to be exact hold to 9.8e-14; the ones reported but never flagged are the GDP and domestic-demand identities, which reconcile only up to the statistical discrepancy."
+)
+```
+
+`reu_gdp`'s worst error, at 5.0 percentage points of quarterly growth, is the
+largest in the table and it should be: on top of the statistical discrepancy a
+single country carries (Germany 2.0, Italy 1.9), the bloc adds a **dispersion**
+term, because its seven members' own expenditure shares differ from the average
+the identity uses. It is the price of the aggregation, it is bounded, and it is
+of the same order as the country-level slack rather than a different animal.
+
+## Estimation
+
+```{r tuning}
+flagged_by_iter <- tapply(tuning$flagged, tuning$iteration, function(x) sum(x, na.rm = TRUE))
+max_by_iter <- tapply(tuning$acceptance_rate, tuning$iteration, function(x) round(max(x, na.rm = TRUE), 4))
+kable(
+  data.frame(iteration = names(flagged_by_iter),
+             flagged = as.integer(flagged_by_iter),
+             max_acceptance = as.numeric(max_by_iter)),
+  caption = "tune_tau_system(): flagged equations and the worst acceptance rate per round.",
+  align = "lrr"
+)
+```
+
+All **`r n_mh` of `r nrow(acc)`** equations have a Metropolis step — every one
+of them has a contemporaneous endogenous regressor, which stage 2c's Phillips
+curve is what made true. After tuning, acceptance rates run
+`r pct(min(acc$acceptance_rate[acc$has_mh_step]))`–`r pct(max(acc$acceptance_rate[acc$has_mh_step]))`
+against the 20–60% band, with `r sum(acc$flagged)` equation
+(`r paste(acc$equation[acc$flagged], collapse = ", ")`) marginally over at
+`r pct(max(acc$acceptance_rate[acc$flagged]))`. The doubling rule oscillates
+around the boundary rather than converging on it; three rounds took the count
+from `r flagged_by_iter[["0"]]` to `r sum(acc$flagged)` and a fourth would not
+help. `r length(tau)` equations carry a `tau` override, all at 2.2.
+
+```{r lag-stability}
+kable(
+  head(lag_stab[order(-lag_stab$estimate), ], 8), row.names = FALSE, digits = 4,
+  caption = "The eight most persistent own lags. None is explosive."
+)
+```
+
+**No own lag is flagged**, which is worth stating given the history: stage 3b's
+`de_long_rate` crossed to 1.004 the moment it gained a fifth regressor at
+`df = 8`. At `df = `r shape$df`` the most persistent equation here is
+`us_policy_rate` at `r round(max(lag_stab$estimate), 3)`, with the whole
+spread family in the 0.93–0.97 range that stage 2c also reported.
+
+## Does the structure work?
+
+### Every policy rate reaches every price
+
+```{r reachability}
+n_endog <- length(sys_eq$endogenous_variables)
+kable(
+  data.frame(
+    `policy rate` = names(reach),
+    `endogenous reached` = sprintf("%d / %d", lengths(reach), n_endog),
+    `price variables reached` = vapply(reach, function(r) sum(grepl("_prices$", r)), integer(1)),
+    check.names = FALSE
+  ),
+  row.names = FALSE,
+  caption = "contemporaneous_reachability() from each of the three policy rates."
+)
+```
+
+This is the structural claim stage 2c existed to establish, and it survives the
+re-partition intact. In stage 2b `ea_policy_rate` reached 91 of 103 endogenous
+variables and **not one price**, so the Taylor rule's inflation term responded to
+something nothing it did could influence. Here all three policy rates reach all
+`r n_endog` endogenous variables and all seven price variables. Adding a third
+rule does not weaken it: China's rule closes its own loop through
+`cn_prices -> cn_policy_rate -> cn_long_rate -> cn_domestic_demand -> cn_gdp ->
+cn_prices`, and reaches the euro area and the US through the trade identities.
+
+Reachability is exact and verifiable. It is **not** a claim that the response has
+the right sign or size — stage 2c's own lesson was that closing the loop
+structurally did not make the monetary shock work, and only the seed placebo
+showed it. A spillover battery on this system is the obvious next step and is
+not in this report.
+
+### Sign checks
+
+```{r signs}
+kable(
+  table(signs$check, ifelse(signs$ok, "pass", "fail")),
+  caption = sprintf("sign_checks() across the six entities: %d of %d pass.",
+                    sum(signs$ok), nrow(signs))
+)
+```
+
+```{r sign-failures}
+kable(
+  signs[!signs$ok, c("iso2", "check", "equation", "term", "estimate")],
+  row.names = FALSE, digits = 4, caption = "The failures."
+)
+```
+
+`r sum(signs$ok)` of `r nrow(signs)` pass. The two Phillips-curve failures are
+small and both straddle zero — Italy's at `r round(signs$estimate[signs$iso2 == "it" & signs$check == "phillips_curve_positive"], 5)`
+is indistinguishable from nothing at all. `spread_loads_on_prices_positive` was
+already flagged in stage 2c as the weakest of the four a priori, since a
+flight-to-quality episode compresses spreads while inflation rises. None of the
+four is in a China or `reu` equation, which is the useful negative result: the
+two constructed entities are not where the specification strains.
+
+### The merged China equation, judged against the right benchmark
+
+```{r implied}
+cn_row <- coefs[coefs$equation == "cn_domestic_demand" & coefs$term == "cn_gdp", ]
+kable(
+  rbind(
+    data.frame(iso2 = implied$iso2, consumption = round(implied$consumption, 3),
+               investment = round(implied$investment, 3), elasticity = round(implied$implied, 3)),
+    data.frame(iso2 = "cn", consumption = NA, investment = NA,
+               elasticity = round(cn_row$estimate, 3))
+  ),
+  row.names = FALSE,
+  caption = "Domestic-demand elasticity to GDP: implied from the split for the five entities that have it, estimated directly for China."
+)
+```
+
+**The first bound put on this rule was wrong, and the data said so.** The
+obvious rule for a merged demand equation is the MPC's — a coefficient in
+`(0, 1)` — and China's `r round(cn_row$estimate, 3)` fails it. But an MPC below
+one is a claim about *consumption*; total domestic absorption also contains
+investment, which is far more cyclical than output. Computing the implied
+elasticity for the five entities that do have the split gives
+`r sprintf("%.2f", min(implied$implied))`–`r sprintf("%.2f", max(implied$implied))`,
+with the **United States at `r round(implied$implied[implied$iso2 == "us"], 3)`** —
+so a `(0, 1)` bound would have reported the US as a failure too. The rule is
+`> 0`, and China's estimate sits inside the range the other five span. Reporting
+a correct coefficient as a failure because of a rule invented alongside it is
+exactly the trap this project has hit before.
+
+The rate term in that equation is `r round(coefs$estimate[coefs$equation == "cn_domestic_demand" & coefs$term == "cn_long_rate"], 4)`
+with a 90% interval of
+[`r round(coefs$ci_low[coefs$equation == "cn_domestic_demand" & coefs$term == "cn_long_rate"], 3)`,
+`r round(coefs$ci_high[coefs$equation == "cn_domestic_demand" & coefs$term == "cn_long_rate"], 3)`] —
+correctly signed and firmly indistinguishable from zero. Given that 36 of the 80
+quarters of `cn_long_rate` are spliced, that is the expected result rather than a
+surprise, and it is the strongest argument for trying the
+`spread_countries`-without-China variant.
+
+### What the bloc costs: `reu_investment`
+
+```{r reu-investment}
+inv_sd <- vapply(c("de", "fr", "it", "us", "reu"), function(cc) {
+  x <- stats::window(readRDS(file.path(dir2d, "panel.rds"))[[paste0(cc, "_investment")]],
+                     start = c(2005, 1), end = c(2024, 4))
+  stats::sd(as.numeric(koma::rate(x)), na.rm = TRUE)
+}, numeric(1))
+inv_rmse <- insample[grepl("_investment$", insample$equation), ]
+kable(
+  data.frame(
+    entity = names(inv_sd),
+    `sd of growth` = round(inv_sd, 2),
+    `accelerator (on gdp)` = round(vapply(names(inv_sd), function(cc) {
+      r <- coefs[coefs$equation == paste0(cc, "_investment") & coefs$term == paste0(cc, "_gdp"), ]
+      if (nrow(r) == 0) NA_real_ else r$estimate[1]
+    }, numeric(1)), 3),
+    `in-sample RMSE` = round(inv_rmse$rmse[match(paste0(names(inv_sd), "_investment"), inv_rmse$equation)], 2),
+    check.names = FALSE
+  ),
+  row.names = FALSE,
+  caption = "The investment equations. reu is the most volatile series and the worst-fitting equation, despite being an average of seven economies."
+)
+```
+
+**Averaging seven economies should reduce volatility. Here it raises it**, and
+that is the tell. `reu_investment` has a quarterly growth standard deviation of
+`r round(inv_sd[["reu"]], 2)`, against `r round(inv_sd[["de"]], 2)`–`r round(inv_sd[["it"]], 2)`
+for the four real countries. The cause is the one this project has already
+documented for Ireland: `ie_investment` has a growth sd of **43.0** on this
+window, against 2.2 for Austria and 3.0 for Portugal, and Ireland carries a
+`r pct(bloc_w[["ie"]])` weight in the bloc — so Ireland alone contributes more
+to `reu_investment`'s variance than every other member combined. The
+Netherlands (sd 14.0) adds most of the rest.
+
+The consequence is that **this one equation is not identified**. Its accelerator
+is `r round(coefs$estimate[coefs$equation == "reu_investment" & coefs$term == "reu_gdp"], 3)`
+with a 90% interval of
+[`r round(coefs$ci_low[coefs$equation == "reu_investment" & coefs$term == "reu_gdp"], 2)`,
+`r round(coefs$ci_high[coefs$equation == "reu_investment" & coefs$term == "reu_gdp"], 2)`] —
+wrong-signed, but so wide that the sign carries no information — and its own lag
+has gone to `r round(coefs$estimate[coefs$equation == "reu_investment" & coefs$term == "reu_investment.L(1)"], 3)`,
+i.e. the equation has collapsed into mean-reversion around noise rather than an
+accelerator. Its in-sample RMSE is `r round(inv_rmse$rmse[inv_rmse$equation == "reu_investment"], 2)`
+against `r round(min(inv_rmse$rmse), 2)`–`r round(max(inv_rmse$rmse[inv_rmse$equation != "reu_investment"]), 2)`
+for the others.
+
+There is deliberately no sign rule for the investment accelerator in
+`base_sign_rules()`, so nothing flagged this — it surfaced only from computing
+the implied demand elasticity above, which came out lowest for `reu` at
+`r round(implied$implied[implied$iso2 == "reu"], 3)`. That is the familiar
+lesson in a new place: **a neighbouring coefficient moving is the first symptom**,
+and the check that would have caught it directly does not exist.
+
+Stages 2b and 2c work around Irish measured GDP with `ireland_proxy`, which
+swaps the *foreign-demand basis* for a better-behaved Irish series. That switch
+is unavailable here, because the distortion is now inside an **estimated**
+equation rather than in an identity's components. Two things would actually
+help, neither of them attempted in this report: weighting the bloc by something
+less Ireland-heavy than nominal GDP, or excluding Ireland from `reu` entirely
+and carrying it as its own entity or in `row_gdp`. Until then, read
+`reu_investment` as unidentified, and treat `reu_domestic_demand` — which
+inherits it through the identity — as correspondingly soft.
+
+## What this stage is and is not for
+
+**Use it for** anything where the euro area's three largest economies, the US
+and China need to interact inside one estimated system, and where `df = `r shape$df``
+matters more than country detail: cross-bloc spillovers, a China demand or
+policy shock, the transmission of a US rate move into euro-area activity.
+
+**Do not use it for** a statement about Austria, Spain, Ireland or any other
+`reu` member — they have no equations here, only a weight. Stage 2b or 2c is
+where those live. And do not compare its coefficients directly against stage
+2c's: the sample is eighteen quarters shorter, and four of the six entities are
+different objects.
+
+**The three things to watch** are stated above rather than buried:
+`cn_long_rate` is spliced over 45% of the window, `reu_investment` is not
+identified because Ireland dominates the bloc's investment variance, and `reu`'s
+identities carry a dispersion term on top of the usual statistical discrepancy. Neither is hidden from the
+diagnostics — the splice is measured in `cn_long_rate_series()` and the
+dispersion shows up in `identity_consistency()` as the largest error in the
+table.
+
+
+## Eight-quarter forecast
+
+```{r fc-load}
+#| include: false
+source("reports/_forecast_helpers.R")
+library(ggplot2)
+fc <- forecast_artefact("stage2d")
+fc_entities <- stage2d_countries()
+gdp_vars <- fc_vars(fc$paths, fc_entities, "gdp")
+price_vars <- fc_vars(fc$paths, fc_entities, "prices")
+```
+
+`r fc_window_note(fc)`
+
+Every fan below is the **filtered** predictive interval: koma constrains no
+draw to be stationary, so a draw whose quarterly growth exceeds 100% in
+absolute value is dropped before the quantiles are taken, exactly as
+`score_forecast()` does when it scores a backtest. The solid band is the
+25th-75th percentile of what survives, the faint band the 10th-90th, the dark
+line their median, and the grey line the realised path where one exists.
+`r fc_explosive_note(fc, c(gdp_vars, price_vars))`
+A variable whose discarded share climbs steeply is one whose fan
+**understates** the model's true uncertainty, so read the tail of a wide fan
+as an ordering rather than a number.
+
+**The panels are clipped, and that is worth saying plainly.** Eight quarters
+out, the 10-90 interval on *quarterly* growth spans tens of percentage points
+in every stage of this project -- an honest number, and one that makes the
+median invisible if the axis is scaled to contain it. Each panel is therefore
+scaled to its inner band, and the outer band runs to the panel edge rather
+than being drawn in full. Nothing is concealed: the table at the end of this
+section reports the untruncated bounds.
+
+`r fc_anker_note(fc)`
+
+### GDP
+
+```{r fc-gdp}
+#| fig-width: 9
+#| fig-height: 5.2
+plot_forecast_fan(fc$paths, gdp_vars, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(gdp_vars),
+                  title = "Real GDP growth, quarterly %",
+                  subtitle = "inner 25-75%, outer 10-90% clipped at the panel edge; grey = realised")
+```
+
+```{r fc-gdp-table}
+kable(fc_median_table(fc, gdp_vars, space = "rate"),
+      row.names = FALSE,
+      caption = "Median GDP growth forecast by quarter, percent.")
+```
+
+### Prices
+
+```{r fc-prices}
+#| fig-width: 9
+#| fig-height: 5.2
+plot_forecast_fan(fc$paths, price_vars, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(price_vars),
+                  title = "Consumer price growth, quarterly %",
+                  subtitle = "inner 25-75%, outer 10-90% clipped at the panel edge; grey = realised")
+```
+
+```{r fc-prices-table}
+kable(fc_median_table(fc, price_vars, space = "rate"),
+      row.names = FALSE,
+      caption = "Median price growth forecast by quarter, percent.")
+```
+
+### Policy rates
+
+A `method = "none"` series passes through koma untouched, so for a policy rate
+the forecast **is** the level -- there is no rate-versus-level distinction to
+make, and no anchoring question either.
+
+```{r fc-rates}
+#| fig-width: 9
+#| fig-height: 3.2
+rate_vars <- intersect(c("ea_policy_rate", "us_policy_rate", "cn_policy_rate"), unique(fc$paths$variable))
+plot_forecast_fan(fc$paths, rate_vars, space = "level", ncol = 3,
+                  labeller = fc_full_labels(rate_vars),
+                  title = "Policy rates, percent",
+                  subtitle = "inner 25-75%, outer 10-90%; grey = realised")
+```
+
+```{r fc-rates-table}
+kable(forecast_table(fc$paths, rate_vars, space = "level"), row.names = FALSE,
+      caption = "Median policy-rate path, percent.")
+```
+
+### What was discarded, and what the exogenous path assumes
+
+```{r fc-explosive}
+kable(
+  transform(forecast_explosive_table(fc$paths, c(gdp_vars, price_vars)),
+            h1 = round(h1, 3), h_last = round(h_last, 3), max = round(max, 3)),
+  row.names = FALSE,
+  col.names = c("variable", "explosive share, h1", paste0("h", fc$horizon), "max"),
+  caption = "Share of posterior draws discarded as explosive, by variable."
+)
+```
+
+```{r fc-uncertainty}
+kable(forecast_uncertainty_table(fc$paths, c(gdp_vars, price_vars), space = "rate"),
+      row.names = FALSE,
+      caption = paste("The untruncated predictive band at horizon", fc$horizon,
+                      "-- quarterly growth, percent. This is what the charts clip."))
+```
+
+A forecast this long needs the **exogenous** series to reach the end of the
+horizon, and they do not: every one of them stops at the fit's own native
+forecast end. `extend_forecast_horizon()` carries each one forward on its
+trailing four-quarter average growth -- a momentum continuation, not a view on
+oil markets or world trade -- and koma would otherwise have silently returned a
+shorter horizon than the one requested.
+
+```{r fc-extension}
+kable(fc$extension, row.names = FALSE,
+      caption = "How each exogenous series was carried past the fit's native forecast end.")
+```

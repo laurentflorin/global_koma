@@ -4,7 +4,7 @@
 \alias{base_sign_rules}
 \title{The stage-1/2 sign rules}
 \usage{
-base_sign_rules(iso2)
+base_sign_rules(iso2, merged_demand = FALSE, policy_var = NULL)
 }
 \description{
 One list entry per check: \code{check}, \code{equation}, \code{term}, a human-readable

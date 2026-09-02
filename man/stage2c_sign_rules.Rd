@@ -4,7 +4,11 @@
 \alias{stage2c_sign_rules}
 \title{Sign rules for the stage-2c refinements}
 \usage{
-stage2c_sign_rules(iso2, refinements = stage2c_refinements())
+stage2c_sign_rules(
+  iso2,
+  refinements = stage2c_refinements(),
+  merged_demand = FALSE
+)
 }
 \arguments{
 \item{iso2}{Two-letter lowercase ISO country code.}
