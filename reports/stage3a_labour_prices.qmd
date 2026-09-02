@@ -547,6 +547,19 @@ It should still not be preferred to phase A, but the case against it is
 narrower than it first appeared, and the reason that changed is worth
 recording.
 
+```{r phase-b-load}
+#| include: false
+# Defined here rather than in the `phase-b` chunk below, because the prose
+# between this point and that chunk cites `signs_b` in inline `r` expressions.
+# knitr evaluates those in document order, so defining them later left the
+# report unrenderable with "object 'signs_b' not found".
+fit_b <- readRDS(file.path(dir3a, "fit_b_final.rds"))
+coefs_b <- coefficient_table(fit_b$fit)
+signs_b <- sign_checks(coefs_b, "de", labour = TRUE)
+cmp <- merge(signs[, c("check", "estimate", "ok")], signs_b[, c("check", "estimate", "ok")],
+             by = "check", suffixes = c("_A", "_B"))
+```
+
 **A correction to an earlier version of this report.** Run against the
 *contaminated* imports specification of section 5.1, phase B looked far
 worse: it lost three sign checks including `long_rate_loads_on_policy_rate`
@@ -562,11 +575,6 @@ term interacting with thin degrees of freedom, not a property of `df = 6`
 alone. What survives is real but smaller, and is set out below.
 
 ```{r phase-b}
-fit_b <- readRDS(file.path(dir3a, "fit_b_final.rds"))
-coefs_b <- coefficient_table(fit_b$fit)
-signs_b <- sign_checks(coefs_b, "de", labour = TRUE)
-cmp <- merge(signs[, c("check", "estimate", "ok")], signs_b[, c("check", "estimate", "ok")],
-             by = "check", suffixes = c("_A", "_B"))
 kable(cmp[!cmp$ok_B, ], row.names = FALSE, digits = 4,
       caption = "Sign checks that fail in phase B (phase A passes all of them).")
 ```
@@ -689,3 +697,4 @@ over half of Germany's trade weight. Foreign *demand* keeps that share on
 index therefore assumes the unmodelled half of the world prices like the
 modelled half. That is not a rounding detail, and it bounds how much of the
 competitiveness channel this system can actually see.
+
