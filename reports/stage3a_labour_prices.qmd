@@ -698,3 +698,119 @@ index therefore assumes the unmodelled half of the world prices like the
 modelled half. That is not a rounding detail, and it bounds how much of the
 competitiveness channel this system can actually see.
 
+
+## Eight-quarter forecast
+
+```{r fc-load}
+#| include: false
+source("reports/_forecast_helpers.R")
+library(ggplot2)
+fc <- forecast_artefact("stage3a")
+fc_entities <- modelled_countries
+gdp_vars <- fc_vars(fc$paths, fc_entities, "gdp")
+price_vars <- fc_vars(fc$paths, fc_entities, "prices")
+```
+
+`r fc_window_note(fc)`
+
+Every fan below is the **filtered** predictive interval: koma constrains no
+draw to be stationary, so a draw whose quarterly growth exceeds 100% in
+absolute value is dropped before the quantiles are taken, exactly as
+`score_forecast()` does when it scores a backtest. The solid band is the
+25th-75th percentile of what survives, the faint band the 10th-90th, the dark
+line their median, and the grey line the realised path where one exists.
+`r fc_explosive_note(fc, c(gdp_vars, price_vars))`
+A variable whose discarded share climbs steeply is one whose fan
+**understates** the model's true uncertainty, so read the tail of a wide fan
+as an ordering rather than a number.
+
+**The panels are clipped, and that is worth saying plainly.** Eight quarters
+out, the 10-90 interval on *quarterly* growth spans tens of percentage points
+in every stage of this project -- an honest number, and one that makes the
+median invisible if the axis is scaled to contain it. Each panel is therefore
+scaled to its inner band, and the outer band runs to the panel edge rather
+than being drawn in full. Nothing is concealed: the table at the end of this
+section reports the untruncated bounds.
+
+`r fc_anker_note(fc)`
+
+### GDP
+
+```{r fc-gdp}
+#| fig-width: 9
+#| fig-height: 7.5
+plot_forecast_fan(fc$paths, gdp_vars, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(gdp_vars),
+                  title = "Real GDP growth, quarterly %",
+                  subtitle = "inner 25-75%, outer 10-90% clipped at the panel edge; grey = realised")
+```
+
+```{r fc-gdp-table}
+kable(fc_median_table(fc, gdp_vars, space = "rate"),
+      row.names = FALSE,
+      caption = "Median GDP growth forecast by quarter, percent.")
+```
+
+### Prices
+
+```{r fc-prices}
+#| fig-width: 9
+#| fig-height: 7.5
+plot_forecast_fan(fc$paths, price_vars, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(price_vars),
+                  title = "Consumer price growth, quarterly %",
+                  subtitle = "inner 25-75%, outer 10-90% clipped at the panel edge; grey = realised")
+```
+
+```{r fc-prices-table}
+kable(fc_median_table(fc, price_vars, space = "rate"),
+      row.names = FALSE,
+      caption = "Median price growth forecast by quarter, percent.")
+```
+
+### The block variables
+
+The equations this stage exists for, run forward. These are the ones with the
+fewest degrees of freedom behind them, so their fans are the widest in the
+project and their discarded-draw shares the highest.
+
+```{r fc-block}
+#| fig-width: 9
+#| fig-height: 5.2
+block_vars <- intersect(c("de_wages", "de_employment", "de_unemployment", "de_ulc", "de_energy_prices", "de_nonenergy_prices"), unique(fc$paths$variable))
+plot_forecast_fan(fc$paths, block_vars, space = "rate", ncol = 3,
+                  labeller = fc_full_labels(block_vars),
+                  title = "Stage block variables, quarterly % (rates in levels)",
+                  subtitle = "inner 25-75%, outer 10-90% clipped at the panel edge; grey = realised")
+```
+
+### What was discarded, and what the exogenous path assumes
+
+```{r fc-explosive}
+kable(
+  transform(forecast_explosive_table(fc$paths, c(gdp_vars, price_vars)),
+            h1 = round(h1, 3), h_last = round(h_last, 3), max = round(max, 3)),
+  row.names = FALSE,
+  col.names = c("variable", "explosive share, h1", paste0("h", fc$horizon), "max"),
+  caption = "Share of posterior draws discarded as explosive, by variable."
+)
+```
+
+```{r fc-uncertainty}
+kable(forecast_uncertainty_table(fc$paths, c(gdp_vars, price_vars), space = "rate"),
+      row.names = FALSE,
+      caption = paste("The untruncated predictive band at horizon", fc$horizon,
+                      "-- quarterly growth, percent. This is what the charts clip."))
+```
+
+A forecast this long needs the **exogenous** series to reach the end of the
+horizon, and they do not: every one of them stops at the fit's own native
+forecast end. `extend_forecast_horizon()` carries each one forward on its
+trailing four-quarter average growth -- a momentum continuation, not a view on
+oil markets or world trade -- and koma would otherwise have silently returned a
+shorter horizon than the one requested.
+
+```{r fc-extension}
+kable(fc$extension, row.names = FALSE,
+      caption = "How each exogenous series was carried past the fit's native forecast end.")
+```

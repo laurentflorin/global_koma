@@ -17,6 +17,7 @@ R/                     package code (roxygen-documented, exported via NAMESPACE)
   equations.R             naming convention + koma equation-string builders
   diagnostics.R           MCMC diagnostics wrappers, applied across countries
   scoring.R               out-of-sample RMSE scoring + leaderboards
+  forecasts.R             8-quarter stage forecasts + fan charts for the reports
 tests/testthat/         one test-<name>.R per R/<name>.R file
 data/raw/               git-ignored: raw downloaded series
 data/cache/             git-ignored: cached API responses
@@ -590,6 +591,65 @@ against `T = 98`, so `df` 15 -> 14 -> 10 -> **8**. See
   `long_rate <- govdebt` link was ~0. Check the per-link means before reading a
   low gain as reassurance.
 
+## Reporting a forecast (`forecasts.R`)
+
+Every stage report carries an **eight-quarter forecast** section — fan chart,
+median table, discarded-draw table, exogenous-extension table — built by
+`stage_forecast()` and `plot_forecast_fan()`, with the artefacts produced by
+`scratch/forecasts_build.R` into `data/cache/forecasts/<stage>.rds` and the
+shared report code in `reports/_forecast_helpers.R`. Stage 3c is deliberately
+absent: it is a rollout *feasibility* study whose only fitted system is the
+stage-2b benchmark it compares against.
+
+- **The explosive-draw share is the headline number, and it tracks `df`
+  exactly.** Averaged over each stage's GDP and price variables, the share of
+  posterior draws discarded at horizon 8 is **0.00** for stage 2a, **0.04** for
+  stage 1, **0.35** for stage 2d (`df = 32`), **0.49** for stage 2b and 2c
+  (`df = 22`), **0.58** for stage 3a (`df = 15`) and **0.67** for stage 3b
+  (`df = 8`). That is the degrees-of-freedom cost this repo has been describing
+  qualitatively, finally measured on the thing users actually want. It is also
+  the strongest argument for stage 2d: re-partitioning does not just raise `df`
+  on paper, it visibly buys back forecast usability.
+- **koma silently shortens a horizon it cannot deliver**, so `stage_forecast()`
+  calls `extend_forecast_horizon()` and then **checks `nrow(fc$forecasts[[1]])`
+  and aborts** if fewer quarters came back. Without the extension every stage
+  returns 4-5 quarters for an 8-quarter request and only warns.
+- **Filter the draws before taking any quantile.** At horizon 8 half the
+  posterior has compounded to nonsense in the mid-sized systems, so an
+  unfiltered mean or interval is meaningless. `stage_forecast()` uses
+  `score_forecast()`'s two conventions unchanged: **per-horizon** in rate space,
+  **cumulative** in level space (a draw whose rate explodes at horizon 3 has
+  corrupted its compounded level from horizon 3 on).
+- **A level path is anchored on the last value in the fit's own `ts_data`,
+  which is not always observed.** Stages 1 and 2a estimate to 2019Q4 and
+  forecast from 2023Q1, so koma conditionally fills 2020-2022 first and anchors
+  on the *fill*. Measured: `ie_investment`'s stage-1 anker is **156% above** the
+  observed 2022Q4 value, `gr_investment` 68% below, `de_prices` in stage 2a
+  9.1% below, median across all stage-1 variables 4.2%. Those two stages'
+  **level** charts are therefore not comparable to actuals and their **rate**
+  charts are; `forecast_ankers()` returns the numbers and `fc_anker_note()`
+  prints them. Stages 2b onward estimate to 2024Q4 and forecast from 2025Q1
+  with nothing to fill, so their anker gaps are exactly 0.00%.
+- **`koma::level()` is `anker * exp(cumsum(x/100))` for `rate`/`diff_log`**, so
+  `forecast_draws_level_matrix()` inverts a whole draw matrix at once instead
+  of calling `koma::level()` once per draw. That is ~130x faster — the stage-3b
+  artefact would not build inside ten minutes otherwise — and
+  `test-forecasts.R` asserts it reproduces `forecast_draws_level()` to 1e-12,
+  so a change in koma's inversion fails a test rather than drifting silently.
+  A `method = "none"` series (every policy rate, spread and ratio) has **no
+  anker at all** and `koma::level()` errors on it: level space *is* rate space
+  there, and returning `NA` instead would blank every policy rate.
+- **Fan charts are clipped, on purpose.** The 10-90 interval on *quarterly*
+  growth spans 40-50 percentage points at horizon 8 in every stage, which makes
+  the median invisible if the axis contains it. `plot_forecast_fan()` draws an
+  inner 25-75 band, scales each panel to that, and **clamps** the outer band to
+  the panel edge — `ggplot2::geom_blank()` cannot do this, because it only ever
+  *expands* a scale. `forecast_uncertainty_table()` prints the untruncated
+  bounds next to the chart so the clipping stays honest.
+- **Set the seed.** koma's stochastic forecasts are not reproducible
+  call-to-call (the same fact `scenario_diff()` documents), so without
+  `stage_forecast(seed = )` a report's numbers change on every render.
+
 ## Spillover / conditional-forecast analysis (`spillovers.R`)
 
 koma has **no impulse-response function**. A spillover or shock response is
@@ -772,6 +832,9 @@ the unit tests for whatever you touched now pass. `data_fred.R`,
 implemented; `stage3_blocks.R` is not, so `tar_make()` will still error
 partway through by design — that is expected, not a regression; make sure
 it errors at the *next* unimplemented stub, not an earlier one you touched.
+`forecasts.R` is implemented and its tests are network-free too, but they are
+gated behind `skip_on_cran()`: run them with `devtools::test()` (which sets
+`NOT_CRAN`), not a bare `testthat::test_file()`, or all seven silently skip.
 `devtools::test()` likewise still shows 3 `not implemented` errors, all
 from `test-stage3_blocks.R`.
 
