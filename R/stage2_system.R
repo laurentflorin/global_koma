@@ -272,8 +272,13 @@ stage2_spec <- function(countries, shares, linkage_weights,
 #'   equation (consumption, investment, exports, imports, prices) -- the
 #'   COVID dummies in stage 2b. Deliberately not added to `long_rate` or the
 #'   policy rules, which show no mechanical COVID break.
-#' @param policy_rule Give the US its own Taylor-type `us_policy_rate`
-#'   equation, moving that variable from exogenous to endogenous.
+#' @param policy_rule Which countries get their own Taylor-type
+#'   `<iso2>_policy_rate` equation, moving that variable from exogenous to
+#'   endogenous. `FALSE` (none, stage 2a), `TRUE` (the US alone -- what stages
+#'   2b and 2c mean by it), or a character vector of ISO-2 codes. Stage 2d
+#'   passes `c("us", "cn")`: China is outside the currency union and outside
+#'   the Federal Reserve's, so it needs a third policy rate or its long-rate
+#'   identity would price Chinese debt off the ECB's refi rate.
 #' @param fx Named character vector, `iso2 -> exchange-rate variable`, for
 #'   countries that should not use the default `eur_usd`. Stage 1 and 2a gave
 #'   the US `us_exchange_rate`; stage 2b's three-variable exogenous spec puts
@@ -328,6 +333,31 @@ stage2_spec <- function(countries, shares, linkage_weights,
 #'   and rejected four times (see [country_block()]); it is the activity
 #'   control whose absence made those price specifications unidentifiable.
 #'   Costs no `k`.
+#' @param bloc_weights Named list, `bloc code -> named numeric weights over
+#'   that bloc's member countries`, from [bloc_gdp_weights()]. Required for
+#'   every bloc pseudo-country in the system: [stage2_shares()] uses it to
+#'   average the members' expenditure shares, and there is deliberately no
+#'   fallback, because the fallback ([expenditure_shares()] on the bloc's own
+#'   base-100 index series) returns a plausible number that is wrong by a
+#'   factor of three. See [bloc_expenditure_shares()].
+#' @param merged_demand_countries Character vector of ISO-2 codes whose
+#'   `consumption` and `investment` equations collapse into a single estimated
+#'   `<iso2>_domestic_demand` equation, and whose `domestic_demand` identity is
+#'   dropped (the variable is now stochastic, not defined). **This exists for
+#'   China and for nothing else.** China publishes no quarterly expenditure-side
+#'   national accounts -- verified absent from OECD QNA, the OECD Economic
+#'   Outlook, IMF IFS, World Bank GEM, FRED and the NBS -- so the alternative
+#'   was to proxy two national-accounts aggregates from indicator series, which
+#'   is precisely the kind of invented data `build_cn_panel()` exists to avoid.
+#'
+#'   The merged equation keeps the rate term both of its parents carried, so
+#'   monetary transmission is unaffected in structure: `<iso2>_domestic_demand ~
+#'   <iso2>_gdp + <iso2>_long_rate + lag`. What is given up is the *split* --
+#'   there is no separate consumption MPC or investment accelerator to read off,
+#'   and `sign_checks(merged_demand = TRUE)` swaps the two rules that reference
+#'   them for their domestic-demand counterparts rather than reporting them as
+#'   failures. Net cost in equations is -1; net cost in `k` is -1 as well, since
+#'   two own lags become one.
 #' @param spread_countries Character vector of ISO-2 codes that model the
 #'   sovereign **spread** instead of the long-rate level, with
 #'   `<iso2>_long_rate` becoming an identity over the spread and the policy
@@ -358,7 +388,23 @@ stage2_options <- function(include_government = TRUE,
                            phillips_countries = character(),
                            consumption_rate_countries = character(),
                            import_content_countries = character(),
-                           spread_countries = character()) {
+                           spread_countries = character(),
+                           merged_demand_countries = character(),
+                           bloc_weights = list()) {
+  stray_blocs <- setdiff(names(bloc_weights), bloc_codes)
+  if (length(stray_blocs) > 0) {
+    cli::cli_abort(c(
+      "{.arg bloc_weights} names {.val {stray_blocs}}, which {?is/are} not {?a bloc/blocs}.",
+      "i" = "Declared bloc codes are {.val {bloc_codes}}; see {.fn aggregate_bloc_panel}."
+    ))
+  }
+  merged_overlap <- intersect(merged_demand_countries, labour_countries)
+  if (length(merged_overlap) > 0) {
+    cli::cli_abort(c(
+      "{.val {merged_overlap}} {?is/are} in both {.arg merged_demand_countries} and {.arg labour_countries}.",
+      "i" = "The labour block loads {.field real_income} into a consumption equation the merged form does not have."
+    ))
+  }
   spread_overlap <- intersect(spread_countries, financial_countries)
   if (length(spread_overlap) > 0) {
     cli::cli_abort(c(
@@ -416,8 +462,27 @@ stage2_options <- function(include_government = TRUE,
     phillips_countries = phillips_countries,
     consumption_rate_countries = consumption_rate_countries,
     import_content_countries = import_content_countries,
-    spread_countries = spread_countries
+    spread_countries = spread_countries,
+    merged_demand_countries = merged_demand_countries,
+    bloc_weights = bloc_weights
   )
+}
+
+#' Which countries carry their own policy rule under a [stage2_options()] list
+#'
+#' `policy_rule` accepts `FALSE`, `TRUE` or a character vector, and `TRUE` has
+#' to keep meaning exactly what it meant in stages 2b and 2c -- the US alone --
+#' or those cached fits stop reproducing. Resolving it in one place keeps
+#' [country_block()], [policy_rate_map()] and [stage2_exogenous_variables()]
+#' from drifting apart on the question.
+#'
+#' @param opts A [stage2_options()] list.
+#' @return Character vector of ISO-2 codes, possibly empty.
+#' @keywords internal
+stage2_policy_rule_countries <- function(opts = stage2_options()) {
+  rule <- opts$policy_rule %||% FALSE
+  if (is.character(rule)) return(tolower(rule))
+  if (isTRUE(rule)) "us" else character()
 }
 
 #' One country's block of equations
@@ -435,9 +500,18 @@ stage2_options <- function(include_government = TRUE,
 #' ```
 #'
 #' plus `cc_gdp`, `cc_domestic_demand` and `cc_foreign_demand` identities.
-#' The US additionally gets `us_policy_rate ~ us_prices + us_gdp +
-#' us_policy_rate.L(1)` when `opts$policy_rule` is set, and loads its own
-#' `long_rate` on `us_policy_rate` rather than the shared `ea_policy_rate`.
+#' A country named in `opts$policy_rule` additionally gets
+#' `cc_policy_rate ~ cc_prices + cc_gdp + cc_policy_rate.L(1)`, and loads its
+#' own `long_rate` on that rather than on the shared `ea_policy_rate` -- the US
+#' from stage 2b, China as well from stage 2d.
+#'
+#' A country named in `opts$merged_demand_countries` differs in exactly two
+#' ways: `cc_consumption` and `cc_investment` are replaced by a single
+#' `cc_domestic_demand ~ cc_gdp + cc_long_rate + cc_domestic_demand.L(1)`, and
+#' the `cc_domestic_demand` identity is dropped, since the variable is now
+#' estimated rather than defined. Everything downstream of it -- the imports
+#' equation, the GDP identity -- is unchanged. See [stage2_options()] for why
+#' this exists (China, and only China).
 #'
 #' @param iso2 Two-letter lowercase ISO country code.
 #' @param shares One country's [expenditure_shares()] result.
@@ -453,12 +527,15 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   own_lag <- function(name) stats::setNames(list("1"), name)
   extra <- opts$extra_regressors %||% character()
 
-  is_us <- identical(iso2, "us")
   # `[[` on a character vector aborts on a missing name rather than returning
   # NULL, so %||% cannot rescue it -- look the name up explicitly.
   fx_overrides <- opts$fx %||% character()
   fx <- if (iso2 %in% names(fx_overrides)) unname(fx_overrides[[iso2]]) else "eur_usd"
-  policy_rate <- if (is_us && isTRUE(opts$policy_rule)) "us_policy_rate" else "ea_policy_rate"
+  has_policy_rule <- iso2 %in% stage2_policy_rule_countries(opts)
+  # One resolution for both the long-rate equation's regressor and the spread
+  # identity's second component; see policy_rate_map() for the 3.25pp silent
+  # identity violation that came of having two.
+  policy_rate <- spread_policy_rate(iso2, policy_rate_map(opts))
   has_labour <- iso2 %in% (opts$labour_countries %||% character())
   has_external <- iso2 %in% (opts$external_countries %||% character())
   has_fiscal <- iso2 %in% (opts$fiscal_countries %||% character())
@@ -469,6 +546,9 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   has_consumption_rate <- iso2 %in% (opts$consumption_rate_countries %||% character())
   has_import_content <- iso2 %in% (opts$import_content_countries %||% character())
   has_spread <- iso2 %in% (opts$spread_countries %||% character())
+  # Stage 2d: consumption and investment collapse into one estimated
+  # domestic-demand equation, because China publishes neither quarterly.
+  has_merged_demand <- iso2 %in% (opts$merged_demand_countries %||% character())
 
   # With the labour block on, the price variables must reach trade volumes or
   # they are estimated and then transmit nothing -- the terminal-variable
@@ -525,14 +605,26 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
   phillips_terms <- if (has_phillips) v("gdp") else character()
 
   stochastic <- list()
-  stochastic[[v("consumption")]] <- list(
-    terms = c(v("gdp"), consumption_rate_terms, real_income_terms, extra, v("consumption")),
-    lags = own_lag(v("consumption"))
-  )
-  stochastic[[v("investment")]] <- list(
-    terms = c(v("gdp"), v("long_rate"), credit_terms, extra, v("investment")),
-    lags = own_lag(v("investment"))
-  )
+  if (has_merged_demand) {
+    # The union of what consumption and investment each carried, minus the
+    # duplication: one activity term, one rate term, one own lag. The rate term
+    # is unconditional here (not gated on `consumption_rate_countries`), because
+    # investment always carried it -- dropping it would remove the country's
+    # only monetary channel rather than one of two.
+    stochastic[[v("domestic_demand")]] <- list(
+      terms = c(v("gdp"), v("long_rate"), credit_terms, extra, v("domestic_demand")),
+      lags = own_lag(v("domestic_demand"))
+    )
+  } else {
+    stochastic[[v("consumption")]] <- list(
+      terms = c(v("gdp"), consumption_rate_terms, real_income_terms, extra, v("consumption")),
+      lags = own_lag(v("consumption"))
+    )
+    stochastic[[v("investment")]] <- list(
+      terms = c(v("gdp"), v("long_rate"), credit_terms, extra, v("investment")),
+      lags = own_lag(v("investment"))
+    )
+  }
   stochastic[[v("exports")]] <- list(
     terms = c(v("foreign_demand"), export_price_terms, extra, v("exports")),
     lags = own_lag(v("exports"))
@@ -571,10 +663,10 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
       lags = own_lag(v("long_rate"))
     )
   }
-  if (is_us && isTRUE(opts$policy_rule)) {
-    stochastic[["us_policy_rate"]] <- list(
-      terms = c("us_prices", "us_gdp", "us_policy_rate"),
-      lags = own_lag("us_policy_rate")
+  if (has_policy_rule) {
+    stochastic[[v("policy_rate")]] <- list(
+      terms = c(v("prices"), v("gdp"), v("policy_rate")),
+      lags = own_lag(v("policy_rate"))
     )
   }
 
@@ -588,7 +680,13 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
     isTRUE(opts$include_government)
   }
   dd <- shares$domestic_demand
-  if (!keep_government) {
+  if (!has_merged_demand && is.null(dd)) {
+    cli::cli_abort(c(
+      "{.arg shares} for {.val {iso2}} carries no {.field domestic_demand} split.",
+      "i" = "Either give it one ({.fn expenditure_shares} with {.code components = TRUE}), or name {.val {iso2}} in {.arg merged_demand_countries}."
+    ))
+  }
+  if (!has_merged_demand && !keep_government) {
     dd <- dd[setdiff(names(dd), v("government"))]
     # Renormalise: the raw C and I shares sum to ~0.8, and leaving them so
     # would make the identity under-predict domestic-demand growth by the
@@ -598,7 +696,12 @@ country_block <- function(iso2, shares, foreign_weights, opts = stage2_options()
 
   identities <- list()
   identities[[v("gdp")]] <- shares$gdp
-  identities[[v("domestic_demand")]] <- dd
+  # A merged-demand country's domestic demand is ESTIMATED above, so it must
+  # not also be defined here -- build_system() aborts on a duplicated LHS, and
+  # koma would be checking and estimating the wrong columns if it did not.
+  if (!has_merged_demand) {
+    identities[[v("domestic_demand")]] <- dd
+  }
   identities[[v("foreign_demand")]] <- foreign_weights
   # Stage 2c. Shares one code path with financial_block()'s own version so the
   # identity and the constructed <iso2>_spread series cannot drift apart --
@@ -1007,11 +1110,15 @@ spread_policy_rate <- function(iso2, policy_rate = "ea_policy_rate") {
 #' @param opts A [stage2_options()] list.
 #'
 #' @return A named character vector in the shape [spread_policy_rate()]
-#'   accepts: an entry per country that departs from `ea_policy_rate`, which
-#'   today means the US when it carries its own Taylor rule.
+#'   accepts: an entry per country that departs from `ea_policy_rate` -- the US
+#'   when it carries its own Taylor rule, and from stage 2d China as well.
 #' @keywords internal
 policy_rate_map <- function(opts = stage2_options()) {
-  if (isTRUE(opts$policy_rule)) c(us = "us_policy_rate") else character()
+  ccs <- stage2_policy_rule_countries(opts)
+  if (length(ccs) == 0) {
+    return(character())
+  }
+  stats::setNames(country_var(ccs, "policy_rate"), ccs)
 }
 
 #' The spread identity `<iso2>_long_rate == 1*<iso2>_spread + 1*<policy rate>`
@@ -1843,10 +1950,7 @@ fit_stage2_pilot <- function(countries, panel, dates, trade_weights, gdp_weights
     threshold = threshold, ireland_proxy = ireland_proxy,
     demand_concept = demand_concept
   )
-  shares <- stats::setNames(
-    lapply(countries, function(cc) expenditure_shares(panel, cc, dates)),
-    countries
-  )
+  shares <- stage2_shares(countries, panel, dates, opts)
   spec <- stage2_spec(countries, shares, linkage_weights, opts = opts)
   sys_eq <- build_stage2_system(spec, tau = tau)
   # The panel's `<iso2>_spread` and the system's long-rate identity must
@@ -1872,6 +1976,47 @@ fit_stage2_pilot <- function(countries, panel, dates, trade_weights, gdp_weights
     fit = fit, sys_eq = sys_eq, spec = spec,
     linkage_weights = linkage_weights, panel = stage2_panel,
     preflight = preflight
+  )
+}
+
+#' Expenditure shares for every country in a stage-2 system
+#'
+#' [expenditure_shares()] per country, with `components = FALSE` for the ones
+#' whose domestic demand is estimated rather than defined
+#' ([stage2_options()]'s `merged_demand_countries`). Asking for the split there
+#' would abort, because the panel has no `<iso2>_consumption` series to take a
+#' share of -- which is the correct behaviour, and the reason this wrapper
+#' exists rather than a blanket `lapply`.
+#'
+#' @param countries Character vector of entity codes.
+#' @param panel Named list of `koma_ts`.
+#' @param dates koma `dates` list; shares are computed over
+#'   `dates$estimation`.
+#' @param opts A [stage2_options()] list.
+#'
+#' @return A named list, one [expenditure_shares()] result per country.
+#' @export
+stage2_shares <- function(countries, panel, dates, opts = stage2_options()) {
+  countries <- tolower(countries)
+  merged <- opts$merged_demand_countries %||% character()
+  bloc_weights <- opts$bloc_weights %||% list()
+  stats::setNames(
+    lapply(countries, function(cc) {
+      components <- !cc %in% merged
+      if (!cc %in% bloc_codes) {
+        return(expenditure_shares(panel, cc, dates, components = components))
+      }
+      w <- bloc_weights[[cc]]
+      if (is.null(w)) {
+        cli::cli_abort(c(
+          "{.val {cc}} is a bloc but {.arg opts} carries no {.field bloc_weights} for it.",
+          "i" = "Pass {.code bloc_weights = list({cc} = bloc_gdp_weights(gdp_weights))} to {.fn stage2_options}.",
+          "x" = "There is no safe fallback: {.fn expenditure_shares} on a bloc's base-100 index series returns a ratio of growth rates, not a share."
+        ))
+      }
+      bloc_expenditure_shares(panel, cc, names(w), w, dates, components = components)
+    }),
+    countries
   )
 }
 
@@ -2085,6 +2230,174 @@ stage3a_config <- function(linkage_weights, hicp_weights, phase = c("a", "b"),
   base$phase <- phase
   base$labour_countries <- labour_countries
   base
+}
+
+#' The stage-2d entity set
+#'
+#' Six entities where stages 2b and 2c had eleven: Germany, France, Italy and
+#' the United States unchanged, the other seven modelled euro-area economies
+#' collapsed into the `reu` bloc (see [reu_members()]), and China added.
+#'
+#' The ordering is deliberate and load-bearing in one small way: `reu` sorts
+#' after the real countries, so the equation list, the trade-weight matrix and
+#' every report table put the bloc in the same place.
+#'
+#' @return Character vector of entity codes.
+#' @export
+stage2d_countries <- function() c("de", "fr", "it", "us", "cn", "reu")
+
+#' @rdname stage2d_countries
+#' @export
+stage2d_blocs <- function() list(reu = reu_members())
+
+#' Estimation window for stage 2d
+#'
+#' 2005Q1-2024Q4, `T = 78` after koma drops the two periods `rate()` and the
+#' `L(1)` lag cost (see [estimation_length()]).
+#'
+#' **The start is set by one series.** World Bank GEM publishes China's
+#' merchandise **export volume** (`DXGSRMRCHSAKD`) only from 2005Q1; every
+#' other stage-2d series reaches back to 2000 or earlier. Starting in 2000
+#' would leave `cn_exports` with twenty leading `NA`s inside the estimation
+#' window -- a fifth of one endogenous series filled rather than observed --
+#' so the window starts where the data does. The alternative reading is
+#' equally good: 2005Q1 is comfortably after China's December 2001 WTO
+#' accession, so the sample does not straddle the largest structural break in
+#' its trade series.
+#'
+#' **Losing eighteen quarters costs nothing here, and that is the point of the
+#' regrouping.** Collapsing seven countries into one bloc removes six countries'
+#' worth of equations, so `k` falls from stage 2c's 76 to roughly 47 while `T`
+#' falls only from 98 to 78 -- degrees of freedom go from 22 to around 31. Every
+#' other structural change in this project bought detail with degrees of
+#' freedom; this one buys degrees of freedom with detail.
+#'
+#' COVID is handled with dummies, as in stages 2b and 2c, not by conditional
+#' fill: the window has to reach 2024Q4 to include China's recent trade data,
+#' so the stage-1 trick of forecasting across 2020-2022 is not available.
+#'
+#' @param panel Named list of `koma_ts` (unused; kept for symmetry with
+#'   [stage1_dates()] and [stage2b_dates()]).
+#'
+#' @return A koma `dates` list.
+#' @export
+stage2d_dates <- function(panel = NULL) {
+  list(
+    estimation = list(start = c(2005, 1), end = c(2024, 4)),
+    forecast = list(start = c(2025, 1), end = c(2026, 1))
+  )
+}
+
+#' Configuration for stage 2d: the regional core with China
+#'
+#' Stage 2c's equations on a **re-partitioned world**. Nothing about the
+#' equation template changes: the same Phillips curve, the same partner-imports
+#' foreign-demand basis, the same spread reformulation, the same
+#' intertemporal-substitution term. What changes is who the equations are
+#' written for.
+#'
+#' | | stage 2c | stage 2d |
+#' |---|---|---|
+#' | entities | 11 countries | `de`, `fr`, `it`, `us`, `cn`, `reu` |
+#' | window | 2000Q1-2024Q4 (`T = 98`) | 2005Q1-2024Q4 (`T = 78`) |
+#' | policy rules | `ea_policy_rate`, `us_policy_rate` | those plus `cn_policy_rate` |
+#' | `k` | 76 | ~47 |
+#' | `df` | 22 | ~31 |
+#'
+#' **Two entities are not ordinary countries, and each carries a documented
+#' approximation.**
+#'
+#' - `reu` is a bloc: the GDP-weighted chain aggregate of Austria, Belgium,
+#'   Spain, Greece, Ireland, the Netherlands and Portugal (see
+#'   [aggregate_bloc_panel()]). Its trade row is its members' rows averaged with
+#'   intra-bloc trade renormalised away ([collapse_trade_weights()]). Its
+#'   accounting identities hold up to the same log-linearisation slack a real
+#'   country's do.
+#' - `cn` has no quarterly consumption or investment anywhere in the public
+#'   data, so it is the one country in `merged_demand_countries`: those two
+#'   equations collapse into one estimated `cn_domestic_demand`. Its long rate
+#'   is spliced ([cn_long_rate_series()]) and its domestic demand is an
+#'   accounting residual over merchandise trade ([build_cn_panel()]). Both are
+#'   stated in those functions rather than buried.
+#'
+#' **`row_gdp` must be rebuilt, not reused.** [row_gdp_weights()] folds China
+#' into the rest-of-world aggregate by default. Once China has its own
+#' equations, leaving it there would load Chinese demand into every partner's
+#' `foreign_demand` identity twice -- once directly and once through `row_gdp`
+#' -- so stage 2d needs `row_gdp_weights(exclude = c("us", "cn"))` and a
+#' `row_gdp` series built from it. Passing the stage-2b/2c `row_weights` would
+#' not error; it would just double-count, silently.
+#'
+#' @param gdp_weights The `W_gdp` vector from [build_gdp_weight_matrix()]. Used
+#'   to derive each bloc's member weights, which [stage2_shares()] needs and
+#'   which have no safe default -- see [stage2_options()]'s `bloc_weights`.
+#'   `NULL` builds a config that assembles equations correctly but whose
+#'   `stage2_shares()` call will abort, naming what is missing.
+#' @param countries Entity codes the refinements apply to. Defaults to
+#'   [stage2d_countries()].
+#' @param blocs Named list, `bloc code -> member ISO-2 codes`.
+#' @param policy_rule_countries Which entities get their own policy rule.
+#' @param merged_demand_countries Which entities collapse consumption and
+#'   investment into one equation. `"cn"` by default; see [stage2_options()].
+#' @param spread_countries Which entities model the spread rather than the
+#'   long-rate level. Defaults to all of them, as in stage 2c. Dropping `"cn"`
+#'   here is the clean way to avoid depending on the spliced Chinese long rate
+#'   -- see [cn_long_rate_series()].
+#' @param import_content Add stage 2c's rejected fifth refinement. `FALSE`, and
+#'   for the same reasons; see [stage2c_config()].
+#'
+#' @return A list shaped like [stage2c_config()], with added `blocs` and
+#'   `merged_demand_countries` entries.
+#' @export
+stage2d_config <- function(gdp_weights = NULL,
+                           countries = stage2d_countries(),
+                           policy_rule_countries = c("us", "cn"),
+                           merged_demand_countries = "cn",
+                           spread_countries = countries,
+                           blocs = stage2d_blocs(),
+                           import_content = FALSE) {
+  countries <- tolower(countries)
+  import_content_countries <- if (isTRUE(import_content)) countries else character()
+  # A bloc's identity weights are its members' shares averaged, and there is no
+  # fallback -- see stage2_options()'s `bloc_weights`. Left empty here, this
+  # config still builds the equations correctly; it is stage2_shares() that
+  # aborts, naming what to pass.
+  bloc_weights <- if (is.null(gdp_weights)) {
+    list()
+  } else {
+    lapply(blocs, function(members) bloc_gdp_weights(gdp_weights, members))
+  }
+  list(
+    opts = stage2_options(
+      include_government = FALSE,
+      extra_regressors = stage2b_dummies(),
+      policy_rule = policy_rule_countries,
+      # As stage 2b/2c: the three-variable exogenous spec puts the US on
+      # eur_usd. China joins it -- there is no cn_exchange_rate series in this
+      # panel, and adding one would cost a column of `k` for a country whose
+      # currency was pegged or heavily managed over most of the sample.
+      fx = c(us = "eur_usd", cn = "eur_usd"),
+      phillips_countries = countries,
+      consumption_rate_countries = countries,
+      import_content_countries = import_content_countries,
+      spread_countries = spread_countries,
+      merged_demand_countries = merged_demand_countries,
+      bloc_weights = bloc_weights
+    ),
+    threshold = 0.01,
+    ireland_proxy = FALSE,
+    dummies = stage2b_dummies(),
+    demand_concept = "imports",
+    spread_countries = spread_countries,
+    merged_demand_countries = merged_demand_countries,
+    blocs = blocs,
+    bloc_weights = bloc_weights,
+    refinements = if (isTRUE(import_content)) {
+      stage2c_refinements()
+    } else {
+      setdiff(stage2c_refinements(), "import_content")
+    }
+  )
 }
 
 #' Estimation window for stage 2b

@@ -64,11 +64,20 @@ stage1_cache_dir <- function() {
 #'   over `dates$estimation` only, so the identity coefficients never see
 #'   data outside the estimation sample.
 #' @param digits Number of decimals to round each share to.
+#' @param components Compute the domestic-demand split
+#'   (consumption/investment/government) as well as the GDP identity. `FALSE`
+#'   returns `domestic_demand = NULL`, for a country whose domestic demand is
+#'   **estimated** rather than defined -- see [stage2_options()]'s
+#'   `merged_demand_countries`. China is the only such case, and it is not a
+#'   preference: it has no quarterly consumption or investment series to take
+#'   a share of, so asking for one aborts rather than returning a guess.
 #'
 #' @return A list with elements `gdp` and `domestic_demand`, each a named
 #'   numeric vector keyed by full `<iso2>_<concept>` variable name.
+#'   `domestic_demand` is `NULL` when `components = FALSE`.
 #' @export
-expenditure_shares <- function(panel, iso2, dates = NULL, digits = 3) {
+expenditure_shares <- function(panel, iso2, dates = NULL, digits = 3,
+                               components = TRUE) {
   iso2 <- tolower(iso2)
 
   series <- function(concept) {
@@ -96,6 +105,10 @@ expenditure_shares <- function(panel, iso2, dates = NULL, digits = 3) {
     -share(series("imports"), gdp)
   )
   names(gdp_shares) <- country_var(iso2, c("domestic_demand", "exports", "imports"))
+
+  if (!components) {
+    return(list(gdp = gdp_shares, domestic_demand = NULL))
+  }
 
   dd_shares <- c(
     share(series("consumption"), dd),

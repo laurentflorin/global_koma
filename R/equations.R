@@ -5,24 +5,50 @@
 # area aggregate) or "world_" (global aggregate), or left unprefixed when the
 # series has no natural aggregation (e.g. "oil_price"). See CLAUDE.md.
 
+#' Bloc pseudo-country codes
+#'
+#' A **bloc** is a group of countries that occupies a single country slot in
+#' the model: it has a `<code>_<concept>` series for every concept a real
+#' country has, its own [country_block()], its own row and column in the trade
+#' weight matrix, and its own `foreign_demand` identity. It is therefore *not*
+#' an `ea_`/`world_` aggregate in the [shared_var()] sense -- those are
+#' identities *over* modelled countries, computed alongside them; a bloc
+#' replaces its members entirely, and the members have no equations at all.
+#'
+#' Stage 2d introduces exactly one: `reu`, the rest of the euro area (the
+#' seven modelled EA economies other than Germany, France and Italy). Three
+#' letters rather than two, deliberately -- no real ISO-2 code can collide
+#' with it, so `startsWith(name, "reu_")` cannot accidentally match a country.
+#'
+#' Codes here are accepted by [country_var()] wherever an ISO-2 code is.
+#' @keywords internal
+bloc_codes <- c("reu")
+
 #' Build a country-scoped variable name
 #'
 #' Combines an ISO-2 country code and a concept into the project's
 #' `<iso2>_<concept>` naming convention, and validates the result against
 #' koma's variable-name grammar (`^[a-zA-Z][a-zA-Z0-9_]*$`).
 #'
-#' @param iso2 Two-letter lowercase ISO country code, e.g. `"de"`. May be a
-#'   vector, e.g. to build every `<iso2>_gdp` name for a set of countries at
-#'   once; `concept` is recycled against it.
+#' A `bloc_codes` entry (currently only `"reu"`) is accepted in place of an
+#' ISO-2 code: a bloc occupies a country slot and needs every `<code>_<concept>`
+#' name a real country has. See `bloc_codes`.
+#'
+#' @param iso2 Two-letter lowercase ISO country code, e.g. `"de"`, or a
+#'   `bloc_codes` entry. May be a vector, e.g. to build every `<iso2>_gdp` name
+#'   for a set of countries at once; `concept` is recycled against it.
 #' @param concept Lowercase concept name, e.g. `"gdp"`.
 #'
 #' @return A character vector of `"<iso2>_<concept>"` names, same length as
 #'   `iso2`.
 #' @export
 country_var <- function(iso2, concept) {
-  bad <- iso2[!grepl("^[a-z]{2}$", iso2)]
+  bad <- iso2[!grepl("^[a-z]{2}$", iso2) & !iso2 %in% bloc_codes]
   if (length(bad) > 0) {
-    cli::cli_abort("{.arg iso2} must be two-letter lowercase codes, got {.val {bad}}.")
+    cli::cli_abort(c(
+      "{.arg iso2} must be two-letter lowercase codes, got {.val {bad}}.",
+      "i" = "Bloc pseudo-countries are also accepted: {.val {bloc_codes}}."
+    ))
   }
   name <- paste0(iso2, "_", concept)
   if (!all(is_valid_project_name(name))) {

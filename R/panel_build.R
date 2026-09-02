@@ -25,7 +25,11 @@ iso2_to_eamdqd <- c(
 #' @keywords internal
 iso2_to_ecb <- c(
   at = "AT", be = "BE", de = "DE", gr = "GR", es = "ES",
-  fr = "FR", ie = "IE", it = "IT", nl = "NL", pt = "PT", us = "US"
+  fr = "FR", ie = "IE", it = "IT", nl = "NL", pt = "PT", us = "US",
+  # Stage 2d. China appears in ECB WTS only as a PARTNER -- there is no
+  # CN-reporter series, exactly as for the US, which is why both are
+  # `reciprocal_reporters` in build_trade_weight_matrix().
+  cn = "CN"
 )
 
 #' Target variable set: project concept -> EA-MD/QD series code
@@ -133,7 +137,13 @@ concept_method <- c(
   # are SIGNED ratios -- diff_log on a series that crosses zero gives NaN,
   # which koma reports as an "internal NA" pointing at the wrong problem.
   house_prices = "diff_log", credit = "diff_log",
-  govdebt = "none", netborrowing = "none", current_account = "none"
+  govdebt = "none", netborrowing = "none", current_account = "none",
+  # Derived, not fetched: `domestic_demand` is built by
+  # gdp_identity_component() (and, for China, as an accounting residual), and
+  # `policy_rate` is a country-level rate for a country outside the euro area.
+  # Both need the same tags as their fetched siblings, and both are looked up
+  # by concept in aggregate_bloc_panel()/build_cn_panel().
+  domestic_demand = "diff_log", policy_rate = "none"
 )
 
 #' koma `series_type` for each target concept
@@ -165,7 +175,9 @@ concept_series_type <- c(
   # which is what makes the debt accumulation identity an exact linear
   # relation in percentage points rather than a statement about growth.
   house_prices = "level", credit = "level",
-  govdebt = "rate", netborrowing = "rate", current_account = "rate"
+  govdebt = "rate", netborrowing = "rate", current_account = "rate",
+  # See concept_method above.
+  domestic_demand = "level", policy_rate = "rate"
 )
 
 # --------------------------------------------------------------------------

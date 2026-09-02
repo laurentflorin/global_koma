@@ -381,15 +381,29 @@ coefficient_table <- function(fit, ci_low = 5, ci_up = 95) {
 #'   the model scores `NA`/`FALSE`, so `TRUE` on a system without it turns
 #'   eleven deliberate absences into eleven reported failures.
 #'
+#' @param merged_demand The country's consumption and investment equations are
+#'   merged into one `<iso2>_domestic_demand` equation (see [stage2_options()]'s
+#'   `merged_demand_countries`, and China, which is the only case). The two
+#'   rules that name `<iso2>_consumption` are restated against the merged
+#'   equation rather than reported as failures against an equation the system
+#'   deliberately does not contain -- the same reasoning as the
+#'   `stage2c` refinement subset above.
+#' @param policy_var Override the policy rate the `long_rate` rule is checked
+#'   against. `NULL` derives it as `us_policy_rate` for the US and
+#'   `ea_policy_rate` otherwise; a system with a third policy rule (stage 2d
+#'   gives China one) needs to say so. Inert whenever the `spread` refinement
+#'   or the financial block is active, since both drop that rule.
+#'
 #' @return A `data.frame` with columns `check`, `equation`, `term`,
 #'   `estimate`, `expected`, `ok`. A term the fit does not contain gives
 #'   `estimate = NA` and `ok = FALSE` -- a check that could not be evaluated
 #'   is not a check that passed.
 #' @export
 sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
-                        fiscal = FALSE, financial = FALSE, stage2c = FALSE) {
+                        fiscal = FALSE, financial = FALSE, stage2c = FALSE,
+                        merged_demand = FALSE, policy_var = NULL) {
   iso2 <- tolower(iso2)
-  rules <- base_sign_rules(iso2)
+  rules <- base_sign_rules(iso2, merged_demand = merged_demand, policy_var = policy_var)
   if (!identical(stage2c, FALSE)) {
     refinements <- if (isTRUE(stage2c)) stage2c_refinements() else stage2c
     unknown <- setdiff(refinements, stage2c_refinements())
@@ -403,7 +417,7 @@ sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
       # the financial block below.
       rules <- Filter(function(r) r$check != "long_rate_loads_on_policy_rate", rules)
     }
-    rules <- c(rules, stage2c_sign_rules(iso2, refinements))
+    rules <- c(rules, stage2c_sign_rules(iso2, refinements, merged_demand = merged_demand))
   }
   if (isTRUE(labour)) rules <- c(rules, stage3a_sign_rules(iso2))
   # Under the external block exports load on the competitiveness difference
@@ -447,12 +461,30 @@ sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
 #' `expected`, and a `test` predicate. Split out from [sign_checks()] so the
 #' stage-3a rules can extend the set without touching the original three.
 #' @keywords internal
-base_sign_rules <- function(iso2) {
+base_sign_rules <- function(iso2, merged_demand = FALSE, policy_var = NULL) {
   v <- function(concept) country_var(iso2, concept)
-  policy_var <- if (identical(iso2, "us")) "us_policy_rate" else "ea_policy_rate"
+  policy_var <- policy_var %||% if (identical(iso2, "us")) "us_policy_rate" else "ea_policy_rate"
+  # With consumption and investment merged there is no MPC to check, so the
+  # rule is restated against the merged equation rather than left to report a
+  # permanent failure against an equation the system deliberately lacks.
+  #
+  # **The bound is `> 0`, not `(0, 1)`, and that is not laziness.** An MPC
+  # below 1 is a claim about *consumption*; total domestic absorption also
+  # contains investment, which is far more cyclical than output, so its
+  # elasticity to GDP is routinely above 1. Measured on the stage-2d fit, the
+  # five countries that do have the split imply domestic-demand elasticities of
+  # 0.43 (reu), 0.63 (de), 0.96 (fr), 0.98 (it) and **1.26 (us)** -- so a
+  # `(0, 1)` bound would report the United States as a failure too. It is only
+  # the wrong *sign* that says the equation is broken.
+  activity_equation <- if (isTRUE(merged_demand)) v("domestic_demand") else v("consumption")
   list(
-    list(check = "mpc_in_0_1", equation = v("consumption"), term = v("gdp"),
-         expected = "in (0, 1)", test = function(x) x > 0 && x < 1),
+    if (isTRUE(merged_demand)) {
+      list(check = "absorption_positive", equation = activity_equation, term = v("gdp"),
+           expected = "> 0", test = function(x) x > 0)
+    } else {
+      list(check = "mpc_in_0_1", equation = activity_equation, term = v("gdp"),
+           expected = "in (0, 1)", test = function(x) x > 0 && x < 1)
+    },
     list(check = "import_elasticity_positive", equation = v("imports"),
          term = v("domestic_demand"), expected = "> 0", test = function(x) x > 0),
     list(check = "long_rate_loads_on_policy_rate", equation = v("long_rate"),
@@ -500,13 +532,19 @@ base_sign_rules <- function(iso2) {
 #'
 #' @return A list of rule entries in [base_sign_rules()]'s shape.
 #' @keywords internal
-stage2c_sign_rules <- function(iso2, refinements = stage2c_refinements()) {
+stage2c_sign_rules <- function(iso2, refinements = stage2c_refinements(),
+                               merged_demand = FALSE) {
   v <- function(concept) country_var(iso2, concept)
+  rate_equation <- if (isTRUE(merged_demand)) v("domestic_demand") else v("consumption")
   all_rules <- list(
     phillips = list(check = "phillips_curve_positive", equation = v("prices"),
                     term = v("gdp"), expected = "> 0", test = function(x) x > 0),
-    consumption_rate = list(check = "consumption_rate_channel_negative",
-                            equation = v("consumption"), term = v("long_rate"),
+    consumption_rate = list(check = if (isTRUE(merged_demand)) {
+                              "demand_rate_channel_negative"
+                            } else {
+                              "consumption_rate_channel_negative"
+                            },
+                            equation = rate_equation, term = v("long_rate"),
                             expected = "< 0", test = function(x) x < 0),
     import_content = list(check = "import_content_positive", equation = v("imports"),
                           term = v("exports"), expected = "> 0", test = function(x) x > 0),

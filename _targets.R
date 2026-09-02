@@ -435,5 +435,105 @@ list(
     score_all_countries(stage2b_fit, countries, shared_concepts,
                         stage2b_dates_target, horizon = 4, panel = stage2b_panel)
   ),
-  tar_target(model_leaderboard, leaderboard(scores, by = "concept"))
+  tar_target(model_leaderboard, leaderboard(scores, by = "concept")),
+
+  # -- stage 2d: the regional core with China (see stage2_system.R) --
+  # Stage 2c's equations on a re-partitioned world: DE, FR, IT and the US kept
+  # separate, the other seven modelled euro-area economies collapsed into the
+  # `reu` bloc, and China added as a sixth economy. Everything below is
+  # deliberately parallel to the stage-2c chain, and deliberately shares no
+  # target with it -- stage 2d needs its own trade weights (China is a partner
+  # AND a reporter now), its own row_gdp (China must come OUT of the
+  # rest-of-world aggregate, or every foreign-demand identity would load it
+  # twice) and its own panel.
+  tar_target(stage2d_cfg_countries, stage2d_countries()),
+  tar_target(stage2d_dates_target, stage2d_dates()),
+  # China leaves row_gdp. Passing the stage-2b `row_weights` here would not
+  # error; it would just double-count Chinese demand, silently.
+  tar_target(stage2d_row_weights, row_gdp_weights(exclude = c("us", "cn"))),
+  # ECB WTS for the euro-area reporters, IMF DOTS for the two that WTS does not
+  # cover, then collapsed onto the bloc. Writes its own CSV -- NOT
+  # data/raw/W_trade.csv, which is stage 2b/2c's and must not move.
+  tar_target(stage2d_trade_weights, build_stage2d_trade_weights(gdp_weights)),
+  tar_target(stage2d_gdp_weights, collapse_gdp_weights(gdp_weights, stage2d_blocs())),
+  # Built on the ALIGNED `panel`, with extend = TRUE, so China's trade series
+  # (a quarter behind the rest) cannot pull the whole panel's end back and
+  # silently shorten the forecast horizon.
+  tar_target(
+    stage2d_panel_base,
+    {
+      p <- add_stage2d_countries(panel, gdp_weights, dates = stage2d_dates_target)
+      p[["row_gdp"]] <- align_panel(
+        list(row_gdp = build_row_gdp(stage2d_row_weights)),
+        start = stats::start(p[[1]]), end = stats::end(p[[1]]), extend = TRUE
+      )[[1]]
+      harmonise_panel_attrs(p)
+    }
+  ),
+  tar_target(stage2d_cfg, stage2d_config(gdp_weights)),
+  tar_target(
+    stage2d_linkage_weights,
+    stage2_linkage_weights(stage2d_cfg_countries, stage2d_trade_weights, stage2d_gdp_weights,
+                           threshold = stage2d_cfg$threshold,
+                           demand_concept = stage2d_cfg$demand_concept)
+  ),
+  # stage2_shares() dispatches on the bloc codes: `reu`'s identity weights are
+  # its members' shares averaged, NOT expenditure_shares() on its own base-100
+  # index series, which would report reu_exports/reu_gdp as 1.337.
+  tar_target(
+    stage2d_spec,
+    stage2_spec(
+      stage2d_cfg_countries,
+      stage2_shares(stage2d_cfg_countries, stage2d_panel_base, stage2d_dates_target,
+                    stage2d_cfg$opts),
+      stage2d_linkage_weights,
+      opts = stage2d_cfg$opts
+    )
+  ),
+  tar_target(stage2d_sys_eq, build_stage2_system(stage2d_spec)),
+  tar_target(
+    stage2d_panel,
+    build_stage2_panel(stage2d_panel_base, stage2d_linkage_weights,
+                       dummies = stage2d_cfg$dummies,
+                       spread_countries = stage2d_cfg$spread_countries,
+                       policy_rate = policy_rate_map(stage2d_cfg$opts))
+  ),
+  tar_target(
+    stage2d_preflight,
+    stage2_preflight(stage2d_sys_eq, stage2d_panel, dates = stage2d_dates_target)
+  ),
+  tar_target(
+    stage2d_identity_check,
+    identity_consistency(stage2d_sys_eq, stage2d_panel)
+  ),
+  # NOTE: run with OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1, as stages 2b/2c.
+  tar_target(
+    stage2d_fit,
+    fit_stage2(stage2d_sys_eq, stage2d_panel, stage2d_dates_target, workers = 6)
+  ),
+  tar_target(stage2d_acceptance, check_acceptance_rates(stage2d_fit)),
+  tar_target(stage2d_coefs, coefficient_table(stage2d_fit)),
+  tar_target(stage2d_lag_stability, check_lag_stability(stage2d_coefs)),
+  tar_target(
+    stage2d_signs,
+    do.call(rbind, lapply(stage2d_cfg_countries, function(cc) {
+      s <- sign_checks(
+        stage2d_coefs, cc, stage2c = stage2d_cfg$refinements,
+        merged_demand = cc %in% stage2d_cfg$merged_demand_countries
+      )
+      s$iso2 <- cc
+      s
+    }))
+  ),
+  # Three policy rates now, so reachability is asked of each in turn: a rule
+  # whose inflation term responds to prices it cannot influence is an open
+  # loop, which is exactly the stage-2b defect stage 2c was built to fix.
+  tar_target(
+    stage2d_reachability,
+    stats::setNames(
+      lapply(c("ea_policy_rate", "us_policy_rate", "cn_policy_rate"),
+             function(v) contemporaneous_reachability(stage2d_sys_eq, v)),
+      c("ea_policy_rate", "us_policy_rate", "cn_policy_rate")
+    )
+  )
 )

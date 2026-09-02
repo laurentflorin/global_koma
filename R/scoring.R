@@ -720,9 +720,7 @@ backtest_joint_system <- function(panel, countries, trade_weights, gdp_weights, 
       )
       dummies <- stage2b_dummies_through(origin)
       opts <- opts_fn(origin, dummies)
-      shares <- stats::setNames(
-        lapply(countries, function(cc) expenditure_shares(panel, cc, dates)), countries
-      )
+      shares <- stage2_shares(countries, panel, dates, opts)
       spec <- stage2_spec(countries, shares, lw, opts = opts)
       sys_eq <- build_stage2_system(spec, tau = tau)
       panel_extra <- panel_extra_fn(dummies, opts)

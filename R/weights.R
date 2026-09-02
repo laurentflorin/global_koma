@@ -119,6 +119,17 @@ ecb_trade_weight <- function(ref_area, count_area, window = 3, use_cache = TRUE)
 #' @param countries Character vector of ISO-2 codes to build rows for.
 #'   Defaults to `modelled_countries` (the 10 EA countries plus `"us"`).
 #' @param window Number of most recent annual observations to average.
+#' @param reciprocal_reporters ISO-2 codes with no ECB reporter series of
+#'   their own, whose row is built from the reciprocal approximation described
+#'   above. `"us"` by default, which is what stages 1-3 use and what the
+#'   `data/raw/W_trade.csv` on disk contains. A code here that *does* have a
+#'   direct series would silently get the worse number, so keep the set minimal.
+#' @param dots_reporters ISO-2 codes whose row is taken from **observed** IMF
+#'   Direction of Trade Statistics instead ([imf_dots_weights()]). This is the
+#'   better construction wherever ECB WTS has no reporter series, and stage 2d
+#'   uses it for both `"us"` and `"cn"`; the default is empty so that stages
+#'   1-3 keep reproducing from the reciprocal row they were estimated with.
+#'   Must not overlap `reciprocal_reporters`.
 #' @param out_path Where to write the CSV. Defaults to
 #'   `data/raw/W_trade.csv`. Pass `NULL` to skip writing.
 #'
@@ -127,8 +138,21 @@ ecb_trade_weight <- function(ref_area, count_area, window = 3, use_cache = TRUE)
 #'   (`"direct"`/`"reciprocal"`) per row.
 #' @export
 build_trade_weight_matrix <- function(countries = modelled_countries, window = 3,
+                                      reciprocal_reporters = "us",
+                                      dots_reporters = character(),
                                       out_path = file.path("data", "raw", "W_trade.csv")) {
-  ecb_code <- function(iso2) if (identical(iso2, "us")) "US" else iso2_to_ecb[[iso2]]
+  overlap <- intersect(reciprocal_reporters, dots_reporters)
+  if (length(overlap) > 0) {
+    cli::cli_abort("{.val {overlap}} {?is/are} in both {.arg reciprocal_reporters} and {.arg dots_reporters}.")
+  }
+  ecb_code <- function(iso2) iso2_to_ecb[[iso2]]
+  unknown <- countries[!countries %in% names(iso2_to_ecb)]
+  if (length(unknown) > 0) {
+    cli::cli_abort(c(
+      "No ECB country code for {.val {unknown}}.",
+      "i" = "Add it to {.field iso2_to_ecb} in {.file R/panel_build.R}; note Greece is {.val GR} at the ECB but {.val EL} at Eurostat."
+    ))
+  }
   cols <- c(setdiff(countries, ""), "row")
 
   mat <- matrix(0, nrow = length(countries), ncol = length(cols),
@@ -137,19 +161,31 @@ build_trade_weight_matrix <- function(countries = modelled_countries, window = 3
 
   for (i in countries) {
     partners <- setdiff(countries, i)
-    if (identical(i, "us")) {
-      # No US-reporter series in ECB's WTS -- use the reciprocal of each
-      # EA country's own weight on the US as a documented approximation.
-      row_source["us"] <- "reciprocal"
-      raw <- vapply(partners, function(j) ecb_trade_weight(ecb_code(j), "US", window), numeric(1))
+    if (i %in% dots_reporters) {
+      # Observed bilateral trade, world total included, instead of the
+      # reciprocal approximation -- see imf_dots_weights() for the 4.6%
+      # rest-of-world weight the approximation gives the United States.
+      row_source[i] <- "dots"
+      full_row <- imf_dots_weights(i, partners, window = window)
+      mat[i, names(full_row)] <- full_row
+      next
+    }
+    if (i %in% reciprocal_reporters) {
+      # ECB's WTS is a euro-area effective-exchange-rate product: it computes
+      # weights FOR euro-area reporters, and for no one else. A non-EA reporter
+      # (the US; China, from stage 2d) therefore has no row of its own, and is
+      # built from the reciprocal of each EA country's weight on it -- a
+      # documented approximation, not a direct bilateral series.
+      row_source[i] <- "reciprocal"
+      raw <- vapply(partners, function(j) ecb_trade_weight(ecb_code(j), ecb_code(i), window), numeric(1))
       cli::cli_warn(c(
-        "!" = "ECB WTS has no US-reporter trade-weight series.",
-        "i" = "{.field W_trade[\"us\", ]} is built from the reciprocal of each EA country's own weight on the US, then renormalised -- a documented approximation, not a direct bilateral US series."
+        "!" = "ECB WTS has no {.val {toupper(i)}}-reporter trade-weight series.",
+        "i" = "{.field W_trade[\"{i}\", ]} is built from the reciprocal of each EA country's own weight on {.val {toupper(i)}}, then renormalised -- a documented approximation, not a direct bilateral series."
       ))
       if ("ie" %in% partners && !is.na(raw["ie"]) && raw["ie"] > 0.15) {
         cli::cli_warn(c(
-          "!" = "W_trade[\"us\", \"ie\"] = {round(raw['ie'], 2)} is unusually large.",
-          "i" = "Ireland's own ECB weight on the US is inflated by multinational corporate structures (the same distortion behind the 2015 Irish GDP break -- see data_eamdqd.R), and the reciprocal approximation carries that straight into the US row. Treat this cell as unreliable, not a genuine US-Ireland trade share."
+          "!" = "W_trade[\"{i}\", \"ie\"] = {round(raw['ie'], 2)} is unusually large.",
+          "i" = "Ireland's own ECB weight is inflated by multinational corporate structures (the same distortion behind the 2015 Irish GDP break -- see data_eamdqd.R), and the reciprocal approximation carries that straight into this row. Treat this cell as unreliable, not a genuine bilateral trade share."
         ))
       }
     } else {
@@ -247,17 +283,33 @@ build_gdp_weight_matrix <- function(countries = ea_countries, window = 4,
 #' `weight_j = raw_weight_j / (1 - raw_weight_us)`.
 #'
 #' @param window Number of most recent annual observations to average.
+#' @param exclude ISO-2 codes of partners that are modelled separately and
+#'   must therefore not leak into `row_gdp`. `"us"` by default, matching
+#'   stages 1-3. **Stage 2d passes `c("us", "cn")`**: once China has its own
+#'   equations, leaving it in the rest-of-world aggregate would double-count
+#'   Chinese demand -- every euro-area country's `foreign_demand` identity
+#'   would load China both directly and through `row_gdp`. A code that is not
+#'   one of the `row_partners` (like `"us"`) is only subtracted from the
+#'   denominator; one that is (like `"cn"`) is additionally dropped from the
+#'   returned vector, so [build_row_gdp()] stops fetching its growth rate too.
 #'
-#' @return A named numeric vector (`gb`, `ch`, `cn`, `jp`, `pl`, `se`,
-#'   `other`), summing to 1.
+#' @return A named numeric vector over the retained `row_partners` plus
+#'   `other`, summing to 1.
 #' @export
-row_gdp_weights <- function(window = 3) {
-  raw <- vapply(row_partner_to_ecb, function(cc) ecb_trade_weight("I9", cc, window), numeric(1))
-  names(raw) <- names(row_partner_to_ecb)
-  us_share <- ecb_trade_weight("I9", "US", window)
+row_gdp_weights <- function(window = 3, exclude = "us") {
+  exclude <- tolower(exclude)
+  unknown <- exclude[!exclude %in% names(iso2_to_ecb)]
+  if (length(unknown) > 0) {
+    cli::cli_abort("No ECB country code for excluded partner {.val {unknown}}.")
+  }
+  keep <- setdiff(names(row_partner_to_ecb), exclude)
+  raw <- vapply(row_partner_to_ecb[keep], function(cc) ecb_trade_weight("I9", cc, window), numeric(1))
+  names(raw) <- keep
+  excluded_share <- sum(vapply(
+    exclude, function(cc) ecb_trade_weight("I9", iso2_to_ecb[[cc]], window), numeric(1)
+  ))
 
-  ex_us <- 1 - us_share
-  weights <- raw / ex_us
+  weights <- raw / (1 - excluded_share)
   other <- 1 - sum(weights)
 
   c(weights, other = other)
@@ -299,11 +351,18 @@ row_gdp_weights <- function(window = 3) {
 build_row_gdp <- function(weights, start_year = 2000, end_year = as.integer(format(Sys.Date(), "%Y")) - 1) {
   growth <- imf_datamapper("NGDP_RPCH")
 
-  named <- weights[names(row_partner_to_imf)]
-  named_weights <- named / sum(named) # renormalise across the 6 named countries only
+  # Only the partners the weight vector still carries: row_gdp_weights(exclude =)
+  # drops a partner that has been promoted to its own modelled economy (China,
+  # from stage 2d), and fetching its growth rate here would put it back in.
+  partners <- intersect(names(row_partner_to_imf), names(weights))
+  if (length(partners) == 0) {
+    cli::cli_abort("{.arg weights} names none of the {.field row_partners}.")
+  }
+  named <- weights[partners]
+  named_weights <- named / sum(named) # renormalise across the named countries only
 
   years <- start_year:end_year
-  g <- vapply(names(row_partner_to_imf), function(p) {
+  g <- vapply(partners, function(p) {
     code <- row_partner_to_imf[[p]]
     vals <- growth[[code]][as.character(years)]
     as.numeric(vals) / 100
@@ -651,4 +710,214 @@ weighted_identity <- function(concept, weights, scope = c("ea", "world")) {
   dep <- shared_var(concept, scope = scope)
   terms <- stats::setNames(as.list(as.numeric(weights)), country_var(names(weights), concept))
   identity_equation(dep, terms)
+}
+
+# --------------------------------------------------------------------------
+# Bloc collapse (stage 2d)
+# --------------------------------------------------------------------------
+
+#' Collapse a trade-weight matrix onto a bloc partition
+#'
+#' Turns an `n x (n+1)` `W_trade` over individual countries into a smaller
+#' matrix in which each bloc's members are replaced by a single pseudo-country
+#' row and column (see `bloc_codes` and [reu_members()]). Countries not named
+#' in any bloc are carried through untouched.
+#'
+#' **The column is a sum and the row is a renormalised weighted average, and
+#' the asymmetry is the point.**
+#'
+#' - *Column.* For a reporter outside the bloc, its trade with the bloc is
+#'   simply its trade with each member added up: `W[r, bloc] = sum_j W[r, j]`.
+#'   Nothing is renormalised, because the reporter's row still sums to 1.
+#' - *Row.* The bloc's own trade pattern is the GDP-weighted average of its
+#'   members' rows, **with the intra-bloc columns removed and the remainder
+#'   renormalised**. Dropping them is not optional: Austrian trade with the
+#'   Netherlands is internal to `reu` and has no external counterparty, so
+#'   leaving it in would make the bloc's weights sum to more than its external
+#'   trade and understate every genuine partner. For `reu` that removes a
+#'   substantial share -- the seven members trade heavily with each other --
+#'   which the returned matrix records in its `intra_bloc` attribute rather
+#'   than discarding silently.
+#'
+#' Each row is rescaled to sum to exactly 1 at the end, with the `"row"`
+#' residual absorbing the remainder, matching [build_trade_weight_matrix()].
+#'
+#' @param trade_weights An `n x (n+1)` matrix from
+#'   [build_trade_weight_matrix()], last column `"row"`.
+#' @param blocs Named list, `bloc code -> member ISO-2 codes`.
+#' @param bloc_weights Named list, `bloc code -> named numeric weights over
+#'   that bloc's members`, summing to 1 (see [bloc_gdp_weights()]).
+#'
+#' @return A matrix over the collapsed entity set plus `"row"`, each row
+#'   summing to 1, carrying `attr(, "intra_bloc")` (the share of each bloc's
+#'   averaged trade that was internal and therefore renormalised away) and
+#'   `attr(, "source")` inherited per surviving row.
+#' @export
+collapse_trade_weights <- function(trade_weights, blocs, bloc_weights) {
+  if (length(blocs) == 0) {
+    return(trade_weights)
+  }
+  members_all <- unlist(blocs, use.names = FALSE)
+  duplicated_members <- unique(members_all[duplicated(members_all)])
+  if (length(duplicated_members) > 0) {
+    cli::cli_abort("{.val {duplicated_members}} {?is/are} in more than one bloc.")
+  }
+  absent <- setdiff(members_all, rownames(trade_weights))
+  if (length(absent) > 0) {
+    cli::cli_abort("{.arg trade_weights} has no row for bloc member{?s} {.val {absent}}.")
+  }
+
+  kept <- setdiff(rownames(trade_weights), members_all)
+  entities <- c(kept, names(blocs))
+  cols <- c(entities, "row")
+  out <- matrix(0, nrow = length(entities), ncol = length(cols),
+                dimnames = list(entities, cols))
+
+  # A partner's collapsed weight, for one reporter's raw row.
+  collapse_row <- function(raw) {
+    vapply(cols, function(p) {
+      if (identical(p, "row")) {
+        unname(raw[["row"]])
+      } else if (p %in% names(blocs)) {
+        sum(raw[intersect(blocs[[p]], names(raw))])
+      } else {
+        if (p %in% names(raw)) unname(raw[[p]]) else 0
+      }
+    }, numeric(1))
+  }
+
+  for (r in kept) {
+    row <- collapse_trade_weights_row(trade_weights, r)
+    out[r, ] <- collapse_row(row)
+  }
+
+  intra <- stats::setNames(numeric(length(blocs)), names(blocs))
+  for (b in names(blocs)) {
+    members <- blocs[[b]]
+    w <- bloc_weights[[b]]
+    if (is.null(w) || !setequal(names(w), members)) {
+      cli::cli_abort("{.arg bloc_weights} has no weight vector over {.val {b}}'s members.")
+    }
+    averaged <- Reduce(`+`, lapply(members, function(m) {
+      collapse_trade_weights_row(trade_weights, m) * unname(w[[m]])
+    }))
+    # Intra-bloc trade has no external counterparty once the members are one
+    # entity; record how much is being renormalised away before dropping it.
+    intra[[b]] <- sum(averaged[intersect(members, names(averaged))])
+    averaged[intersect(members, names(averaged))] <- 0
+    collapsed <- collapse_row(averaged)
+    collapsed[b] <- 0 # no diagonal: a bloc does not trade with itself
+    out[b, ] <- collapsed
+  }
+
+  out <- out / rowSums(out)
+  attr(out, "intra_bloc") <- intra
+  src <- attr(trade_weights, "source")
+  if (!is.null(src)) {
+    attr(out, "source") <- c(
+      src[kept],
+      stats::setNames(rep("bloc average", length(blocs)), names(blocs))
+    )
+  }
+  out
+}
+
+#' One reporter's full weight row, named by partner and including `"row"`
+#'
+#' `build_trade_weight_matrix()` leaves a reporter's own diagonal cell at 0,
+#' so reading the row back as a named vector is safe; this exists only to keep
+#' the names attached, which matrix indexing drops for a single row.
+#' @keywords internal
+collapse_trade_weights_row <- function(trade_weights, reporter) {
+  stats::setNames(as.numeric(trade_weights[reporter, ]), colnames(trade_weights))
+}
+
+#' Collapse the euro-area GDP-share vector onto a bloc partition
+#'
+#' The `W_gdp` counterpart to [collapse_trade_weights()]. A bloc's share is
+#' the sum of its members' shares; countries outside every bloc keep theirs.
+#'
+#' **This is what keeps `ea_gdp` and `ea_prices` covering the whole euro area
+#' under stage 2d.** [stage2_linkage_weights()] derives its `ea` weight vector
+#' as `intersect(countries, names(gdp_weights))`, so handing it the
+#' eleven-country `W_gdp` alongside the stage-2d entity set would silently
+#' match only Germany, France and Italy -- the aggregation identities would
+#' then describe three economies while claiming to describe the currency union,
+#' with no error anywhere. Collapsing first makes `reu` match instead.
+#'
+#' Non-euro-area entities (`us`, `cn`) are absent from `W_gdp` and stay absent:
+#' `ea_gdp` aggregates the currency union, not the whole system.
+#'
+#' @param gdp_weights The `W_gdp` named vector from [build_gdp_weight_matrix()].
+#' @param blocs Named list, `bloc code -> member ISO-2 codes`.
+#'
+#' @return A named numeric vector over the surviving countries plus each bloc
+#'   that has at least one member in `gdp_weights`, summing to the same total
+#'   as `gdp_weights` did.
+#' @export
+collapse_gdp_weights <- function(gdp_weights, blocs) {
+  members_all <- unlist(blocs, use.names = FALSE)
+  kept <- setdiff(names(gdp_weights), members_all)
+  bloc_totals <- vapply(blocs, function(members) {
+    sum(gdp_weights[intersect(members, names(gdp_weights))])
+  }, numeric(1))
+  bloc_totals <- bloc_totals[bloc_totals > 0]
+  c(gdp_weights[kept], bloc_totals)
+}
+
+#' Build the stage-2d trade-weight matrix
+#'
+#' [build_trade_weight_matrix()] over the eleven modelled countries **plus
+#' China**, then [collapse_trade_weights()] onto the `reu` bloc. Doing it in
+#' that order rather than fetching weights for six entities directly is what
+#' keeps the bloc's row honest: the ECB publishes weights for member states,
+#' not for an arbitrary seven-country group, so `reu`'s row has to be built
+#' from its members' rows and cannot be looked up.
+#'
+#' ECB WTS has no reporter series for either the US or China -- it computes
+#' weights *for* euro-area reporters only -- so both rows come from observed
+#' IMF Direction of Trade Statistics ([imf_dots_weights()]) rather than from
+#' the reciprocal approximation stages 1-3 use for the US. That approximation
+#' renormalises the modelled partners up to a row sum of 1, which gives the US
+#' a 4.6% rest-of-world weight in `data/raw/W_trade.csv`; with only six
+#' entities and China now among them, that error would dominate
+#' `us_foreign_demand` and `cn_foreign_demand` rather than merely distort them.
+#' As a **partner**, China is directly observed for every euro-area reporter,
+#' so the `cn` *column* is ECB data like every other.
+#'
+#' @param gdp_weights The `W_gdp` vector from [build_gdp_weight_matrix()],
+#'   used to weight the bloc's members when averaging their rows.
+#' @param window Number of most recent annual observations to average.
+#' @param blocs Named list, `bloc code -> members`.
+#' @param out_path Where to write the collapsed CSV. Deliberately **not**
+#'   `data/raw/W_trade.csv`: that file is stage 2b/2c's matrix and overwriting
+#'   it would silently change what those stages reproduce.
+#'
+#' @return A 6x7 matrix over [stage2d_countries()] plus `"row"`, each row
+#'   summing to 1, carrying `intra_bloc` and `source` attributes.
+#' @export
+build_stage2d_trade_weights <- function(gdp_weights, window = 3,
+                                        blocs = stage2d_blocs(),
+                                        out_path = file.path("data", "raw", "W_trade_stage2d.csv")) {
+  countries <- c(modelled_countries, "cn")
+  raw <- build_trade_weight_matrix(
+    countries, window = window,
+    reciprocal_reporters = character(),
+    dots_reporters = c("us", "cn"),
+    out_path = NULL
+  )
+  bloc_weights <- lapply(blocs, function(members) bloc_gdp_weights(gdp_weights, members))
+  out <- collapse_trade_weights(raw, blocs, bloc_weights)
+  # Reorder to stage2d_countries() so every downstream table agrees on it.
+  order_cols <- c(stage2d_countries(), "row")
+  keep_attrs <- attributes(out)[c("intra_bloc", "source")]
+  out <- out[stage2d_countries(), order_cols, drop = FALSE]
+  attr(out, "intra_bloc") <- keep_attrs$intra_bloc
+  attr(out, "source") <- keep_attrs$source[stage2d_countries()]
+
+  if (!is.null(out_path)) {
+    dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+    utils::write.csv(out, out_path, row.names = TRUE)
+  }
+  out
 }
