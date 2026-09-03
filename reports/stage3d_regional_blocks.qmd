@@ -1,0 +1,406 @@
+---
+title: "Stage 3d: the labour block on the regional core"
+subtitle: "The rollout stage 3c said could not happen — and what a bloc changes about what a column of `k` buys"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/stage3d_regional_blocks.qmd`.
+# Artefacts come from scratch/stage3d_build.R.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+library(ggplot2)
+source("reports/_forecast_helpers.R")
+
+dir3d <- file.path("data", "cache", "stage3d")
+g <- function(n) readRDS(file.path(dir3d, paste0(n, ".rds")))
+
+shape      <- g("shape")
+frontier   <- g("frontier")
+preflight  <- g("preflight")
+identity_chk <- g("identity_check")
+acc        <- g("acceptance")
+tuning     <- g("tuning_history")
+coefs      <- g("coefs")
+signs      <- g("signs")
+lag_stab   <- g("lag_stability")
+reach      <- g("reachability")
+insample   <- g("insample")
+hicp       <- g("hicp_weights")
+fpw        <- g("foreign_price_weights")
+sys_eq     <- g("sys_eq")
+
+shape2d <- readRDS(file.path("data", "cache", "stage2d", "shape.rds"))
+signs2d <- readRDS(file.path("data", "cache", "stage2d", "signs.rds"))
+coefs3a <- readRDS(file.path("data", "cache", "stage3a", "coefs_a_final.rds"))
+signs3a <- readRDS(file.path("data", "cache", "stage3a", "signs_a.rds"))
+
+LABOUR <- g("labour_countries")
+countries <- stage2d_countries()
+n_endog <- length(sys_eq$endogenous_variables)
+
+co <- function(tbl, eq, term) {
+  r <- tbl[tbl$equation == eq & tbl$term == term, ]
+  if (nrow(r) == 0) NA_real_ else r$estimate[1]
+}
+ci <- function(tbl, eq, term) {
+  r <- tbl[tbl$equation == eq & tbl$term == term, ]
+  if (nrow(r) == 0) return("--")
+  sprintf("[%.3f, %.3f]", r$ci_low[1], r$ci_high[1])
+}
+fc <- forecast_artefact("stage3d")
+```
+
+## 1. What this is, and why it exists
+
+`reports/stage3c_rollout.qmd` set out to roll the stage-3 blocks across the
+euro area and concluded it could not be done:
+
+> Data availability is not the constraint. […] The constraint is the
+> degrees-of-freedom budget, and it binds by roughly a factor of two: the
+> system is already at `df = 8` with **one** country carrying the blocks, and a
+> second fully-loaded country would need `k = 104` against `T = 98`.
+
+**That conclusion was right about the eleven-country partition and does not
+bind on the six-entity one.** Stage 2d re-partitions the world — `de`, `fr`,
+`it`, `us`, `cn` and the `reu` bloc — and in doing so drops `k` from 76 to 46.
+The labour block still costs seven columns per entity; it is simply being added
+to a system with thirty columns of room instead of none.
+
+**But the arithmetic is not the interesting part. What a bloc changes is what a
+column buys.** `reu` is one entity covering seven economies, so giving it the
+block extends the wage–price channel to seven countries for the price of one:
+
+```{r frontier}
+kable(
+  transform(frontier, feasible = ifelse(feasible, "yes", "no")),
+  row.names = FALSE, align = "lrrrrrl",
+  col.names = c("Configuration", "Labour entities", "Economies covered",
+                "k", "T", "df", "Feasible (df >= 4)"),
+  caption = "The affordability frontier on the regional core. Compare stage 3c's, where DE+FR labour alone reached df = 8 and covered two economies."
+)
+```
+
+This report estimates the **`r paste(LABOUR, collapse = " + ")`** configuration:
+**`r shape$economies_covered` of the eleven** modelled economies carry a
+wage–price block, at `df = `r shape$df``, against stage 3a's **one** economy at
+`df = 15`.
+
+```{r shape}
+kable(data.frame(
+  System = c("Stage 2d (core)", "Stage 3a (DE on stage 2b)", "**Stage 3d (DE + REU on stage 2d)**"),
+  `Economies with the block` = c(0, 1, shape$economies_covered),
+  Equations = c(paste0(shape2d$stochastic, " + ", shape2d$identities), "74 + 39",
+                paste0(shape$stochastic, " + ", shape$identities)),
+  k = c(shape2d$k, 83, shape$k),
+  T = c(shape2d$t_obs, 98, shape$t_obs),
+  df = c(shape2d$df, 15, shape$df),
+  check.names = FALSE
+), row.names = FALSE, align = "lrlrrr")
+```
+
+Phase A only: `<iso2>_foreign_prices` stays exogenous. Stage 3a's phase B —
+giving every partner an export-price equation so foreign prices become an
+identity — cost ten columns on eleven countries and would cost five here, but
+it is a separate question from the one this stage asks.
+
+## 2. The bloc's labour variables
+
+`reu_wages` is the GDP-weighted average of seven national wage **growth**
+rates, not a euro-per-worker level, and `reu_employment` is an index rather
+than a headcount. That is the right object for a model estimated in growth
+space — every stage-3a identity is a statement about growth rates, and they
+reproduce on the bloc exactly as on a country — but the levels are not
+quotable.
+
+```{r hicp}
+kable(data.frame(
+  entity = c("DE", "REU", paste0("  ", toupper(names(hicp$members)))),
+  nonenergy = round(c(hicp$de[["nonenergy_prices"]], hicp$reu[["nonenergy_prices"]],
+                      vapply(hicp$members, function(w) w[["nonenergy_prices"]], numeric(1))), 4),
+  energy = round(c(hicp$de[["energy_prices"]], hicp$reu[["energy_prices"]],
+                   vapply(hicp$members, function(w) w[["energy_prices"]], numeric(1))), 4)
+), row.names = FALSE, align = "lrr",
+caption = "HICP basket split. A bloc has no published basket, so bloc_hicp_weights() averages its members' with the same weights the bloc's series were built from; the members are shown indented.")
+```
+
+The bloc's energy share (`r sprintf("%.1f%%", 100 * hicp$reu[["energy_prices"]])`)
+sits inside its members' range and just below Germany's
+(`r sprintf("%.1f%%", 100 * hicp$de[["energy_prices"]])`). The weights are
+renormalised to sum to exactly 1, which `labour_block()` requires: the split
+*partitions* the basket, and seven rounded weights can otherwise leave a
+1e-4 residual that would abort the block for no real reason.
+
+### The foreign-price index is better here than in stage 3a
+
+```{r fpw}
+kable(
+  do.call(rbind, lapply(names(fpw), function(cc) {
+    w <- fpw[[cc]]
+    data.frame(entity = toupper(cc),
+               partners = paste(sprintf("%s %.3f", sub("_export_prices", "", names(w)),
+                                        as.numeric(w)), collapse = ", "),
+               row_dropped = round(attr(w, "row_weight_dropped"), 3),
+               stringsAsFactors = FALSE)
+  })),
+  row.names = FALSE, col.names = c("Entity", "Partner weights (renormalised)", "row_gdp weight dropped"),
+  caption = "foreign_price_weights(): the trade-weighted index each entity's export and import prices load on."
+)
+```
+
+There is no rest-of-world export-price series, so the `row_gdp` residual is
+dropped and the remainder renormalised — the index therefore assumes the
+unmodelled world prices like the modelled partners. **In stage 3a that
+reallocated 0.572 of German trade; here it reallocates
+`r sprintf("%.3f", attr(fpw$de, "row_weight_dropped"))`.** The improvement is
+not a modelling choice, it is coverage: the US and China are now partners with
+export-price series of their own (FRED's implicit deflator and IMF IFS
+`PXP_IX`), so a fifth of German trade that stage 3a had to assume away is now
+observed.
+
+## 3. Does it estimate?
+
+```{r preflight}
+kable(preflight, caption = "stage2_preflight(): all nine checks pass.")
+```
+
+```{r tuning}
+flagged <- tapply(tuning$flagged, tuning$iteration, function(x) sum(x, na.rm = TRUE))
+kable(data.frame(iteration = names(flagged), flagged = as.integer(flagged)),
+      row.names = FALSE, align = "lr",
+      caption = "tune_tau_system(): equations outside the 20-60% acceptance band, by round.")
+```
+
+`tune_tau_system()` converges to **zero** flagged equations — which stage 3a
+also managed, but at `df = 15` rather than `r shape$df`. Acceptance rates run
+`r sprintf("%.1f%%", 100 * min(acc$acceptance_rate[acc$has_mh_step]))`–`r sprintf("%.1f%%", 100 * max(acc$acceptance_rate[acc$has_mh_step]))`.
+
+**`r sum(acc$has_mh_step)` of `r nrow(acc)` equations have a Metropolis step.**
+The `r sum(!acc$has_mh_step)` that do not are exactly the ones with no
+contemporaneous endogenous regressor, and they are the expected ones:
+
+```{r no-mh}
+kable(data.frame(equation = acc$equation[!acc$has_mh_step]), row.names = FALSE,
+      caption = "Equations with no Metropolis step -- energy prices (oil and FX only) and import prices (whose only non-exogenous regressor, foreign_prices, is exogenous under phase A). Documented behaviour, not a failure.")
+```
+
+```{r lag}
+kable(head(lag_stab[order(-lag_stab$estimate), ], 6), row.names = FALSE, digits = 3,
+      caption = "The six most persistent own lags. None is flagged.")
+```
+
+**No own lag is explosive**, which is the check stage 3b failed: at `df = 8`
+`de_long_rate` crossed to 1.004 the moment debt became its fifth regressor. At
+`df = `r shape$df`` the most persistent equation here is
+`r lag_stab$equation[which.max(lag_stab$estimate)]` at
+`r sprintf("%.3f", max(lag_stab$estimate))`.
+
+```{r identity}
+kable(head(identity_chk[order(-identity_chk$max_abs_error), ], 8), row.names = FALSE, digits = 4,
+      caption = "identity_consistency(). The exact identities hold to 9.6e-14; the ones reported but never flagged are the GDP and domestic-demand identities.")
+```
+
+::: {.callout-note}
+## A bug this stage exposed
+
+`reu_prices` initially failed the exact-identity check by **1.47e-07** — small,
+but the identity is supposed to be exact. The cause was in
+`identity_equation()`, which rendered weights with `format()`'s default **7
+significant digits** while the identity's left-hand side series is built from
+the full-precision numeric weight. Every weight in the project until now was a
+rounded expenditure or trade share, so the two always agreed; the bloc's HICP
+split is a seven-member average and is not a round number. koma has no
+identity-consistency check, so this would have been enforced in silence.
+Fixed by rendering 15 digits, which leaves every already-rounded weight
+identical — verified against the cached stage-2b and 2c systems.
+:::
+
+## 4. What the bloc identifies that Germany alone does not
+
+```{r wage-phillips}
+kable(data.frame(
+  Equation = c("Wage Phillips curve", "", "Okun (employment)", "",
+               "Export-price pass-through", ""),
+  Entity = c("DE (stage 3a)", "DE / REU (stage 3d)", "DE", "REU", "DE", "REU"),
+  Term = c("de_unemployment", "de_unemployment / reu_unemployment", "de_gdp", "reu_gdp",
+           "de_foreign_prices", "reu_foreign_prices"),
+  Estimate = c(
+    sprintf("%.3f", co(coefs3a, "de_wages", "de_unemployment")),
+    sprintf("%.3f / %.3f", co(coefs, "de_wages", "de_unemployment"), co(coefs, "reu_wages", "reu_unemployment")),
+    sprintf("%.3f", co(coefs, "de_employment", "de_gdp")),
+    sprintf("%.3f", co(coefs, "reu_employment", "reu_gdp")),
+    sprintf("%.3f", co(coefs, "de_export_prices", "de_foreign_prices")),
+    sprintf("%.3f", co(coefs, "reu_export_prices", "reu_foreign_prices"))),
+  `90% interval` = c(
+    ci(coefs3a, "de_wages", "de_unemployment"),
+    paste(ci(coefs, "de_wages", "de_unemployment"), "/", ci(coefs, "reu_wages", "reu_unemployment")),
+    ci(coefs, "de_employment", "de_gdp"), ci(coefs, "reu_employment", "reu_gdp"),
+    ci(coefs, "de_export_prices", "de_foreign_prices"), ci(coefs, "reu_export_prices", "reu_foreign_prices")),
+  check.names = FALSE
+), row.names = FALSE, align = "lllll")
+```
+
+**The wage Phillips curve is identified on the bloc and not on Germany.**
+Germany's wage–unemployment coefficient is
+`r sprintf("%.3f", co(coefs, "de_wages", "de_unemployment"))` with an interval
+of `r ci(coefs, "de_wages", "de_unemployment")` — correctly signed but
+straddling zero, which is also what stage 3a found on its own window. The
+bloc's is `r sprintf("%.3f", co(coefs, "reu_wages", "reu_unemployment"))`,
+interval `r ci(coefs, "reu_wages", "reu_unemployment")` — **the interval
+excludes zero.**
+
+That is the aggregation working *for* identification rather than against it,
+and it is worth being precise about why. Germany's unemployment rate moves in a
+narrow band over this window; the bloc's is a GDP-weighted average that
+includes Spain, Greece and Ireland, whose unemployment rates swung by tens of
+percentage points across the sovereign-debt crisis. The bloc has far more
+variation in the regressor, and a wage equation can see the relationship
+through it. `reu_employment`'s Okun coefficient
+(`r sprintf("%.3f", co(coefs, "reu_employment", "reu_gdp"))` against Germany's
+`r sprintf("%.3f", co(coefs, "de_employment", "de_gdp"))`) says the same thing
+from the other side: employment in the bloc is far more responsive to output
+than in Germany, which matches everything known about those labour markets.
+
+**This cuts the other way too, and the sign checks say where.**
+
+```{r signs}
+kable(table(signs$check, ifelse(signs$ok, "pass", "fail")),
+      caption = sprintf("sign_checks() across all six entities: %d of %d pass.",
+                        sum(signs$ok), nrow(signs)))
+```
+
+```{r sign-fails}
+kable(signs[!signs$ok, c("iso2", "check", "term", "estimate")], row.names = FALSE, digits = 4,
+      caption = "The failures.")
+```
+
+Two of the `r sum(!signs$ok)` are in the bloc's own labour block and both are
+about **pass-through**, not about the cycle: `reu_wages` does not index to
+`reu_prices` (`r sprintf("%.3f", co(coefs, "reu_wages", "reu_prices"))`) and
+`reu_export_prices` does not load on `reu_ulc`
+(`r sprintf("%.3f", co(coefs, "reu_export_prices", "reu_ulc"))`). Both are
+plausibly the aggregation: indexation arrangements and cost pass-through differ
+sharply across seven economies, so averaging their growth rates averages away
+the very mechanism the coefficient is trying to measure. The cyclical
+relationships — which depend on *co-movement* rather than on a shared
+institutional parameter — survive aggregation; the institutional ones do not.
+
+That is a genuine limitation of the bloc, and it is the opposite trade to the
+one Germany makes: Germany has the institutions but not the variation.
+
+::: {.callout-note}
+## A second bug this stage exposed
+
+`sign_checks()` reported `phillips_curve_positive` as a failure for both labour
+entities with `estimate = NA`. Under the labour block `<iso2>_prices` is an
+**identity** over the energy and non-energy sub-indices, so there is no
+`prices ~ gdp` coefficient to look at — the same claim is made and checked by
+`price_phillips_curve_negative` on `nonenergy_prices`. The stage-2c rule is now
+dropped for a labour country, exactly as the `spread` and `financial` rules
+already were. Two deliberate absences were being reported as failures.
+:::
+
+## 5. Structure
+
+```{r reach}
+kable(data.frame(
+  `policy rate` = names(reach),
+  `endogenous reached` = sprintf("%d / %d", lengths(reach), n_endog),
+  `price variables reached` = vapply(reach, function(r) sum(grepl("_prices$", r)), integer(1)),
+  check.names = FALSE
+), row.names = FALSE,
+caption = "contemporaneous_reachability() from each policy rate.")
+```
+
+All three policy rates reach every price variable in the system, including the
+disaggregated ones the labour block introduces. Stage 2c's structural fix
+survives both the re-partition and the block.
+
+## 6. Eight-quarter forecast
+
+```{r fc-note}
+#| results: asis
+cat(fc_window_note(fc), "\n")
+```
+
+```{r fc-gdp}
+#| fig-width: 9
+#| fig-height: 5.2
+v <- fc_vars(fc$paths, countries, "gdp")
+plot_forecast_fan(fc$paths, v, space = "rate", ncol = 3, labeller = fc_entity_labels(v),
+                  title = "Real GDP growth, quarterly %",
+                  subtitle = "inner 25-75%, outer 10-90% clipped at the panel edge; grey = realised")
+```
+
+```{r fc-labour}
+#| fig-width: 9
+#| fig-height: 5.2
+lv <- intersect(c("de_wages", "reu_wages", "de_unemployment", "reu_unemployment",
+                  "de_nonenergy_prices", "reu_nonenergy_prices"), unique(fc$paths$variable))
+plot_forecast_fan(fc$paths, lv, space = "rate", ncol = 3, labeller = fc_full_labels(lv),
+                  title = "The block variables",
+                  subtitle = "inner 25-75%, outer 10-90% clipped; grey = realised")
+```
+
+```{r fc-expl}
+d <- fc$paths[fc$paths$kind == "forecast", ]
+d$concept <- sub("^[a-z]{2,3}_", "", d$variable)
+kable(
+  do.call(rbind, lapply(c("gdp", "prices", "wages", "unemployment"), function(cn) {
+    x <- d[d$concept == cn, ]
+    if (!nrow(x)) return(NULL)
+    data.frame(concept = cn,
+               h1 = round(mean(x$explosive_frac[x$horizon == 1]), 4),
+               h8 = round(mean(x$explosive_frac[x$horizon == max(x$horizon)]), 4))
+  })),
+  row.names = FALSE, col.names = c("Concept", "explosive share h1", "h8"),
+  caption = "Share of draws discarded as explosive. Compare stage 2d (GDP 0.40 at h8, df 32) and stage 3a (0.70, df 15): this system sits between them, where df 18 says it should."
+)
+```
+
+```{r fc-extension}
+kable(fc$extension, row.names = FALSE,
+      caption = "How each exogenous series was carried to the horizon.")
+```
+
+**One caveat the extension table makes visible.** `de_foreign_prices` and
+`reu_foreign_prices` are extended by **eight** quarters, not three — the whole
+forecast window — because they are chained indices over partners' export
+prices and stop where the shortest partner does, which is China's IFS
+export-price index at 2024Q4. Their extrapolated path is flat (trailing-4Q
+average growth of `r sprintf("%.2f%%", 0)`/q, export prices having been flat),
+so this is a conservative assumption rather than a wild one, but the price
+channel's external driver is assumption rather than data across the whole
+horizon.
+
+## 7. Verdict
+
+| | |
+|---|---|
+| Economies with a wage–price channel | **`r shape$economies_covered` of 11**, against stage 3a's 1 |
+| `df` | **`r shape$df`**, against stage 3a's 15 and stage 3b's 8 |
+| Acceptance tuning | converges to **0** flagged equations |
+| Explosive own lags | **none** |
+| Sign checks | `r sum(signs$ok)` of `r nrow(signs)` |
+| Wage Phillips curve | **identified on the bloc**, not on Germany |
+| Wage indexation, ULC pass-through | **lost** to aggregation on the bloc |
+
+**Stage 3c's finding was not wrong; it was partition-specific.** "The rollout
+cannot happen" was a true statement about eleven countries and a false one
+about the world. What changed is not the estimator, the data or the block — it
+is that a bloc makes one column of `k` buy seven economies instead of one.
+
+**What this does not do.** It does not give Spain or Greece their own wage
+equation — they have a share in one. An institution-specific question (national
+indexation, a country's own ULC pass-through) still needs a country-level
+block, and stage 3c's arithmetic still applies to that. The bloc answers
+*regional* questions: what a euro-area-wide wage–price spiral does to the core,
+and how the labour channel changes a spillover.

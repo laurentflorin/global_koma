@@ -463,8 +463,9 @@ into the `reu` bloc, and China added. 38 stochastic equations and 25 identities;
 `k = 46`, `T = 78` (2005Q1–2024Q4), `df = 32`. `stage2d_config()` /
 `stage2d_dates()` / `stage2d_countries()` carry the settings. See
 `reports/stage2d_regional_core.qmd`, with the equation-by-equation view in
-`reports/stage2d_equations.qmd` and the shock battery in
-`reports/stage2d_spillovers.qmd`.
+`reports/stage2d_equations.qmd`, the shock battery in
+`reports/stage2d_spillovers.qmd`, and the labour block on this partition in
+`reports/stage3d_regional_blocks.qmd`.
 
 - **This is the first stage that *buys* degrees of freedom.** Every earlier
   structural change traded `df` for detail — stage 3a went 22 → 15 → 6, stage 3b
@@ -621,6 +622,91 @@ into the `reu` bloc, and China added. 38 stochastic equations and 25 identities;
   automatically would take the earliest end across everything and silently
   truncate every exogenous series — the trap already recorded for stage 3a.
   `add_stage2d_countries()` pads instead.
+
+## Stage 3d: the labour block on the regional core (`stage2_system.R`)
+
+Stage 3a's `labour_block()`, unchanged, on stage 2d's six-entity partition:
+`labour_countries = c("de", "reu")`. 50 stochastic equations and 33 identities;
+`k = 60`, `T = 78`, `df = 18`. `stage3d_config()` / `stage3d_frontier()` carry
+the settings; artefacts from `scratch/stage3d_build.R`. See
+`reports/stage3d_regional_blocks.qmd`.
+
+- **Stage 3c's "the rollout cannot happen" was partition-specific, not a
+  property of the model.** The block still costs seven columns per entity
+  (six net predetermined plus one exogenous `foreign_prices`); the base is
+  stage 2d's `k = 46` rather than stage 2b's 76. **What a bloc changes is what
+  a column buys**: `reu` is one entity covering seven economies, so `de + reu`
+  gives a wage–price channel to **8 of the 11** modelled economies at `df = 18`,
+  against stage 3a's **1** economy at `df = 15`. `de + reu + fr + it` reaches
+  10 economies at `df = 4`, exactly the documented feasibility floor.
+- **The bloc identifies the wage Phillips curve that Germany alone does not,
+  and loses the institutional coefficients Germany has.** `reu_wages` on
+  `reu_unemployment` is **-0.176 with a 90% interval of [-0.302, -0.053]** —
+  excluding zero — while Germany's is -0.105 straddling it, on the same fit.
+  The bloc's unemployment rate is a GDP-weighted average including Spain,
+  Greece and Ireland, so it carries the sovereign-debt-crisis variation German
+  unemployment does not; `reu_employment`'s Okun coefficient says the same from
+  the other side (0.349 against Germany's 0.101). But `reu_wages` does not index
+  to `reu_prices` (-0.067) and `reu_export_prices` does not load on `reu_ulc`
+  (-0.076), both wrong-signed: averaging seven economies' growth rates averages
+  away institution-specific pass-through. **Cyclical relationships survive
+  aggregation because they depend on co-movement; institutional ones do not.**
+  A bloc does not give its members their own equations — an
+  indexation question still needs a country-level block.
+- **`build_global_panel(stage3a = TRUE)` fetches the stage-3a *and* stage-3b
+  concept sets**, because `resolve_stage3a_concepts()` expands `TRUE` to
+  `c(stage3a_concepts, stage3b_concepts)`. That aborts on Greece, which has no
+  `HPRC` (house prices) in this vintage. Pass `stage3a_concepts` explicitly for
+  a labour-block-only panel.
+- **`<iso2>_foreign_prices` stops where the shortest partner's export price
+  does**, which on this partition is China's IMF IFS `PXP_IX` at 2024Q4 — so
+  the whole eight-quarter forecast window is extrapolated for that one
+  exogenous series. Its trailing growth is ~0.00%/q (export prices have been
+  flat), so the assumption is conservative, but the price channel's external
+  driver is assumption rather than data across the horizon.
+- **The foreign-price index covers more trade here than in stage 3a.** The
+  `row_gdp` residual it has to renormalise away is **0.456** for Germany against
+  stage 3a's 0.572, because the US and China are now partners with export-price
+  series of their own — FRED's implicit deflator (`EXPGS / EXPGSC1`) and IMF IFS
+  `PXP_IX`. That is coverage, not a modelling choice.
+
+### Five bugs the regional-core rollout exposed
+
+All four were latent: each needed a configuration this project had not run.
+
+- **`identity_equation()` rendered weights at 7 significant digits**
+  (`format()`'s default) while the identity's LHS series is built from the
+  full-precision numeric weight, so the two disagreed for any weight that is
+  not a round number. Every weight until now was a rounded expenditure or trade
+  share; the bloc's HICP split is a seven-member average, and `reu_prices` was
+  violated by **1.47e-07**. koma has no identity-consistency check, so this was
+  silent. Fixed with `digits = 15`, which leaves every rounded weight rendering
+  identically — verified against the cached stage-2b and 2c systems.
+- **`foreign_price_weights()` assumed the partner was `<cc>_gdp`.** It stripped
+  `_(gdp|consumption)$` to get the ISO code, which leaves `fr_imports` intact
+  and then aborts inside `country_var()`. This is the **same defect**
+  `spillover_sanity_checks()` already carries a note about, in a second place:
+  a `foreign_demand` identity loads GDP (2a/2b), consumption (`ireland_proxy`)
+  or **imports** (2c/2d). Both now split on the first underscore.
+- **`extend_forecast_horizon()` added one blanket `quarters - native_horizon`
+  to every exogenous series**, assuming they all end at the fit's native
+  forecast end. An exogenous series *constructed* from others does not:
+  `<iso2>_foreign_prices` was short of even the native horizon and koma refused
+  the forecast outright. It now measures each series' own shortfall — a strict
+  generalisation, and it stops the over-extension that was appending unused
+  points to every other stage.
+- **The same function extrapolated from a ragged edge.**
+  `align_panel(extend = TRUE)` pads with trailing `NA`s and `koma::rate()` drops
+  them, so the panel runs on as `NA` while the fit's series ends at the last
+  observation. `tail(level, 1)` was therefore `NA` and the extension came back
+  all-`NA`, which koma reports as "does not extend into the forecast period"
+  rather than as a bad value. It now trims to the last observation first.
+- **`sign_checks()` reported `phillips_curve_positive` as a failure for a
+  labour country.** Under the labour block `<iso2>_prices` is an *identity*, so
+  there is no `prices ~ gdp` coefficient — the claim is restated as
+  `price_phillips_curve_negative` on `nonenergy_prices`. The stage-2c rule is
+  now dropped for a labour country, as the `spread` and `financial` rules
+  already were.
 
 ## Stage 3a: labour market and disaggregated prices (`stage2_system.R`)
 
@@ -798,9 +884,10 @@ full.
 - **The df-versus-explosive-share chart is the one slide to keep.** Plotting
   each stage's `df` against the share of GDP draws that explode by horizon 8
   gives a nearly straight line: stage 3b (`df = 8`) 0.79, stage 3a (15) 0.70,
-  stage 2b/2c (22) 0.60/0.55, stage 2d (32) 0.40, stage 2a (59) 0.00. Stage 1
-  is plotted hollow and excluded from the fit, because its `df` is per country
-  and not the same quantity.
+  stage 3d (18) 0.55, stage 2b/2c (22) 0.60/0.55, stage 2d (32) 0.40, stage 2a
+  (59) 0.00 — **correlation -0.989** across the joint systems. Stage 1 is
+  plotted hollow and excluded from the fit, because its `df` is per country and
+  not the same quantity.
 - **The forecasts independently reproduce the stage-2c price finding.** A single
   8-quarter forecast from 2025Q1 puts the stage-2b price explosive share at
   **0.0001** and stage 2c's at **0.415** — the same conclusion

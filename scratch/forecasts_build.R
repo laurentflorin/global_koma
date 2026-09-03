@@ -55,6 +55,12 @@ stages <- list(
     label = "Stage 3b (external + fiscal + financial)",
     file = file.path("data", "cache", "stage3b", "fit_financial.rds"),
     pick = function(o) list(fit = o$fit, panel = o$panel)
+  ),
+  stage3d = list(
+    label = "Stage 3d (labour block on the regional core)",
+    file = file.path("data", "cache", "stage3d", "tuned.rds"),
+    pick = function(o) list(fit = o$fit,
+                            panel = readRDS(file.path("data", "cache", "stage3d", "stage_panel.rds")))
   )
 )
 

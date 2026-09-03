@@ -65,6 +65,27 @@ A separate finding falls out of that placebo and applies to stage 2b too:
 **individual spillover cells are not reliable in this project at 1000 draws**,
 in either system. See §4.4.
 
+::: {.callout-important}
+## Follow-up: the constraint is partition-specific
+
+Everything below is correct **about the eleven-country partition**, and the
+last paragraph of §5 — "further structure needs either a longer sample or a
+smaller system" — turned out to be the operative sentence. Stage 2d built the
+smaller system: six entities, with the seven smallest euro-area economies
+collapsed into one `reu` bloc, which drops `k` from 76 to 46.
+
+On that partition the labour block **is** affordable, and
+`reports/stage3d_regional_blocks.qmd` estimates it:
+`de + reu` gives a wage–price channel to **eight of the eleven** modelled
+economies at `df = 18`, against the one economy at `df = 15` this report was
+comparing against.
+
+The arithmetic here did not change — the block still costs seven columns per
+entity. What changed is what a column buys: a bloc covers seven economies for
+one entity's worth of `k`. Read §2's frontier as a statement about a
+partition, not about the model.
+:::
+
 ## 1. Data availability: country × block
 
 Built by auditing every source series per country: EA-MD/QD codes from the
@@ -431,3 +452,42 @@ not more equations. If the German blocks are wanted for their own sake, the
 place to run them is a single-country model where `k < T` is not competing with
 ten other countries; if the spillover matrix is wanted, stage 2b is the system
 that produces it.
+
+## 6. Postscript: what the regional core changed
+
+This report's verdict was that the project had "reached the limit of what 98
+quarterly observations will support in a single joint system", and that further
+structure needed **a longer sample or a smaller system**. The second option was
+taken.
+
+```{r postscript}
+kable(data.frame(
+  Configuration = c("DE labour only", "DE + FR labour", "DE + REU labour", "DE + REU + FR + IT labour"),
+  Partition = c("11 countries (this report)", "11 countries (this report)",
+                "6 entities (stage 3d)", "6 entities (stage 3d)"),
+  k = c(83, 90, 60, 74),
+  df = c(15, 8, 18, 4),
+  `Economies covered` = c(1, 2, 8, 10),
+  check.names = FALSE
+), row.names = FALSE, align = "llrrr",
+caption = "The same block, the same seven-column cost, two partitions.")
+```
+
+The comparison that matters is the last column against the second-to-last.
+On eleven countries, buying a second economy's wage–price channel cost seven
+degrees of freedom and took the system to `df = 8` — the point at which stage
+3b's `de_long_rate` went explosive. On six entities, buying **seven** more
+economies costs the same seven columns and leaves `df = 18`.
+
+Two things this does **not** overturn:
+
+- **Data availability was never the constraint, and still is not.** §1's
+  availability matrix is unchanged; the one blocker it recorded for the labour
+  block (Spain's `TOT_X_NRG` starting 2001Q1, four quarters lost) disappears
+  on stage 2d's 2005Q1 window rather than being solved.
+- **A bloc does not give its members their own equations.** Spain and Greece
+  have a *share* in a wage equation, not one each. An institution-specific
+  question — national indexation, a country's own ULC pass-through — still
+  needs a country-level block, and §2's arithmetic still governs that. Stage 3d
+  finds exactly this: the bloc identifies the cyclical relationships better than
+  Germany does and loses the institutional ones.

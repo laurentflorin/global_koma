@@ -699,6 +699,24 @@ modelled half. That is not a rounding detail, and it bounds how much of the
 competitiveness channel this system can actually see.
 
 
+::: {.callout-note}
+## Follow-up: the same block on the regional core
+
+This report's block is Germany-only because eleven countries with it would need
+`k = 142` against `T = 98`. `reports/stage3d_regional_blocks.qmd` runs the same
+block on stage 2d's six-entity partition, where the base `k` is 46 rather than
+76: `de + reu` covers **eight of the eleven** modelled economies at `df = 18`.
+
+Two results there bear directly on this report. The wage Phillips curve, whose
+German coefficient here has an interval straddling zero, **is identified on the
+bloc** (-0.176, interval excluding zero) — the bloc's unemployment rate carries
+the crisis-era variation Germany's does not. And the wage-indexation and ULC
+pass-through coefficients go the other way: they are lost to aggregation. The
+bloc has the variation but not the institutions; Germany has the institutions
+but not the variation.
+:::
+
+
 ## Eight-quarter forecast
 
 ```{r fc-load}

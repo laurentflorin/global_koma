@@ -400,12 +400,52 @@ kable(data.frame(
 ```
 
 ::: {.incremental}
-- **It cannot be rolled out.** Eleven countries with the full block needs
-  `k = 142` against `T = 98`.
+- **It cannot be rolled out** — on eleven countries. The full block for all of
+  them needs `k = 142` against `T = 98`.
 - At `df = 8`, `de_long_rate`'s own lag crossed to **1.004** — explosive — the
   moment debt became its fifth regressor.
 - A quiet loop is not a stable one: the fiscal–financial cycle showed no
   explosive draws *because one of its links was ~0*.
+:::
+
+::: {.content-visible unless-format="revealjs"}
+Stage 3c set out to roll these blocks across the euro area and concluded the
+degrees-of-freedom budget forbade it. That conclusion held for the
+eleven-country partition; the next slide is what happened when the partition
+changed.
+:::
+
+## Stage 3d — the rollout, on the regional core
+
+Stage 3c's verdict was that further structure needed **a longer sample or a
+smaller system**. Stage 2d built the smaller system; stage 3d puts the labour
+block on it.
+
+```{r stage3d}
+kable(data.frame(
+  Configuration = c("DE labour only", "DE + FR labour", "**DE + REU labour**", "DE + REU + FR + IT"),
+  Partition = c("11 countries", "11 countries", "**6 entities**", "6 entities"),
+  k = c(83, 90, sh("stage3d", "k"), 74),
+  df = c(15, 8, sh("stage3d", "df"), 4),
+  `Economies covered` = c(1, 2, 8, 10),
+  check.names = FALSE
+), row.names = FALSE, align = "llrrr")
+```
+
+::: {.content-visible when-format="revealjs"}
+. . .
+:::
+
+**The block still costs seven columns per entity.** What changed is what a
+column buys: a bloc covers **seven economies for one entity's worth of `k`**.
+
+::: {style="font-size: 0.85em"}
+And the aggregation is not only a cost. The **wage Phillips curve is identified
+on the bloc** (−0.176, interval excluding zero) and not on Germany (−0.105,
+straddling zero) — the bloc's unemployment rate carries the crisis-era
+variation Germany's does not. What is lost is the *institutional* coefficients:
+wage indexation and ULC pass-through both go wrong-signed on the bloc. The bloc
+has the variation but not the institutions; Germany the reverse.
 :::
 
 ## Forecasts — how they are produced
@@ -597,8 +637,10 @@ the deck too.
 | `stage2d_regional_core.qmd` / `stage2d_equations.qmd` | the re-partition and China |
 | `stage2d_spillovers.qmd` | shock battery + seed placebo |
 | `stage3a_labour_prices.qmd` / `stage3b_*.qmd` | the extension blocks |
+| `stage3c_rollout.qmd` / `stage3d_regional_blocks.qmd` | why the rollout stalled, and the partition that unstalled it |
 | `evaluation.qmd` | expanding-window backtest, four specifications |
 
 Artefacts: `scratch/overview_build.R`, `scratch/forecasts_build.R`,
-`scratch/stage2d_build.R`, `scratch/stage2d_spillovers_build.R`.
+`scratch/stage2d_build.R`, `scratch/stage2d_spillovers_build.R`,
+`scratch/stage3d_build.R`.
 :::

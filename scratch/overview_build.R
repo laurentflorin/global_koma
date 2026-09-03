@@ -38,7 +38,12 @@ systems <- list(
        pick = function(o) list(sys_eq = o$sys_eq, panel = o$panel, dates = o$fit$dates)),
   list(stage = "stage3b", representative = "de", label = "Stage 3b", scope = "Stage 3a + external/fiscal/financial",
        file = file.path("data", "cache", "stage3b", "fit_financial.rds"),
-       pick = function(o) list(sys_eq = o$sys_eq, panel = o$panel, dates = o$fit$dates))
+       pick = function(o) list(sys_eq = o$sys_eq, panel = o$panel, dates = o$fit$dates)),
+  list(stage = "stage3d", representative = "de", label = "Stage 3d", scope = "Stage 2d + labour block on DE and the REU bloc",
+       file = file.path("data", "cache", "stage3d", "tuned.rds"),
+       pick = function(o) list(sys_eq = o$sys_eq,
+                               panel = readRDS(file.path("data", "cache", "stage3d", "stage_panel.rds")),
+                               dates = o$fit$dates))
 )
 
 templates <- list()
