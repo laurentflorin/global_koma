@@ -29,6 +29,7 @@ docs/
   koma-api.md              verified reference for the koma package's API
   methodology.qmd          this project's modelling methodology (stub)
 reports/                rendered output (git-ignored)
+  overview_presentation.qmd  revealjs deck: the whole project for a meeting
 _targets.R              the targets pipeline: data -> panel -> stage 1 -> stage 2 -> stage 3
 scratch/                ad hoc exploration, not part of the pipeline or package
 ```
@@ -768,6 +769,33 @@ against `T = 98`, so `df` 15 -> 14 -> 10 -> **8**. See
   fiscal-financial cycle showed no explosive draws -- because the
   `long_rate <- govdebt` link was ~0. Check the per-link means before reading a
   low gain as reassurance.
+
+## The presentation deck (`reports/overview_presentation.qmd`)
+
+A revealjs slide deck covering the whole project: the country-generic equation
+template, the stage lineage, the headline result of each stage, the forecasts
+and the stage-2d spillover battery. Built for presenting, not for reference —
+the per-stage reports remain the place where anything is argued in full.
+
+- **Its numbers are derived, never transcribed.** `scratch/overview_build.R`
+  loads each fitted system once and extracts `k`, `T`, `df`, the equation counts
+  and the **country-generic equation template** (one representative entity's
+  equations with its own prefix replaced by `cc`) into
+  `data/cache/overview/`. The deck then reads only a few KB, so it renders in
+  seconds and cannot drift from what was actually estimated.
+- **The df-versus-explosive-share chart is the one slide to keep.** Plotting
+  each stage's `df` against the share of GDP draws that explode by horizon 8
+  gives a nearly straight line: stage 3b (`df = 8`) 0.79, stage 3a (15) 0.70,
+  stage 2b/2c (22) 0.60/0.55, stage 2d (32) 0.40, stage 2a (59) 0.00. Stage 1
+  is plotted hollow and excluded from the fit, because its `df` is per country
+  and not the same quantity.
+- **The forecasts independently reproduce the stage-2c price finding.** A single
+  8-quarter forecast from 2025Q1 puts the stage-2b price explosive share at
+  **0.0001** and stage 2c's at **0.415** — the same conclusion
+  `reports/evaluation.qmd` reached from a 20-origin backtest (0.0026 vs 0.634),
+  by a completely different route. Two independent measurements agreeing on
+  "the Phillips curve is what cost the price forecast" is worth more than either
+  alone.
 
 ## Reporting a forecast (`forecasts.R`)
 

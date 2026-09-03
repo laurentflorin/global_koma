@@ -1,0 +1,532 @@
+---
+title: "A multi-country Bayesian macro model"
+subtitle: "Structure, results and forecasts across five estimated systems"
+format:
+  revealjs:
+    theme: simple
+    slide-number: true
+    embed-resources: true
+    width: 1250
+    height: 760
+    fig-align: center
+    code-line-numbers: false
+execute:
+  echo: false
+  warning: false
+---
+
+```{r load}
+#| include: false
+# Render from the project root: `quarto render reports/overview_presentation.qmd`.
+# Reads only small cached artefacts -- shapes and templates from
+# scratch/overview_build.R, forecasts from scratch/forecasts_build.R, and the
+# stage-2d spillover battery. No fitted system is loaded here.
+devtools::load_all(".", quiet = TRUE)
+library(knitr)
+library(ggplot2)
+source("reports/_forecast_helpers.R")
+
+shapes <- readRDS(file.path("data", "cache", "overview", "shapes.rds"))
+templates <- readRDS(file.path("data", "cache", "overview", "templates.rds"))
+fc <- stats::setNames(lapply(shapes$stage, forecast_artefact), shapes$stage)
+
+dir_sp <- file.path("data", "cache", "stage2d_spillovers")
+mat_a <- readRDS(file.path(dir_sp, "matrix_a.rds"))
+mat_b <- readRDS(file.path(dir_sp, "matrix_b.rds"))
+sanity <- readRDS(file.path(dir_sp, "sanity_a.rds"))
+mon_a <- readRDS(file.path(dir_sp, "monetary_a.rds"))
+oil_a <- readRDS(file.path(dir_sp, "oil_a.rds"))
+
+sh <- function(stage, col) shapes[[col]][shapes$stage == stage]
+
+# Presentation-friendly rendering of a koma equation string: spaces around the
+# operators, and the four COVID dummies collapsed to one placeholder so the
+# structure is legible from the back of a room.
+pretty_eq <- function(x) {
+  x <- gsub("\\+covid_[0-9]{4}q[1-4]", "", x)
+  x <- sub("~constant\\+", " ~ ", x)
+  x <- sub("~constant", " ~ ", x)
+  x <- gsub("\\+", " + ", x)
+  x <- gsub("(?<![=<>])-(?!-)", " - ", x, perl = TRUE)
+  x <- gsub("==", " == ", x)
+  gsub(" +", " ", x)
+}
+show_eqs <- function(stage, which = c("stochastic", "identity")) {
+  which <- match.arg(which)
+  e <- templates[[stage]]
+  e <- if (which == "stochastic") grep("==", e, invert = TRUE, value = TRUE) else grep("==", e, value = TRUE)
+  cat(paste(pretty_eq(e), collapse = "\n"))
+}
+
+# Explosive share by stage and concept -- the cross-stage chart.
+expl <- do.call(rbind, lapply(shapes$stage, function(s) {
+  d <- fc[[s]]$paths
+  d <- d[d$kind == "forecast", ]
+  d$concept <- sub("^[a-z]{2,3}_", "", d$variable)
+  do.call(rbind, lapply(c("gdp", "prices"), function(cn) {
+    x <- d[d$concept == cn, ]
+    if (!nrow(x)) return(NULL)
+    data.frame(stage = s, label = sh(s, "label"), df = sh(s, "df"), concept = cn,
+               h8 = mean(x$explosive_frac[x$horizon == max(x$horizon)]),
+               stringsAsFactors = FALSE)
+  }))
+}))
+
+placebo_src <- c("de", "us", "cn", "reu")
+pa <- mat_a[placebo_src, , drop = FALSE]; pb <- mat_b[placebo_src, , drop = FALSE]
+off <- outer(placebo_src, colnames(mat_a), function(i, j) i != j)
+placebo_mean <- mean(abs(pa - pb)[off]); placebo_max <- max(abs(pa - pb)[off])
+placebo_flips <- sum(sign(pa[off]) != sign(pb[off])); placebo_n <- sum(off)
+
+cum_by <- function(d, concept) {
+  vars <- country_var(stage2d_countries(), concept)
+  x <- d[d$variable %in% vars, ]
+  x$country <- toupper(sub(paste0("_", concept, "$"), "", x$variable))
+  vapply(split(x, x$country), function(z) sum(z$median_diff), numeric(1))
+}
+peak_by <- function(d, concept) {
+  vars <- country_var(stage2d_countries(), concept)
+  x <- d[d$variable %in% vars, ]
+  x$country <- toupper(sub(paste0("_", concept, "$"), "", x$variable))
+  vapply(split(x, x$country), function(z) z$median_diff[which.max(abs(z$median_diff))], numeric(1))
+}
+```
+
+## What this is
+
+A **multi-country Bayesian simultaneous-equations macro model**, built on the
+`koma` package.
+
+::: {.incremental}
+- **11 euro-area economies + the US**, quarterly, 2000–2024
+- Every country's behavioural equations and accounting identities estimated in
+  **one system**, so cross-country effects are jointly identified rather than
+  bolted on afterwards
+- Five estimated systems, each a deliberate step: **1 → 2a → 2b → 2c → 2d**,
+  plus two extension blocks (3a, 3b)
+- Everything below comes from cached fits and is reproducible from the repo
+:::
+
+. . .
+
+**The one thing that governs all of it:** every system spends observations on
+parameters. `df = T − k`. Nearly every result in this deck is downstream of
+that number.
+
+## The country template — behavioural equations
+
+Six equations per country, identical in form for every economy:
+
+```{r tmpl-stoch}
+#| results: asis
+cat("```\n"); show_eqs("stage2d", "stochastic"); cat("\n```\n")
+```
+
+::: {style="font-size: 0.75em"}
+- Estimated in **growth-rate space** — coefficients on volumes are elasticities
+- `long_rate`, `spread` and the policy rates are **rates**: koma leaves them
+  untransformed, so their coefficients are pp per pp
+- Four COVID impulse dummies (2020Q1–Q3, 2021Q2) enter the five real-side
+  equations; suppressed above for readability
+:::
+
+## The country template — identities
+
+Enforced **during** estimation, not fitted. Weights are fixed shares:
+
+```{r tmpl-ident}
+#| results: asis
+cat("```\n"); show_eqs("stage2d", "identity"); cat("\n```\n")
+```
+
+::: {style="font-size: 0.75em"}
+- **GDP** — expenditure decomposition, exact only up to the statistical discrepancy
+- **Domestic demand** — absorption; government is out of the system entirely
+- **Foreign demand** — the trade-weighted external demand index exports load on.
+  **This is what links the countries.** The weights shown are Germany's; the
+  partner set and shares are country-specific by construction
+- **Long rate** — a sovereign yield *is* the policy path plus a premium; both
+  weights imposed at exactly 1
+:::
+
+## Plus, once per system
+
+```{r tmpl-shared}
+#| results: asis
+cat("```\n")
+cat("ea_policy_rate ~ ea_prices + ea_gdp + ea_policy_rate.L(1)\n")
+cat("us_policy_rate ~ us_prices + us_gdp + us_policy_rate.L(1)   (stage 2b onward)\n")
+cat("cn_policy_rate ~ cn_prices + cn_gdp + cn_policy_rate.L(1)   (stage 2d only)\n\n")
+cat("ea_gdp    == sum_i g_i * <member i>_gdp\n")
+cat("ea_prices == sum_i g_i * <member i>_prices\n")
+cat("```\n")
+```
+
+There is exactly **one** `ea_policy_rate` equation however many euro-area
+countries the system contains — that is what makes it a genuinely common
+instrument rather than ten separate ones.
+
+## The stages at a glance
+
+```{r shapes-table}
+kable(
+  data.frame(
+    Stage = shapes$label,
+    Scope = shapes$scope,
+    Eqs = paste0(shapes$stochastic, " + ", shapes$identities),
+    k = shapes$k, T = shapes$t_obs, df = shapes$df,
+    Window = paste0(shapes$est_start, "–", shapes$est_end)
+  ),
+  row.names = FALSE, align = "llcrrrl"
+)
+```
+
+::: {style="font-size: 0.8em"}
+Stage 1's `k`/`T`/`df` are **per country** — its eleven satellites never share a
+design matrix. Everything from 2a on is one joint system.
+:::
+
+## Stages 1 and 2a — the mechanism
+
+::: {.columns}
+::: {.column width="50%"}
+**Stage 1** — each country its own small system, world variables exogenous.
+
+**Stage 2a** — DE + FR in *one* system. Three things change, and they are the
+whole point:
+
+- exports driven by **partner GDP**, not an exogenous world aggregate
+- `ea_policy_rate` becomes **endogenous**
+- `long_rate` enters **investment**
+:::
+::: {.column width="50%"}
+**The finding that set the agenda:**
+
+Making the policy rate endogenous did **not** give it a route to output.
+Without `long_rate` in investment it reached only the two long-rate
+equations — which are terminal.
+
+> "A rate rise cannot move GDP."
+
+Structure has to be *traced*, not assumed.
+:::
+:::
+
+## Stage 2b — all eleven, and an open loop
+
+`r sh("stage2b","stochastic")` stochastic equations, `r sh("stage2b","identities")` identities,
+`k = `r sh("stage2b","k")``, `df = `r sh("stage2b","df")``.
+
+. . .
+
+Tracing what `ea_policy_rate` can reach within a quarter:
+
+::: {style="font-size: 1.1em"}
+**91 of 103** endogenous variables — including every country's GDP, and itself.
+
+**0 of 11** price variables.
+:::
+
+. . .
+
+The Taylor rule responds to an inflation rate that **nothing it does can
+influence**. The monetary block was an open loop, and no amount of estimation
+would have revealed it — only a structural trace did.
+
+## Stage 2c — closing the loop, for free
+
+Four refinements, applied to every country. **All four cost zero `k`** — same
+`k = `r sh("stage2c","k")``, same `df = `r sh("stage2c","df")`` as stage 2b, so the two are
+directly comparable.
+
+```{r refinements}
+kable(data.frame(
+  `#` = 1:4,
+  Refinement = c("`prices` gains `gdp`", "`foreign_demand` over partner **imports**",
+                 "model the **spread**, `long_rate` becomes an identity",
+                 "`consumption` gains `long_rate`"),
+  Why = c("the Phillips curve — closes the monetary loop",
+          "partner GDP nets imports out, so it had the wrong sign",
+          "policy-rate loading straddled zero in all 11",
+          "a second monetary channel"),
+  check.names = FALSE
+), row.names = FALSE)
+```
+
+. . .
+
+**Result:** the policy rate now reaches **all 114** endogenous variables,
+including every price. A fifth refinement was estimated and **rejected** — it
+halved in-sample RMSE while gutting the demand elasticity in 9 of 11 countries.
+*Improved fit was the symptom, not the reassurance.*
+
+## Stage 2c — and what closing the loop cost
+
+```{r price-explosive}
+#| fig-width: 9
+#| fig-height: 3.6
+d <- expl[expl$concept == "prices" & expl$stage %in% c("stage2b", "stage2c", "stage2d"), ]
+d$label <- factor(d$label, levels = d$label)
+ggplot(d, aes(label, h8)) +
+  geom_col(fill = "#4477AA", width = 0.55) +
+  geom_text(aes(label = sprintf("%.3f", h8)), vjust = -0.4, size = 4) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(x = NULL, y = "share of price draws exploding by h8") +
+  theme_minimal(base_size = 13)
+```
+
+In stage 2b `prices` had **no** contemporaneous endogenous regressor — it was
+effectively a univariate AR, and therefore **structurally immune** to explosive
+draws. Coupling it to GDP makes it reachable from the policy rate *and* from
+everything else that reaches GDP.
+
+**Use stage 2c for mechanism, stage 2b for a price fan chart.**
+
+## Stage 2d — the first stage that *buys* degrees of freedom
+
+Stage 2c's equations, a **re-partitioned world**: `DE`, `FR`, `IT`, `US`
+separate, the other seven euro-area economies collapsed into a **`REU` bloc**,
+and **China** added.
+
+```{r df-table}
+kable(data.frame(
+  Stage = c("Stage 2c", "Stage 3a", "Stage 3b", "**Stage 2d**"),
+  Change = c("11 countries, refined", "+ German labour block", "+ external/fiscal/financial",
+             "**re-partition to 6 entities**"),
+  k = c(sh("stage2c","k"), sh("stage3a","k"), sh("stage3b","k"), sh("stage2d","k")),
+  df = c(sh("stage2c","df"), sh("stage3a","df"), sh("stage3b","df"), sh("stage2d","df"))
+), row.names = FALSE, align = "llrr")
+```
+
+. . .
+
+Every earlier structural change traded `df` for detail: **22 → 15 → 8**.
+Collapsing seven countries removes enough equations that `k` falls 76 → 46 —
+so `df` rises to **`r sh("stage2d","df")`** even after giving up eighteen quarters of sample.
+
+## Stage 2d — China, and what the data does not have
+
+::: {.columns}
+::: {.column width="52%"}
+**What exists** (free, keyless sources):
+
+- real GDP, SA — World Bank GEM
+- CPI — World Bank GEM
+- merchandise trade volumes — GEM value ÷ price
+- policy rate — OECD `IRSTCI`
+- trade weights — **observed IMF DOTS**
+:::
+::: {.column width="48%"}
+**What does not exist, anywhere:**
+
+**Quarterly consumption and investment.**
+
+Verified absent from OECD QNA, OECD Economic Outlook, IMF IFS, World Bank GEM,
+FRED and the NBS itself.
+
+→ the two equations **merge** into one estimated `cn_domestic_demand`, rather
+than being invented from indicator proxies.
+:::
+:::
+
+. . .
+
+::: {style="font-size: 0.85em"}
+Two things stated rather than buried: `cn_long_rate` is **spliced over 45%** of
+the window, and `reu_investment` is **not identified** — Ireland's investment sd
+is 43.0 and it carries 10.9% of the bloc, so the seven-country average is *more*
+volatile than any single member.
+:::
+
+## Stage 3a / 3b — the wall
+
+Germany gets a labour/wage–price block, then external, fiscal and financial
+blocks on top.
+
+```{r stage3}
+kable(data.frame(
+  Stage = c("Stage 2b", "Stage 3a", "Stage 3b"),
+  Adds = c("—", "labour + disaggregated prices (DE only)", "+ external, fiscal, financial (DE only)"),
+  k = c(sh("stage2b","k"), sh("stage3a","k"), sh("stage3b","k")),
+  df = c(sh("stage2b","df"), sh("stage3a","df"), sh("stage3b","df"))
+), row.names = FALSE, align = "llrr")
+```
+
+::: {.incremental}
+- **It cannot be rolled out.** Eleven countries with the full block needs
+  `k = 142` against `T = 98`.
+- At `df = 8`, `de_long_rate`'s own lag crossed to **1.004** — explosive — the
+  moment debt became its fifth regressor.
+- A quiet loop is not a stable one: the fiscal–financial cycle showed no
+  explosive draws *because one of its links was ~0*.
+:::
+
+## Forecasts — how they are produced
+
+Every system is run **8 quarters** forward, 1000 posterior draws.
+
+::: {.incremental}
+- koma **silently shortens** a horizon whose exogenous series run out — they are
+  extended first, and the delivered horizon is checked
+- koma constrains no draw to be stationary, so **explosive draws are filtered**
+  and the discarded share is reported
+- Charts show an **inner 25–75%** band solid and an outer 10–90% band clipped to
+  the panel edge; the untruncated bounds are tabulated
+- Stages 1 and 2a forecast from **2023Q1** (window already observed — a genuine
+  out-of-sample check); stages 2b onward from **2025Q1**
+:::
+
+## Forecast — stage 2d GDP
+
+```{r fan-2d}
+#| fig-width: 11
+#| fig-height: 4.9
+v <- fc_vars(fc$stage2d$paths, stage2d_countries(), "gdp")
+plot_forecast_fan(fc$stage2d$paths, v, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(v),
+                  subtitle = "inner 25-75%, outer 10-90% clipped; grey = realised")
+```
+
+## Forecast — stage 1, against the outturn
+
+```{r fan-1}
+#| fig-width: 11
+#| fig-height: 4.9
+v <- fc_vars(fc$stage1$paths, c("de", "fr", "it", "es", "nl", "us"), "gdp")
+plot_forecast_fan(fc$stage1$paths, v, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(v),
+                  subtitle = "forecast from 2023Q1 -- the whole window is observed")
+```
+
+The realised path sits inside the band for every country, and the fan widens in
+exactly the countries you would expect.
+
+## The finding the forecasts made visible
+
+```{r df-vs-explosive}
+#| fig-width: 10
+#| fig-height: 4.6
+d <- expl[expl$concept == "gdp", ]
+# Stage 1's df is per country, not comparable with a joint system's, so it is
+# labelled but excluded from the fitted line.
+d$joint <- d$stage != "stage1"
+ggplot(d, aes(df, h8)) +
+  geom_smooth(data = d[d$joint, ], method = "lm", se = FALSE,
+              colour = "grey70", linewidth = 0.5, formula = y ~ x) +
+  geom_point(aes(shape = joint), size = 3.5, colour = "#11336B") +
+  # 2b and 2c sit on the same df, so one label goes below the point.
+  geom_text(aes(label = label, vjust = ifelse(stage == "stage2c", 1.9, -1.1)), size = 4.2) +
+  scale_shape_manual(values = c(`TRUE` = 16, `FALSE` = 1), guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.08, 0.16))) +
+  scale_x_continuous(expand = expansion(mult = 0.09)) +
+  labs(x = "degrees of freedom (T - k)",
+       y = "share of GDP draws exploding by horizon 8",
+       caption = "hollow point = stage 1, whose df is per country and not comparable") +
+  theme_minimal(base_size = 13)
+```
+
+Degrees of freedom are not an abstraction. They are **exactly** how much of the
+predictive distribution survives to horizon 8.
+
+## Spillovers — stage 2d
+
+Cumulative 8-quarter GDP effect of a **+1pp demand shock**; rows shocked,
+columns responding.
+
+```{r spill-matrix}
+kable(round(mat_a, 3), align = "r")
+```
+
+::: {style="font-size: 0.8em"}
+Own effect dominates **6 of 6**. China's row is an order of magnitude smaller
+than Europe's — as its trade weights say it should be, now that they come from
+observed DOTS rather than the reciprocal approximation that would have put 56%
+of Chinese trade inside the euro area.
+:::
+
+## Spillovers — is any of it real?
+
+Same fit, same battery, **only the seed changed**:
+
+```{r placebo}
+kable(data.frame(
+  System = c("Stage 2b (df 22)", "Stage 2c (df 22)", "**Stage 2d (df 32)**"),
+  `Mean |A − B|` = c("0.350", "0.119", sprintf("**%.3f**", placebo_mean)),
+  Max = c("1.850", "0.356", sprintf("**%.3f**", placebo_max)),
+  `Sign flips` = c("7–10 of 30", "1 of 44", sprintf("**%d of %d**", placebo_flips, placebo_n)),
+  check.names = FALSE
+), row.names = FALSE, align = "lrrr")
+```
+
+. . .
+
+For stage 2b, **most of what anyone wanted to conclude was smaller than the
+matrix's own noise.**
+
+Stage 2d is the first system where no off-diagonal cell changes sign when only
+the seed changes — the concrete payoff of those ten extra degrees of freedom.
+
+## What does not work
+
+```{r fails}
+kable(data.frame(
+  Check = c("Monetary → GDP (euro area)", "Monetary → prices",
+            "Monetary shock on China's own rule", "Oil → prices",
+            "Spillover ~ bilateral trade weight"),
+  Result = c(
+    sprintf("correctly signed, %d/6 peak negative", sum(peak_by(mon_a, "gdp") < 0)),
+    sprintf("**wrong sign** — only %d/6 peak negative", sum(peak_by(mon_a, "prices") < 0)),
+    "**does not work** — a horizon-1 adjustment in the rule, not transmission",
+    sprintf("correctly signed **%d/6**", sum(cum_by(oil_a, "prices") > 0)),
+    "**fails** — Spearman 0.138 against a 0.3 bar")
+), row.names = FALSE, align = "ll")
+```
+
+::: {style="font-size: 0.85em"}
+The oil shock is the control: the price block responds sensibly to a **cost**
+shock and perversely to a **policy rate**. That localises the fault to the
+policy rate's route in — not to the price equations.
+:::
+
+## Which system for which question
+
+```{r verdict}
+kable(data.frame(
+  `If you want to…` = c(
+    "understand a mechanism / trace transmission",
+    "produce a price fan chart",
+    "study EA–US–China spillovers",
+    "say anything about Austria, Spain, Ireland…",
+    "model German wages, debt or credit",
+    "run a monetary experiment on China"),
+  `Use` = c("**Stage 2c**", "**Stage 2b**", "**Stage 2d**", "Stage 2b / 2c",
+            "Stage 3a / 3b — Germany only", "**nothing here yet**"),
+  check.names = FALSE
+), row.names = FALSE, align = "ll")
+```
+
+. . .
+
+::: {style="font-size: 0.9em"}
+**The through-line:** every result in this deck that survived did so because it
+was checked against its own noise floor — a seed placebo, a sign rule, a
+structural trace, a second specification. The ones that did not survive are in
+the deck too.
+:::
+
+## Reference
+
+::: {style="font-size: 0.8em"}
+| Report | What it covers |
+|---|---|
+| `stage1_diagnostics.qmd` | per-country satellites, diagnostics |
+| `stage2a_pilot.qmd` / `stage2b_full_system.qmd` | the linkage mechanism, then all eleven |
+| `stage2c_refined_core.qmd` / `stage2c_equations.qmd` | the four refinements, every equation |
+| `stage2d_regional_core.qmd` / `stage2d_equations.qmd` | the re-partition and China |
+| `stage2d_spillovers.qmd` | shock battery + seed placebo |
+| `stage3a_labour_prices.qmd` / `stage3b_*.qmd` | the extension blocks |
+| `evaluation.qmd` | expanding-window backtest, four specifications |
+
+Artefacts: `scratch/overview_build.R`, `scratch/forecasts_build.R`,
+`scratch/stage2d_build.R`, `scratch/stage2d_spillovers_build.R`.
+:::
