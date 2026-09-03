@@ -162,6 +162,60 @@ test_that("forecast_error_table scores only quarters with an outturn", {
   expect_equal(nrow(forecast_error_table(blown$paths)), 0L)
 })
 
+test_that("plot_forecast_fan labels a rate series as a level, not as growth", {
+  skip_if_not_installed("ggplot2")
+  skip_on_cran()
+  s <- diagnostics_synthetic_stage2_fit(ndraws = 40)
+  f <- stage_forecast(s$fit, s$panel, horizon = 4,
+                      variables = c("de_gdp", "ea_policy_rate"))
+  ylab <- function(p) p$labels$y
+
+  # `de_gdp` is diff_log: rate space really is growth.
+  expect_match(ylab(plot_forecast_fan(f$paths, "de_gdp", space = "rate")),
+               "quarterly growth")
+  # `ea_policy_rate` is method = "none": level space IS rate space, so calling
+  # the axis "quarterly growth" would misdescribe every number on it.
+  expect_match(ylab(plot_forecast_fan(f$paths, "ea_policy_rate", space = "rate")),
+               "^percent")
+  # Mixing the two in one panel grid is flagged rather than silently taking
+  # whichever label came first.
+  expect_match(ylab(plot_forecast_fan(f$paths, c("de_gdp", "ea_policy_rate"), space = "rate")),
+               "rate series shown as levels")
+})
+
+test_that("common_forecast_variables drops a variable the stages disagree on", {
+  skip_on_cran()
+  s <- diagnostics_synthetic_stage2_fit(ndraws = 40)
+  a <- stage_forecast(s$fit, s$panel, horizon = 4, variables = c("de_gdp", "fr_gdp"))
+  b <- a
+
+  # Same names, same realised paths: nothing is dropped.
+  v <- common_forecast_variables(list(a = a, b = b))
+  expect_setequal(as.character(v), c("de_gdp", "fr_gdp"))
+  expect_length(attr(v, "dropped"), 0)
+
+  # Now make the second "stage" mean something different by `de_gdp`, which is
+  # exactly what the labour block does to `<iso2>_prices`: same name, series
+  # rebuilt from components. Scoring the two against each other would compare
+  # two questions, so the variable must drop out.
+  i <- b$paths$variable == "de_gdp"
+  b$paths$actual_rate[i] <- b$paths$actual_rate[i] + 0.5
+  v2 <- common_forecast_variables(list(a = a, b = b))
+  expect_setequal(as.character(v2), "fr_gdp")
+  expect_equal(names(attr(v2, "dropped")), "de_gdp")
+  expect_equal(unname(attr(v2, "dropped")), 0.5, tolerance = 1e-8)
+
+  # An intersection is still taken: a variable only one stage carries is not
+  # comparable however well the others agree.
+  c3 <- stage_forecast(s$fit, s$panel, horizon = 4, variables = "fr_gdp")
+  expect_setequal(as.character(common_forecast_variables(list(a = a, c = c3))), "fr_gdp")
+
+  # The concept filter selects on the part after the entity prefix.
+  expect_setequal(as.character(common_forecast_variables(list(a = a, b = a), "gdp")),
+                  c("de_gdp", "fr_gdp"))
+  expect_length(common_forecast_variables(list(a = a, b = a), "prices"), 0)
+})
+
 test_that("plot_forecast_fan returns a ggplot without evaluating it", {
   skip_if_not_installed("ggplot2")
   skip_on_cran()

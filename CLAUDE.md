@@ -896,6 +896,50 @@ full.
   "the Phillips curve is what cost the price forecast" is worth more than either
   alone.
 
+## Comparing forecasts across stages (`forecasts.R`, `_forecast_helpers.R`)
+
+- **Two stages carrying the same variable name do not necessarily mean the same
+  series, and the overview report was silently comparing two of them.**
+  `<iso2>_prices` is observed headline HICP in stages 2b/2c/2d, but under
+  `labour_block()` it becomes an **identity** over the sub-indices built with
+  `chain_weighted_index()` — never from observed HICP, for the reason stage 3a
+  already records. So stage 3a's `de_prices` is a *different series* from stage
+  2b's: **verified, they differ by up to 0.65pp of quarterly growth**, and
+  `ea_prices` inherits it (0.59pp). `<iso2>_foreign_demand` is worse and for a
+  more obvious reason — it is constructed from the partition's own trade weights
+  and partner basis, so it differs in every stage by construction (up to 4.51pp
+  for the US) — and `ea_gdp` aggregates eleven countries in 2b and four in 2d.
+  Seven of the forty variables the six 2025Q1-origin stages share fail to agree.
+- **`common_forecast_variables()` is the guard, and intersecting the variable
+  sets is not enough.** It intersects, then compares the **realised** path across
+  stages and drops anything they disagree on, returning what it dropped in a
+  `dropped` attribute so a report names the exclusions rather than quietly
+  averaging over them. Use it for any cross-stage chart or scoreboard.
+- **The test is relative, not exact.** The rate-space and level-space medians of
+  the *same* series disagree slightly because the explosive filter is
+  per-horizon in rate space and cumulative in level space — `reu_unemployment`
+  differs by 5.4e-04 on a level of 7. A `diff_log` series is not close in that
+  sense at all (`de_wages`: 0.95 against 10.9), so the two cases are orders of
+  magnitude apart.
+- **`plot_forecast_fan()`'s y-axis label is derived, because "quarterly growth"
+  is wrong for a `method = "none"` series.** Every policy rate, spread,
+  unemployment rate and ratio has no level/rate distinction — level space *is*
+  rate space — so those panels show the rate itself in percent. The label is
+  chosen by testing whether the two spaces coincide; a panel grid mixing the two
+  kinds says so rather than picking one. Better still, do not mix them: the
+  stage-3d labour grid is split into wages/prices and unemployment for exactly
+  this reason.
+- **Never pool stages with different forecast origins.** Stages 1 and 2a forecast
+  from 2023Q1 into a fully observed window and score all eight horizons; stages
+  2b onward from 2025Q1, where five quarters have happened. Their errors are
+  against different quarters of history.
+- **A single origin cannot sign a comparison between systems this close.** On the
+  2025Q1 origin the six joint systems land between 0.66 and 1.62pp at every
+  horizon and the ordering changes from horizon to horizon. Report it as a sanity
+  check and defer to `reports/evaluation.qmd`'s twenty-origin backtest — this
+  project has already had a 2b-vs-2c comparison signed the wrong way by five
+  annual origins.
+
 ## Reporting a forecast (`forecasts.R`)
 
 Every stage report carries an **eight-quarter forecast** section — fan chart,

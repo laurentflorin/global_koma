@@ -472,7 +472,33 @@ plot_forecast_fan <- function(paths, variables = NULL, space = c("level", "rate"
     if (!is.null(limits)) names(limits) <- labeller[names(limits)]
   }
 
-  y_lab <- if (identical(space, "level")) "level / index" else "quarterly growth, %"
+  # A `method = "none"` series (every policy rate, spread, unemployment rate and
+  # ratio) has no level/rate distinction at all -- level space IS rate space
+  # there, which is why stage_forecast() gives it no anker. Labelling such a
+  # panel "quarterly growth, %" is simply wrong: the numbers are the rate
+  # itself, in percent. Detect it from the data rather than requiring the
+  # caller to know, by asking whether the two spaces coincide.
+  #
+  # The test is RELATIVE, not exact. The two medians are taken over different
+  # draw subsets -- the explosive filter is per-horizon in rate space and
+  # cumulative in level space -- so even a series where the spaces are
+  # identical by construction disagrees a little: `reu_unemployment` differs by
+  # 5.4e-04 on a level of 7. A `diff_log` series is not close in this sense at
+  # all (`de_wages`: 0.95 against 10.9), so the two cases are orders of
+  # magnitude apart and the threshold does not need to be delicate.
+  coincide <- vapply(split(d, d$variable), function(g) {
+    i <- is.finite(g$rate_median) & is.finite(g$level_median)
+    any(i) && isTRUE(all.equal(g$rate_median[i], g$level_median[i], tolerance = 1e-3))
+  }, logical(1))
+  y_lab <- if (identical(space, "level")) {
+    if (all(coincide)) "percent" else "level / index"
+  } else if (all(coincide)) {
+    "percent (a rate series)"
+  } else if (any(coincide)) {
+    "growth, % (rate series shown as levels)"
+  } else {
+    "quarterly growth, %"
+  }
   p <- ggplot2::ggplot(d, ggplot2::aes(x = .data$time)) +
     ggplot2::geom_vline(xintercept = origin_time - 1 / 8, linewidth = 0.3,
                         linetype = "dotted", colour = "grey40") +
@@ -638,5 +664,68 @@ forecast_error_table <- function(paths, variables = NULL, space = c("rate", "lev
   out$abs_error <- abs(out$error)
   out <- out[order(out$variable, out$horizon), ]
   rownames(out) <- NULL
+  out
+}
+
+#' Variables that several stages can actually be compared on
+#'
+#' The guard for any cross-stage chart or scoreboard. Two systems are only
+#' comparable on a variable if they both carry it **and** mean the same thing
+#' by it, and the second half of that is not automatic in this project:
+#'
+#' - `<iso2>_prices` is observed headline HICP in stages 2b-2d, but under
+#'   [labour_block()] it becomes an **identity** over the energy and non-energy
+#'   sub-indices, built with [chain_weighted_index()] because observed HICP
+#'   satisfies a fixed-weight identity only approximately. So stage 3a's
+#'   `de_prices` is a different series from stage 2b's -- verified, they differ
+#'   by up to 0.65pp of quarterly growth -- and `ea_prices` inherits it.
+#' - `<iso2>_foreign_demand` is constructed from the partition's own trade
+#'   weights and partner basis, so it is a different index in every stage by
+#'   construction (up to 4.51pp for the US).
+#' - `ea_gdp` aggregates eleven countries in stage 2b and four in stage 2d.
+#'
+#' None of that is a fault, but scoring a forecast of one against the outturn
+#' of the other silently compares two questions. This function drops any
+#' variable whose **realised** path disagrees across the stages, and names what
+#' it dropped so a report can say so rather than quietly averaging over it.
+#'
+#' @param fc_list Named list of [stage_forecast()] results.
+#' @param concepts Optional concept filter (the part after the entity prefix),
+#'   e.g. `c("gdp", "prices")`.
+#' @param space `"rate"` (default) or `"level"` -- which realised series to
+#'   compare. Rate is the right one: a level path is anchored, and stages that
+#'   conditionally fill are anchored on a filled value.
+#' @param tolerance Absolute agreement tolerance, in the units of `space`.
+#'
+#' @return A character vector of variable names, sorted, carrying a `dropped`
+#'   attribute: a named numeric of the variables removed and the largest
+#'   disagreement found in each.
+#' @export
+common_forecast_variables <- function(fc_list, concepts = NULL,
+                                      space = c("rate", "level"),
+                                      tolerance = 1e-8) {
+  space <- match.arg(space)
+  col <- paste0("actual_", space)
+  shared <- Reduce(intersect, lapply(fc_list, function(f) unique(f$paths$variable)))
+  if (!is.null(concepts)) shared <- shared[sub("^[a-z]+_", "", shared) %in% concepts]
+
+  gaps <- vapply(shared, function(v) {
+    by_stage <- lapply(fc_list, function(f) {
+      p <- f$paths[f$paths$variable == v, ]
+      stats::setNames(p[[col]], format(p$time, nsmall = 4))
+    })
+    times <- Reduce(intersect, lapply(by_stage, names))
+    if (length(times) == 0) return(Inf)
+    m <- vapply(by_stage, function(x) unname(x[times]), numeric(length(times)))
+    if (!is.matrix(m)) m <- matrix(m, nrow = length(times))
+    max(apply(m, 1, function(r) {
+      r <- r[!is.na(r)]
+      if (length(r) < 2) 0 else diff(range(r))
+    }), na.rm = TRUE)
+  }, numeric(1))
+
+  keep <- gaps <= tolerance
+  out <- sort(shared[keep])
+  attr(out, "dropped") <- sort(gaps[!keep], decreasing = TRUE)
   out
 }

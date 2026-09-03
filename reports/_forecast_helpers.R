@@ -152,18 +152,20 @@ fc_vs_actual_table <- function(fc, vars, space = "rate", digits = 2) {
 #      two groups separately and says why.
 # ---------------------------------------------------------------------------
 
-#' Variables carried by every artefact in a list, optionally filtered.
+#' Variables every artefact carries AND agrees on, optionally filtered.
 #'
-#' The guard against comparing country mixes. `concepts` narrows to the
-#' concepts worth averaging over -- growth rates of real volumes and prices,
-#' not policy rates, whose errors are in percentage points and would dominate
-#' any average they were included in.
+#' A thin wrapper on `common_forecast_variables()`, which does the real work
+#' and carries the reasoning: intersecting the variable sets is not enough,
+#' because two stages can carry the same NAME for different series --
+#' `<iso2>_prices` is observed HICP in stage 2b and a chain-weighted identity
+#' under the labour block. The package function drops those and reports what it
+#' dropped in a `dropped` attribute.
+#'
+#' `concepts` narrows to the concepts worth averaging over -- growth rates of
+#' real volumes and prices, not policy rates, whose errors are in percentage
+#' points and would dominate any average they were included in.
 fc_common_vars <- function(fc_list, concepts = NULL) {
-  v <- Reduce(intersect, lapply(fc_list, function(f) unique(f$paths$variable)))
-  if (!is.null(concepts)) {
-    v <- v[sub("^[a-z]+_", "", v) %in% concepts]
-  }
-  sort(v)
+  common_forecast_variables(fc_list, concepts)
 }
 
 #' Mean absolute error by stage and horizon, on a shared variable set.

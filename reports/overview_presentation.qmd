@@ -283,7 +283,12 @@ err_concepts <- c("gdp", "prices", "consumption", "investment", "exports", "impo
 err_entities <- c("de", "fr", "it", "us")
 err_vars <- function(fcl) {
   v <- fc_common_vars(fcl, err_concepts)
-  v[sub("_.*$", "", v) %in% err_entities]
+  # Subsetting drops attributes, and the `dropped` list is the honest half of
+  # this: it names the variables the stages carry but do not AGREE on.
+  keep <- sub("_.*$", "", v) %in% err_entities
+  out <- v[keep]
+  attr(out, "dropped") <- attr(v, "dropped")
+  out
 }
 late <- c("stage2b", "stage2c", "stage2d", "stage3a", "stage3b", "stage3d")
 early <- c("stage1", "stage2a")
@@ -753,7 +758,8 @@ Every system is run **8 quarters** forward, 1000 posterior draws.
 v <- fc_vars(fc$stage2d$paths, stage2d_countries(), "gdp")
 plot_forecast_fan(fc$stage2d$paths, v, space = "rate", ncol = 3,
                   labeller = fc_entity_labels(v),
-                  subtitle = "inner 25-75%, outer 10-90% clipped; grey = realised")
+                  title = "Stage 2d — real GDP, quarterly growth, all six entities",
+                  subtitle = "8 quarters from 2025Q1 | blue = median, bands 25-75 / 10-90% clipped | black = realised")
 ```
 
 ## Forecast — stage 1, against the outturn
@@ -764,7 +770,8 @@ plot_forecast_fan(fc$stage2d$paths, v, space = "rate", ncol = 3,
 v <- fc_vars(fc$stage1$paths, c("de", "fr", "it", "es", "nl", "us"), "gdp")
 plot_forecast_fan(fc$stage1$paths, v, space = "rate", ncol = 3,
                   labeller = fc_entity_labels(v),
-                  subtitle = "forecast from 2023Q1 -- the whole window is observed")
+                  title = "Stage 1 — real GDP, quarterly growth, six of the eleven satellites",
+                  subtitle = "8 quarters from 2023Q1, a window now entirely observed | blue = median, black = realised")
 ```
 
 The realised path sits inside the band for every country, and the fan widens in
@@ -787,7 +794,8 @@ questions.
 cmp <- fc_stage_compare(fc_late, "de_gdp")
 plot_forecast_fan(cmp$paths, cmp$vars, space = "rate", ncol = 3,
                   labeller = cmp$labeller,
-                  subtitle = "de_gdp, all six systems that forecast from 2025Q1; grey = realised")
+                  title = "German real GDP, quarterly growth — one variable, six different systems",
+                  subtitle = "de_gdp from 2025Q1 | blue = median | black = realised, identical in every panel")
 ```
 
 ```{r cross-gdp-note}
@@ -817,16 +825,35 @@ cat(sprintf(paste(
 cmpp <- fc_stage_compare(fc_late, "de_prices")
 plot_forecast_fan(cmpp$paths, cmpp$vars, space = "rate", ncol = 3,
                   labeller = cmpp$labeller,
-                  subtitle = "de_prices, same six systems; grey = realised")
+                  title = "German consumer prices, quarterly growth — one name, two different series",
+                  subtitle = "blue = median | black = realised: observed HICP in 2b/2c/2d, the identity in 3a/3b/3d")
 ```
 
+::: {.callout-important title="The realised line is not the same in all six panels, and that is not a plotting error"}
+`de_prices` is **two different series** across these systems. In stages 2b, 2c
+and 2d it is observed headline HICP. Under the labour block — stages 3a, 3b and
+3d — it becomes an *identity* over the energy and non-energy sub-indices, built
+with `chain_weighted_index()` rather than taken from observed HICP, because
+observed HICP satisfies a fixed-weight identity only approximately and koma has
+no identity-consistency check that would catch the difference. The two disagree
+by up to **0.65pp of quarterly growth**, and stage 3d differs again slightly
+from 3a/3b because its HICP weights are averaged over a different window
+(0.887/0.113 against 0.891/0.109).
+
+So the top row and the bottom row are forecasting different definitions of
+German inflation, and only the fans *within* a row are strictly comparable.
+`common_forecast_variables()` detects exactly this and is why `de_prices` is
+excluded from the forecast-error scoreboard below.
+:::
+
 ::: {.content-visible unless-format="revealjs"}
-This is the stage-2c price finding as a picture. Stage 2b's `cc_prices` has no
-contemporaneous endogenous regressor, so it is effectively a univariate AR with
-exogenous cost-push terms and is *structurally immune* to the explosive-draw
-population. Stage 2c's Phillips curve couples it to `cc_gdp`, and prices inherit
-GDP's explosive share — which is the price of making prices reachable from the
-policy rate at all.
+With that said, the comparison across the first three panels is the stage-2c
+price finding as a picture. Stage 2b's `cc_prices` has no contemporaneous
+endogenous regressor, so it is effectively a univariate AR with exogenous
+cost-push terms and is *structurally immune* to the explosive-draw population.
+Stage 2c's Phillips curve couples it to `cc_gdp`, and prices inherit GDP's
+explosive share — which is the price of making prices reachable from the policy
+rate at all.
 :::
 
 ```{r cross-prices-expl}
@@ -850,7 +877,8 @@ kable(expl_de_prices, row.names = FALSE, align = "lrr")
 v <- fc_vars(fc$stage2d$paths, stage2d_countries(), "prices")
 plot_forecast_fan(fc$stage2d$paths, v, space = "rate", ncol = 3,
                   labeller = fc_entity_labels(v),
-                  subtitle = "inner 25-75%, outer 10-90% clipped; grey = realised")
+                  title = "Stage 2d — consumer prices, quarterly growth, all six entities",
+                  subtitle = "8 quarters from 2025Q1 | blue = median, bands 25-75 / 10-90% clipped | black = realised")
 ```
 
 ::: {.content-visible unless-format="revealjs"}
@@ -866,20 +894,33 @@ v <- fc_vars(fc$stage2b$paths,
              c("de", "fr", "it", "es", "nl", "be", "at", "pt", "gr", "ie", "us"), "gdp")
 plot_forecast_fan(fc$stage2b$paths, v, space = "rate", ncol = 3,
                   labeller = fc_entity_labels(v),
-                  title = "Stage 2b — GDP, all eleven economies",
-                  subtitle = "forecast from 2025Q1; grey = realised where it exists")
+                  title = "Stage 2b — real GDP, quarterly growth, all eleven economies",
+                  subtitle = "8 quarters from 2025Q1 | blue = median, bands 25-75 / 10-90% | black = realised")
 ```
 
 ```{r fan-3d-grid}
 #| fig-width: 10
-#| fig-height: 5.2
+#| fig-height: 3.6
+# Wages and prices are `diff_log` series and unemployment is a `rate`/`none`
+# one, so they do NOT share a y-axis meaning: the first two are quarterly
+# growth, the third is the rate itself in percent. Two charts rather than one
+# mixed grid -- plot_forecast_fan() would otherwise have to hedge the label.
 v <- c(fc_vars(fc$stage3d$paths, c("de", "reu"), "wages"),
-       fc_vars(fc$stage3d$paths, c("de", "reu"), "unemployment"),
        fc_vars(fc$stage3d$paths, c("de", "reu"), "nonenergy_prices"))
-plot_forecast_fan(fc$stage3d$paths, v, space = "rate", ncol = 3,
+plot_forecast_fan(fc$stage3d$paths, v, space = "rate", ncol = 2,
                   labeller = fc_full_labels(v),
-                  title = "Stage 3d — the labour block's own variables",
-                  subtitle = "the wage-price channel, on Germany and the REU bloc")
+                  title = "Stage 3d — wages and non-energy prices, quarterly growth",
+                  subtitle = "Germany and the REU bloc, 8 quarters from 2025Q1 | blue = median, black = realised")
+```
+
+```{r fan-3d-unemp}
+#| fig-width: 10
+#| fig-height: 2.6
+v <- fc_vars(fc$stage3d$paths, c("de", "reu"), "unemployment")
+plot_forecast_fan(fc$stage3d$paths, v, space = "rate", ncol = 2,
+                  labeller = fc_full_labels(v),
+                  title = "Stage 3d — the unemployment rate, in percent",
+                  subtitle = "a rate series: koma leaves it untransformed, so this is the level, not a growth rate")
 ```
 :::
 
@@ -891,18 +932,35 @@ about where its centre actually landed. Five quarters of 2025 and 2026 have now
 been published, so the six systems that forecast from 2025Q1 can be scored on
 horizons 1 to 5 against realised data none of them saw.
 
-The comparison is only meaningful on a **shared variable set**: every stage is
-scored on the same `r length(err_vars(fc_late))` series — Germany, France, Italy
-and the US, on GDP, prices, consumption, investment, exports and imports.
-`ea_gdp` is excluded even though every stage carries it, because it aggregates
-eleven countries in stage 2b and four in stage 2d and would compare two
-different objects. Errors are in **rate space**, quarterly growth in percentage
+The comparison is only meaningful on a **shared variable set**, and carrying the
+same variable *name* is not enough — the stages have to mean the same thing by
+it. `common_forecast_variables()` enforces both halves: it intersects the
+variable sets, then compares the **realised** path across stages and drops
+anything they disagree on. Here that removes three variables:
+
+```{r err-dropped}
+d <- attr(err_vars(fc_late), "dropped")
+kable(data.frame(
+  Variable = paste0("`", names(d), "`"),
+  `Largest disagreement in the outturn` = sprintf("%.4f pp", d),
+  Why = c(
+    "an identity over the sub-indices under the labour block, observed HICP elsewhere",
+    "inherits `de_prices` through the euro-area aggregation identity",
+    "aggregates eleven countries in stage 2b and four in stage 2d")[seq_along(d)],
+  check.names = FALSE
+), row.names = FALSE, align = "lrl")
+```
+
+That leaves `r length(err_vars(fc_late))` series — Germany, France, Italy and the
+US on GDP, consumption, investment, exports and imports, plus French, Italian
+and US prices. Errors are in **rate space**, quarterly growth in percentage
 points; a level error would compound horizon 1's mistake into every later
 horizon and would additionally be incomparable for stages 1 and 2a, whose level
 paths are anchored on filled rather than observed values.
 :::
 
-Same `r length(err_vars(fc_late))` series, same origin, same outturn:
+Same `r length(err_vars(fc_late))` series, same origin, and — now checked rather
+than assumed — the same outturn:
 
 ```{r err-curve}
 #| fig-width: 10
@@ -912,9 +970,12 @@ ggplot(err_late, aes(horizon, mae, colour = short)) +
   geom_point(size = 2) +
   scale_x_continuous(breaks = unique(err_late$horizon)) +
   scale_colour_brewer(palette = "Dark2", name = NULL) +
-  labs(x = "horizon (quarters ahead of 2025Q1)",
-       y = "mean absolute error, pp of quarterly growth",
-       caption = sprintf("%d variable-quarters behind each point", err_late$n[1])) +
+  labs(title = "Forecast error by horizon — six systems, one shared set",
+       subtitle = sprintf("median against outturn, %d series scored identically in every system",
+                          length(err_vars(fc_late))),
+       x = "horizon (quarters ahead of 2025Q1)",
+       y = "mean absolute error, pp",
+       caption = sprintf("%d variable-quarters behind each point; lower is better", err_late$n[1])) +
   theme_minimal(base_size = 13) +
   theme(legend.position = "bottom")
 ```
@@ -978,8 +1039,10 @@ ggplot(bt, aes(horizon, mae, colour = variant)) +
   # be indistinguishable from each other and from the floor.
   scale_y_log10() +
   scale_colour_brewer(palette = "Set1", name = NULL) +
-  labs(x = "horizon (quarters)", y = "mean absolute error, pp (log scale)",
-       caption = sprintf("%s variable-quarters per point; expanding window, re-estimated at each origin", bt$n[1])) +
+  labs(title = "Forecast error by horizon — twenty origins, each one re-estimated",
+       subtitle = "expanding-window backtest; stages 2d and 3d postdate this run and are absent",
+       x = "horizon (quarters)", y = "mean absolute error, pp (log)",
+       caption = sprintf("%s variable-quarters per point; lower is better", bt$n[1])) +
   theme_minimal(base_size = 13) +
   theme(legend.position = "bottom")
 ```
@@ -1034,9 +1097,11 @@ ggplot(d, aes(df, h8)) +
   scale_shape_manual(values = c(`TRUE` = 16, `FALSE` = 1), guide = "none") +
   scale_y_continuous(expand = expansion(mult = c(0.08, 0.16))) +
   scale_x_continuous(expand = expansion(mult = 0.09)) +
-  labs(x = "degrees of freedom (T - k)",
+  labs(title = "Degrees of freedom against forecast usability",
+       subtitle = "one point per estimated system; y averages that system's GDP variables",
+       x = "degrees of freedom (T - k)",
        y = "share of GDP draws exploding by horizon 8",
-       caption = "hollow point = stage 1, whose df is per country and not comparable") +
+       caption = "line fitted to the joint systems only; hollow point = stage 1, whose df is per country and not comparable") +
   theme_minimal(base_size = 13)
 ```
 
