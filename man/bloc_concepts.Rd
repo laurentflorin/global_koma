@@ -4,13 +4,27 @@
 \alias{bloc_concepts}
 \title{Concepts the \code{reu} bloc aggregates}
 \usage{
-bloc_concepts()
+bloc_concepts(stage3a = FALSE)
+}
+\arguments{
+\item{stage3a}{Include the labour/price concepts.}
 }
 \description{
-The base country concept set plus \code{domestic_demand}. Stage-3a/3b concepts
-are deliberately absent: no stage-3 block is defined for a bloc, and
-aggregating (say) a wage rate across seven economies with different wage
-levels is a different and much less well-posed problem than aggregating a
-volume index.
+The base country concept set plus \code{domestic_demand}, and -- when
+\code{stage3a = TRUE} -- the labour and disaggregated-price concepts the
+\code{\link[=labour_block]{labour_block()}} needs.
+}
+\details{
+\strong{Aggregating a wage rate across seven economies is not the same operation
+as aggregating a volume index, and the difference is why this is opt-in.}
+\code{chain_weighted_index()} averages \emph{growth rates}, so \code{reu_wages} is the
+GDP-weighted average of seven national wage \strong{growth} rates, not a wage
+level anyone could quote. That is exactly the right object for a model
+estimated in growth space -- every stage-3a identity
+(\code{ulc == wages - productivity}, \code{real_income == wages + employment - prices})
+is a statement about growth rates and reproduces to ~1e-13 on the bloc, the
+same as on a country -- but it means \code{reu_wages} must never be read as a
+euro-per-worker figure. The same caveat applies to \code{reu_employment}, which
+is an index rather than a headcount.
 }
 \keyword{internal}

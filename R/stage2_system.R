@@ -2408,6 +2408,134 @@ stage2d_config <- function(gdp_weights = NULL,
   )
 }
 
+#' Configuration for stage 3d: the labour and price block on the regional core
+#'
+#' **Stage 3a's block, on stage 2d's partition — which is the configuration
+#' stage 3c concluded was unaffordable.** That conclusion was correct for the
+#' eleven-country partition and is simply not binding on this one:
+#'
+#' | | on stage 2b (stage 3a/3c) | on stage 2d (here) |
+#' |---|---|---|
+#' | base `k` | 76 | 46 |
+#' | one labour country | `k = 83`, `df = 15` | `k = 53`, `df = 25` |
+#' | two labour entities | `k = 90`, `df = 8` | `k = 60`, `df = 18` |
+#' | four labour entities | `k = 104`, **`df = -6`** | `k = 74`, `df = 4` |
+#'
+#' The arithmetic is the same in both columns — the block costs seven columns
+#' per country either way — but the regional core starts thirty columns lower.
+#'
+#' **The decisive point is not the `df` though; it is what a bloc buys per
+#' column.** `reu` is one entity covering seven economies, so
+#' `labour_countries = c("de", "reu")` gives a wage–price channel to **eight of
+#' the eleven** modelled economies at `df = 18`, against stage 3a's *one*
+#' economy at `df = 15`. Stage 3c's rollout does not become affordable
+#' country-by-country; it becomes affordable because the bloc changes what a
+#' column buys.
+#'
+#' **What the bloc's labour variables are and are not.** `reu_wages` is the
+#' GDP-weighted average of seven national wage *growth* rates, not a
+#' euro-per-worker level, and `reu_employment` is an index rather than a
+#' headcount — see [bloc_concepts()]. Every stage-3a identity is a statement
+#' about growth rates, so they reproduce on the bloc exactly as on a country;
+#' the levels are simply not quotable.
+#'
+#' **Phase A only.** `<iso2>_foreign_prices` stays exogenous, constructed by
+#' [build_stage2_panel()] from partners' export prices. Stage 3a's phase B
+#' (giving every partner an export-price equation so foreign prices become an
+#' identity) cost ten columns on eleven countries; here it would cost five, but
+#' it is left for later because the phase-A/phase-B comparison is not what this
+#' stage is testing.
+#'
+#' China cannot carry the block: it has no quarterly wage, employment or
+#' HICP-split data at all, which is the same wall
+#' [build_cn_panel()] documents for consumption and investment. The US is
+#' excluded for the reason stage 3c already recorded — FRED carries none of the
+#' extended concepts.
+#'
+#' @param gdp_weights The `W_gdp` vector, passed to [stage2d_config()].
+#' @param hicp_weights Named list, `entity -> named numeric`, one per labour
+#'   entity. The bloc's comes from [bloc_hicp_weights()], not [hicp_weights()],
+#'   which has no published basket to fetch.
+#' @param labour_countries Which entities carry the block. `c("de", "reu")` by
+#'   default: the widest coverage that stays clear of the `df >= 4` floor.
+#' @param ... Passed to [stage2d_config()].
+#'
+#' @return A list shaped like [stage2d_config()], with `labour_countries` added.
+#' @export
+stage3d_config <- function(gdp_weights = NULL, hicp_weights = NULL,
+                           labour_countries = c("de", "reu"), ...) {
+  base <- stage2d_config(gdp_weights = gdp_weights, ...)
+  labour_countries <- tolower(labour_countries)
+
+  stray <- setdiff(labour_countries, base$opts$phillips_countries)
+  if (length(stray) > 0) {
+    cli::cli_abort("{.arg labour_countries} names {.val {stray}}, which {?is/are} not in the stage-2d entity set.")
+  }
+  unsupported <- intersect(labour_countries, c("cn", "us"))
+  if (length(unsupported) > 0) {
+    cli::cli_abort(c(
+      "{.val {unsupported}} cannot carry the labour block.",
+      "i" = "Neither has quarterly wage, employment or HICP-split data -- see {.fn stage3d_config}."
+    ))
+  }
+
+  base$opts <- stage2_options(
+    include_government = base$opts$include_government,
+    extra_regressors = base$opts$extra_regressors,
+    policy_rule = base$opts$policy_rule,
+    fx = base$opts$fx,
+    labour_countries = labour_countries,
+    hicp_weights = hicp_weights,
+    phillips_countries = base$opts$phillips_countries,
+    consumption_rate_countries = base$opts$consumption_rate_countries,
+    import_content_countries = base$opts$import_content_countries,
+    spread_countries = base$opts$spread_countries,
+    merged_demand_countries = base$opts$merged_demand_countries,
+    bloc_weights = base$opts$bloc_weights
+  )
+  base$labour_countries <- labour_countries
+  base
+}
+
+#' The affordability frontier for the regional core
+#'
+#' Stage 3c's `k_frontier` table, recomputed on the six-entity partition. Same
+#' arithmetic, different starting point: the labour block costs seven columns
+#' per entity (six net predetermined, plus one exogenous `foreign_prices`), and
+#' the base is stage 2d's `k` rather than stage 2b's.
+#'
+#' `df >= 4` is the feasibility floor, not `df > 0`. `reports/evaluation.qmd`
+#' established it across 92 attempted estimations: every origin with `df >= 4`
+#' produced a usable forecast and every origin with `df` of 1, 2 or 3 passed
+#' `origin_feasible()`'s gate and then failed at the forecast stage, because
+#' `riwish(T - k, .)` on a near-degenerate Wishart throws on most draws.
+#'
+#' @param base_k Base `k` of the system the blocks are added to.
+#' @param t_obs Observations available.
+#' @param block_cost Columns one labour block costs.
+#' @param entities Entities that could carry it, in the order they would be
+#'   added, with how many economies each covers.
+#'
+#' @return A `data.frame`, one row per cumulative configuration.
+#' @export
+stage3d_frontier <- function(base_k = 46, t_obs = 78, block_cost = 7,
+                             entities = c(de = 1, reu = 7, fr = 1, it = 1)) {
+  n <- length(entities)
+  rows <- lapply(0:n, function(i) {
+    who <- names(entities)[seq_len(i)]
+    k <- base_k + i * block_cost
+    data.frame(
+      configuration = if (i == 0) "stage 2d (no labour block)" else paste(who, collapse = " + "),
+      labour_entities = i,
+      economies_covered = if (i == 0) 0L else sum(entities[seq_len(i)]),
+      k = k, t_obs = t_obs, df = t_obs - k,
+      feasible = (t_obs - k) >= 4,
+      stringsAsFactors = FALSE
+    )
+  })
+  do.call(rbind, rows)
+}
+
 #' Estimation window for stage 2b
 #'
 #' Stage 1 and 2a use 2019Q4/2023Q1 so that 2020-2022 is conditionally filled

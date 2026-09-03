@@ -39,14 +39,68 @@ reu_members <- function() c("at", "be", "es", "gr", "ie", "nl", "pt")
 
 #' Concepts the `reu` bloc aggregates
 #'
-#' The base country concept set plus `domestic_demand`. Stage-3a/3b concepts
-#' are deliberately absent: no stage-3 block is defined for a bloc, and
-#' aggregating (say) a wage rate across seven economies with different wage
-#' levels is a different and much less well-posed problem than aggregating a
-#' volume index.
+#' The base country concept set plus `domestic_demand`, and -- when
+#' `stage3a = TRUE` -- the labour and disaggregated-price concepts the
+#' [labour_block()] needs.
+#'
+#' **Aggregating a wage rate across seven economies is not the same operation
+#' as aggregating a volume index, and the difference is why this is opt-in.**
+#' `chain_weighted_index()` averages *growth rates*, so `reu_wages` is the
+#' GDP-weighted average of seven national wage **growth** rates, not a wage
+#' level anyone could quote. That is exactly the right object for a model
+#' estimated in growth space -- every stage-3a identity
+#' (`ulc == wages - productivity`, `real_income == wages + employment - prices`)
+#' is a statement about growth rates and reproduces to ~1e-13 on the bloc, the
+#' same as on a country -- but it means `reu_wages` must never be read as a
+#' euro-per-worker figure. The same caveat applies to `reu_employment`, which
+#' is an index rather than a headcount.
+#'
+#' @param stage3a Include the labour/price concepts.
 #' @keywords internal
-bloc_concepts <- function() {
-  c(names(eamdqd_concept_codes), "domestic_demand")
+bloc_concepts <- function(stage3a = FALSE) {
+  base <- c(names(eamdqd_concept_codes), "domestic_demand")
+  if (!isTRUE(stage3a)) {
+    return(base)
+  }
+  c(base, "employment", "wages", "energy_prices", "nonenergy_prices",
+    "import_prices", "export_prices")
+}
+
+#' HICP energy / non-energy weights for a bloc
+#'
+#' The bloc's counterpart to [hicp_weights()], which fetches one country's
+#' published basket split. A bloc has no published basket, so its split is its
+#' members' splits averaged with the same weights the bloc's series were built
+#' from.
+#'
+#' **The weights are renormalised to sum to exactly 1**, which
+#' [labour_block()] requires: the energy/non-energy split *partitions* the
+#' basket, and a sum below 1 means a component went missing rather than that
+#' the basket is smaller. Rounding seven members' weights and adding them can
+#' leave a 1e-4 residual, which would abort the block for no real reason.
+#'
+#' @param weights_list Named list, `iso2 -> named numeric` of the kind
+#'   `hicp_weights()$weights` returns, one per member.
+#' @param bloc_weights Named numeric over the same members, summing to 1.
+#'
+#' @return A named numeric vector (`nonenergy_prices`, `energy_prices`)
+#'   summing to 1, carrying a `members` attribute.
+#' @export
+bloc_hicp_weights <- function(weights_list, bloc_weights) {
+  members <- names(bloc_weights)
+  missing <- setdiff(members, names(weights_list))
+  if (length(missing) > 0) {
+    cli::cli_abort("{.arg weights_list} has no entry for {.val {missing}}.")
+  }
+  expected <- c("nonenergy_prices", "energy_prices")
+  averaged <- vapply(expected, function(cn) {
+    sum(vapply(members, function(m) {
+      unname(weights_list[[m]][[cn]]) * unname(bloc_weights[[m]])
+    }, numeric(1)))
+  }, numeric(1))
+  out <- averaged / sum(averaged)
+  attr(out, "members") <- members
+  out
 }
 
 #' Aggregate a set of countries into one bloc pseudo-country
@@ -477,15 +531,49 @@ ts_combine <- function(series_list, weights) {
 #' @param gdp_weights The `W_gdp` vector from [build_gdp_weight_matrix()].
 #' @param dates koma `dates` list, passed to [build_cn_panel()].
 #' @param members The bloc's members.
+#' @param stage3a Also aggregate the bloc's labour and disaggregated-price
+#'   concepts (see [bloc_concepts()]) and add the US and Chinese trade price
+#'   indices the foreign-price index needs. Requires `panel` to already carry
+#'   those concepts for every member -- build it with
+#'   `build_global_panel(stage3a = )`.
 #'
 #' @return `panel` with `reu_*` and `cn_*` appended, internal gaps filled.
 #' @export
 add_stage2d_countries <- function(panel, gdp_weights, dates = stage2d_dates(),
-                                  members = reu_members()) {
+                                  members = reu_members(), stage3a = FALSE) {
   bloc <- aggregate_bloc_panel(
-    panel, "reu", members, bloc_gdp_weights(gdp_weights, members)
+    panel, "reu", members, bloc_gdp_weights(gdp_weights, members),
+    concepts = bloc_concepts(stage3a = stage3a)
   )
   china <- build_cn_panel(dates = dates)
+
+  if (isTRUE(stage3a)) {
+    # `<iso2>_foreign_prices` is a trade-weighted index over PARTNERS' export
+    # prices, and on this partition every euro-area entity's partners include
+    # the US and China. Neither is covered by eurostat_deflator(), so without
+    # these two the index would have to renormalise a fifth of German trade
+    # away and assume it prices like the euro area.
+    china[[country_var("cn", "export_prices")]] <- koma::as_ets(
+      cn_trade_price_index("exports"),
+      series_type = concept_series_type[["export_prices"]],
+      method = concept_method[["export_prices"]],
+      country = "CN", source = "imf_ifs"
+    )
+    china[[country_var("cn", "import_prices")]] <- koma::as_ets(
+      cn_trade_price_index("imports"),
+      series_type = concept_series_type[["import_prices"]],
+      method = concept_method[["import_prices"]],
+      country = "CN", source = "imf_ifs"
+    )
+    for (side in c("export", "import")) {
+      china[[country_var("us", paste0(side, "_prices"))]] <- koma::as_ets(
+        us_trade_price_index(paste0(side, "s")),
+        series_type = concept_series_type[[paste0(side, "_prices")]],
+        method = concept_method[[paste0(side, "_prices")]],
+        country = "US", source = "fred"
+      )
+    }
+  }
 
   start <- num_to_period(do.call(min, lapply(panel, function(x) stats::tsp(x)[1])), 4)
   end <- num_to_period(do.call(max, lapply(panel, function(x) stats::tsp(x)[2])), 4)
@@ -561,4 +649,64 @@ bloc_expenditure_shares <- function(panel, code, members, weights, dates = NULL,
       NULL
     }
   )
+}
+
+# --------------------------------------------------------------------------
+# Trade price indices for the two non-euro-area entities
+# --------------------------------------------------------------------------
+
+#' The US implicit export/import deflator, from FRED
+#'
+#' `eurostat_deflator()` supplies these for a euro-area country, and the
+#' stage-3a block has never needed them for anyone else. The regional core
+#' does: `<iso2>_foreign_prices` is a trade-weighted index over **partners'**
+#' export prices, and on the six-entity partition the US and China are
+#' partners of every euro-area entity. Without them the index would have to
+#' renormalise them away, which for Germany would mean assuming a fifth of its
+#' trade prices like the euro area does.
+#'
+#' Eurostat publishes `PD15_EUR` directly; FRED does not, so the deflator is
+#' formed as the ratio of the nominal to the real series -- which is what an
+#' implicit deflator *is*, and what Eurostat computes upstream. Both legs are
+#' quarterly and span 1947 onward, so there is no splice and no gap.
+#'
+#' @param side `"exports"` or `"imports"`.
+#' @return A quarterly `ts`, index (its own base), seasonally adjusted.
+#' @keywords internal
+us_trade_price_index <- function(side = c("exports", "imports")) {
+  side <- match.arg(side)
+  ids <- if (identical(side, "exports")) c("EXPGS", "EXPGSC1") else c("IMPGS", "IMPGSC1")
+  nominal <- df_to_quarterly_ts(fetch_fred_series(ids[1], start_date = "1995-01-01"))
+  real <- df_to_quarterly_ts(fetch_fred_series(ids[2], start_date = "1995-01-01"))
+  ratio <- ts_ratio(nominal, real)
+  # Rebase to 100 at the start so it reads like every other index in the panel.
+  stats::ts(100 * as.numeric(ratio) / as.numeric(ratio)[1],
+            start = stats::start(ratio), frequency = stats::frequency(ratio))
+}
+
+#' China's export/import price index, from IMF IFS
+#'
+#' `PXP_IX` / `PMP_IX`, quarterly, **2005Q1 onward** -- which is exactly the
+#' stage-2d estimation window, and the same 2005Q1 boundary China's
+#' merchandise trade volumes have. Reached through DBnomics for the reason
+#' `data_dbnomics.R` records: the IMF's own SDMX endpoints no longer serve
+#' these dataflows.
+#'
+#' @param side `"exports"` or `"imports"`.
+#' @return A quarterly `ts`.
+#' @keywords internal
+cn_trade_price_index <- function(side = c("exports", "imports")) {
+  side <- match.arg(side)
+  code <- if (identical(side, "exports")) "Q.CN.PXP_IX" else "Q.CN.PMP_IX"
+  d <- fetch_dbnomics_series("IMF", "IFS", code)
+  if (is.null(d) || nrow(d) == 0) {
+    cli::cli_abort("IMF IFS {.val {code}} returned no observations.")
+  }
+  parsed <- regmatches(d$period, regexec("^([0-9]{4})-Q([1-4])$", d$period))
+  year <- vapply(parsed, function(p) as.integer(p[2]), integer(1))
+  quarter <- vapply(parsed, function(p) as.integer(p[3]), integer(1))
+  index <- year * 4L + (quarter - 1L)
+  values <- rep(NA_real_, max(index) - min(index) + 1L)
+  values[index - min(index) + 1L] <- d$value
+  stats::ts(values, start = c(min(index) %/% 4L, min(index) %% 4L + 1L), frequency = 4)
 }

@@ -8,7 +8,8 @@ add_stage2d_countries(
   panel,
   gdp_weights,
   dates = stage2d_dates(),
-  members = reu_members()
+  members = reu_members(),
+  stage3a = FALSE
 )
 }
 \arguments{
@@ -20,6 +21,12 @@ add_stage2d_countries(
 \item{dates}{koma \code{dates} list, passed to \code{\link[=build_cn_panel]{build_cn_panel()}}.}
 
 \item{members}{The bloc's members.}
+
+\item{stage3a}{Also aggregate the bloc's labour and disaggregated-price
+concepts (see \code{\link[=bloc_concepts]{bloc_concepts()}}) and add the US and Chinese trade price
+indices the foreign-price index needs. Requires \code{panel} to already carry
+those concepts for every member -- build it with
+\code{build_global_panel(stage3a = )}.}
 }
 \value{
 \code{panel} with \verb{reu_*} and \verb{cn_*} appended, internal gaps filled.
