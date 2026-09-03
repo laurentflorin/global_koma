@@ -157,6 +157,114 @@ template_diff <- function(prev, cur) {
   if (!length(bits)) "no change to the template — the *partition* is what differs" else bits
 }
 
+# How each identity in a stage got its weights. Derived from the identities the
+# stage actually carries, not a per-stage list written by hand -- a hand-written
+# one would have to be revisited every time a stage changes its identity set,
+# and would silently go stale when it was not.
+weight_notes <- function(ident) {
+  if (!length(ident)) return(character(0))
+  lhs <- vapply(lapply(ident, eq_parts), `[[`, "", "lhs")
+  raw <- stats::setNames(ident, lhs)
+  terms_of <- function(v) eq_parts(raw[[v]])$terms
+  wt <- function(v, term) {
+    m <- regmatches(raw[[v]], regexpr(paste0("[0-9.]+\\*", term, "\\b"), raw[[v]]))
+    if (!length(m)) NA_real_ else as.numeric(sub("\\*.*$", "", m))
+  }
+  has <- function(x) x %in% lhs
+  n <- character(0)
+
+  if (has("cc_gdp")) {
+    gov <- has("cc_domestic_demand") && any(grepl("_government$", terms_of("cc_domestic_demand")))
+    n <- c(n, paste0(
+      "`cc_gdp`", if (has("cc_domestic_demand")) " and `cc_domestic_demand`" else "",
+      " — **average expenditure shares**, each one the mean of the period-by-period ",
+      "*level* ratio (`mean(cc_exports / cc_gdp)`, not the ratio of the means) over ",
+      "**this stage's own estimation window**, rounded to 3dp. Computed on levels ",
+      "and used in growth space deliberately: log-linearising an accounting identity ",
+      "turns it into a share-weighted sum of the components' growth rates, so the ",
+      "level shares *are* the growth-rate coefficients. The GDP identity holds only ",
+      "up to the national-accounts statistical discrepancy (2–6%, wider for Ireland), ",
+      "and is reported but never flagged for that reason",
+      if (has("cc_domestic_demand")) {
+        if (gov) "; the consumption/investment/government split sums to exactly 1, because domestic demand *is* their sum." else "; without government the domestic-demand split is deliberately inexact — the two shares are renormalised over what is left."
+      } else ".",
+      " `expenditure_shares()`."))
+  }
+  if (has("cc_foreign_demand")) {
+    row_w <- wt("cc_foreign_demand", "row_gdp")
+    basis <- if (any(grepl("_imports$", terms_of("cc_foreign_demand")))) "partner **imports**" else "partner **GDP**"
+    bloc <- any(grepl("^reu_", terms_of("cc_foreign_demand")))
+    n <- c(n, sprintf(paste0(
+      "`cc_foreign_demand` — **bilateral trade weights** from the ECB WTS matrix, ",
+      "restricted to the modelled partners and loaded on %s. Whatever share of trade ",
+      "the partition does not model is folded onto the exogenous `row_gdp` residual ",
+      "rather than dropped, so the weights still sum to 1 and the index stays a proper ",
+      "weighted average of growth rates — here **%.3f**, %s. %s`stage2_linkage_weights()`."),
+      basis, row_w,
+      if (is.na(row_w)) "" else if (row_w > 0.5) "so over half the index is an assumption that the unmodelled world grows like world GDP" else "the smallest residual of any stage, because the US and China are modelled partners here",
+      if (bloc) "The `reu` row is the bloc's own trade weight, aggregated from its members. " else ""))
+  }
+  if (has("cc_prices")) {
+    e <- wt("cc_prices", "cc_energy_prices")
+    n <- c(n, sprintf(paste0(
+      "`cc_prices` — **HICP basket shares** fetched from Eurostat `prc_hicp_inw` and ",
+      "averaged over the estimation years (%.3f non-energy / %.3f energy for Germany, ",
+      "not the 0.85/0.15 one would guess). Non-energy plus energy partitions the basket ",
+      "exactly — verified to sum to `CP00` in every year 1996–2025 — whereas core plus ",
+      "energy leaves ~19%% of the basket unaccounted for. This is the one weight that is ",
+      "genuinely an **approximation**: HICP weights are re-based annually (the German ",
+      "energy weight ranges 8.8–12.6%% over the sample) while a koma identity weight is a ",
+      "constant, so `hicp_weights()` returns `max_deviation` to make the size of that ",
+      "approximation visible."), 1 - e, e))
+  }
+  # Two different families of imposed weight, and they are imposed for two
+  # different reasons -- collapsing them into one bullet attributed the
+  # chain-weighting argument to the long-rate identity, where it does not apply.
+  unit_weights <- function(v) all(abs(as.numeric(regmatches(
+    raw[[v]], gregexpr("[0-9.]+(?=\\*)", raw[[v]], perl = TRUE))[[1]])) == 1)
+  if (has("cc_long_rate") && unit_weights("cc_long_rate")) {
+    n <- c(n, paste0(
+      "`cc_long_rate` — **both weights imposed at exactly 1**: a sovereign yield *is* ",
+      "the policy path plus a term premium, so there is nothing to estimate. This is a ",
+      "`rate`/`none` identity, a literal linear combination of levels rather than of ",
+      "growth rates, and `identity_consistency()` checks it in that space. Note it has ",
+      "**two sides** — the identity string and the `cc_spread` series the panel builder ",
+      "constructs — and both derive the policy rate from `policy_rate_map()`, because ",
+      "when they disagreed the US identity was silently violated by the whole EA–US ",
+      "policy-rate gap (up to 3.25pp)."))
+  }
+  acct <- intersect(c("cc_productivity", "cc_ulc", "cc_real_income"), lhs)
+  acct <- acct[vapply(acct, unit_weights, logical(1))]
+  if (length(acct)) {
+    n <- c(n, paste0(
+      paste0("`", acct, "`", collapse = ", "),
+      " — **imposed at exactly ±1**, because these are definitions rather than ",
+      "estimates: unit labour cost *is* wages minus productivity, which telescopes ",
+      "through `productivity == gdp − employment` to nominal wage bill over real ",
+      "output. `chain_weighted_index()` sums `diff(log(x)) * w` **without ",
+      "renormalising**, which is what makes ±1 give exact differences — these ",
+      "reproduce to ~1e-13."))
+  }
+  if (any(grepl("(^|[^a-z])reu_", ident))) {
+    n <- c(n, paste0(
+      "**The `reu` bloc's own weights are member-weighted averages**, not the bloc ",
+      "series' own ratios. `bloc_expenditure_shares()` averages the seven members' ",
+      "shares; taking `mean(reu_exports / reu_gdp)` directly would give **1.337** ",
+      "against a true 0.598, because every bloc series is a base-100 chain index and ",
+      "that ratio is just their relative growth since the base period. ",
+      "`stage2_shares()` aborts rather than falling back, so a bloc without ",
+      "`bloc_weights` fails loudly. Same rule for its HICP split — ",
+      "`bloc_hicp_weights()`, since there is no published `reu` basket to fetch."))
+  }
+  if (has("cc_govdebt")) {
+    n <- c(n, paste0(
+      "`cc_govdebt` — **stock-flow accumulation**, both weights exactly 1. The flow is ",
+      "derived so the carry weight *can* be 1: koma's injected `(w)*x` weights are not ",
+      "time-varying, so a debt snowball factor `(1+i)/(1+g)` cannot be expressed here."))
+  }
+  n
+}
+
 # Each stage's template is a change to ONE earlier stage, and it is not always
 # the previous row of the table: 3a extends 2b, 3d puts 3a's block on 2d.
 # Getting this wrong would describe stage 3d as inventing a labour block.
@@ -253,6 +361,19 @@ if (!is_deck) {
     "so a change of identity weight alone -- an expenditure share re-derived on a",
     "different sample, say -- does not appear as a change; the weights are printed",
     "in full above each diff for exactly that reason.\n\n"))
+  cat(paste(
+    "**On the identity weights.** Every one of them is *computed from the data*, and",
+    "none is estimated — an identity fixes entries of koma's `Gamma` matrix rather",
+    "than being fitted, so its weights are a specification choice. Each block below",
+    "says which rule set its own. Two properties are shared across all of them.",
+    "First, weights are rounded to **three decimals** so the equation strings stay",
+    "readable; that is safe precisely because they are a choice rather than a",
+    "constraint the data has to satisfy. Second, and for the same reason, **koma",
+    "performs no identity-consistency check at all** — a wrong weight is silent, not",
+    "an error — so `stage2_preflight()`'s `identity_consistency()` does the",
+    "arithmetic koma does not, recomputing every identity from the panel and",
+    "reporting its worst error (on the stage-2c panel: 23 exact identities, worst",
+    "1.05e-13).\n\n"))
   for (st in shapes$stage) {
     row <- shapes[shapes$stage == st, ]
     cat(sprintf("### %s — %s\n\n", row$label, row$scope))
@@ -265,6 +386,11 @@ if (!is_deck) {
     if (length(ident)) {
       cat("*Identities:*\n\n")
       cat("```\n", paste(pretty_eq(ident), collapse = "\n"), "\n```\n\n", sep = "")
+      wn <- weight_notes(ident)
+      if (length(wn)) {
+        cat("*Where the weights come from:*\n\n")
+        cat(paste0("- ", wn, collapse = "\n"), "\n\n")
+      }
     }
     par <- tmpl_parent[[st]]
     if (!is.na(par)) {
