@@ -6,7 +6,7 @@
 #
 # The section is deliberately identical in structure across stages -- fan
 # chart, median table, explosive-draw table, anchoring note -- so that the
-# seven stages can be read against each other. What differs between them is
+# eight stages can be read against each other. What differs between them is
 # only which entities exist and whether the forecast window is in the past.
 
 #' Load one stage's forecast artefact.
@@ -132,4 +132,75 @@ fc_vs_actual_table <- function(fc, vars, space = "rate", digits = 2) {
     out[[paste0(toupper(sub("_.*$", "", v)), " act")]] <- round(dv[[act]][i], digits)
   }
   out
+}
+
+# ---------------------------------------------------------------------------
+# Cross-stage comparison helpers.
+#
+# Everything above summarises ONE stage's forecast. The overview report needs
+# to put several stages beside each other, which raises two problems that do
+# not exist within a stage, and both are handled here rather than in the .qmd:
+#
+#   1. The stages do not carry the same variables. Comparing an error averaged
+#      over stage 2b's eleven countries against one averaged over stage 2d's
+#      six is a comparison of country mixes, not of models. `fc_common_vars()`
+#      intersects, so every stage is scored on exactly the same series.
+#   2. The stages do not share a forecast origin. Stages 1 and 2a run from
+#      2023Q1, everything from 2b on from 2025Q1, so their horizons cover
+#      different quarters of history and their errors are not on the same
+#      scale. Nothing here pools across that boundary; the report shows the
+#      two groups separately and says why.
+# ---------------------------------------------------------------------------
+
+#' Variables carried by every artefact in a list, optionally filtered.
+#'
+#' The guard against comparing country mixes. `concepts` narrows to the
+#' concepts worth averaging over -- growth rates of real volumes and prices,
+#' not policy rates, whose errors are in percentage points and would dominate
+#' any average they were included in.
+fc_common_vars <- function(fc_list, concepts = NULL) {
+  v <- Reduce(intersect, lapply(fc_list, function(f) unique(f$paths$variable)))
+  if (!is.null(concepts)) {
+    v <- v[sub("^[a-z]+_", "", v) %in% concepts]
+  }
+  sort(v)
+}
+
+#' Mean absolute error by stage and horizon, on a shared variable set.
+#'
+#' One row per stage x horizon. `n` is the number of variable-quarters behind
+#' each cell and is returned rather than hidden, because a horizon where only
+#' some stages have an outturn would otherwise look like a difference between
+#' models.
+fc_error_by_horizon <- function(fc_list, vars, space = "rate") {
+  rows <- lapply(names(fc_list), function(s) {
+    e <- forecast_error_table(fc_list[[s]]$paths, vars, space = space)
+    if (nrow(e) == 0) return(NULL)
+    do.call(rbind, lapply(split(e, e$horizon), function(z) data.frame(
+      stage = s, label = fc_list[[s]]$label, horizon = z$horizon[1],
+      mae = mean(z$abs_error), rmse = sqrt(mean(z$error^2)),
+      bias = mean(z$error), n = nrow(z), stringsAsFactors = FALSE
+    )))
+  })
+  out <- do.call(rbind, Filter(Negate(is.null), rows))
+  rownames(out) <- NULL
+  out
+}
+
+#' One variable's fan across several stages, as a single `paths` frame.
+#'
+#' [plot_forecast_fan()] facets on `variable`, so a cross-stage chart is made
+#' by relabelling each stage's rows with a stage-specific key and stacking
+#' them. Returns the frame and the labeller together so the caller cannot pair
+#' the wrong two.
+fc_stage_compare <- function(fc_list, var, stages = names(fc_list)) {
+  stages <- stages[vapply(stages, function(s) var %in% fc_list[[s]]$paths$variable, logical(1))]
+  d <- do.call(rbind, lapply(stages, function(s) {
+    x <- fc_list[[s]]$paths[fc_list[[s]]$paths$variable == var, ]
+    x$variable <- paste0(s, "::", var)
+    x
+  }))
+  keys <- paste0(stages, "::", var)
+  labs <- vapply(stages, function(s) sub(" \\(.*$", "", fc_list[[s]]$label), character(1))
+  list(paths = d, vars = keys, labeller = stats::setNames(unname(labs), keys))
 }

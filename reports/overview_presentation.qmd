@@ -1,6 +1,6 @@
 ---
 title: "A multi-country Bayesian macro model"
-subtitle: "Structure, results and forecasts across five estimated systems"
+subtitle: "Structure, results and forecasts across eight estimated systems"
 format:
   # Two outputs from one source, so the deck and the handout cannot drift.
   # Both formats emit .html, so each needs an explicit `output-file` or the
@@ -101,6 +101,99 @@ peak_by <- function(d, concept) {
   x$country <- toupper(sub(paste0("_", concept, "$"), "", x$variable))
   vapply(split(x, x$country), function(z) z$median_diff[which.max(abs(z$median_diff))], numeric(1))
 }
+
+# ---------------------------------------------------------------------------
+# The handout carries a stage-by-stage template walk-through that the deck does
+# not: eight stages' worth of equations is a reference section, not something
+# to put in front of a room. Rather than wrap `##` headings in a
+# `content-visible` div -- which leaves empty slides behind in revealjs -- the
+# whole section is emitted from R and simply produces nothing for the deck.
+is_deck <- identical(knitr::opts_knit$get("rmarkdown.pandoc.to"), "revealjs")
+
+# Split a koma equation into its left-hand side, its operator and its
+# regressor names, with the intercept, the COVID dummies and any identity
+# WEIGHT stripped. Comparing on names rather than on the rendered string is
+# what lets the stage-to-stage diff below distinguish "this equation gained a
+# regressor" from "this identity's weights were re-estimated on a new sample".
+eq_parts <- function(e) {
+  op <- if (grepl("==", e, fixed = TRUE)) "==" else "~"
+  lhs <- sub("\\s*(~|==).*$", "", e)
+  rhs <- sub("^.*?(~|==)", "", e)
+  tm <- strsplit(gsub("-", "+-", rhs), "+", fixed = TRUE)[[1]]
+  tm <- sub("^[-0-9.]+\\*", "", sub("^-", "", tm[nzchar(tm)]))
+  list(lhs = lhs, op = op,
+       terms = unique(tm[tm != "constant" & !grepl("^covid_", tm)]))
+}
+
+# What changed between one stage's template and its parent's. Derived, never
+# transcribed -- the same rule the rest of this report follows, and the reason
+# a stage cannot be described as doing something it does not do.
+template_diff <- function(prev, cur) {
+  idx <- function(e) { l <- lapply(e, eq_parts); stats::setNames(l, vapply(l, `[[`, "", "lhs")) }
+  P <- idx(prev); C <- idx(cur)
+  bits <- character(0)
+  new <- setdiff(names(C), names(P))
+  gone <- setdiff(names(P), names(C))
+  if (length(new)) bits <- c(bits, sprintf("**new:** %s", paste0("`", new, "`", collapse = ", ")))
+  if (length(gone)) bits <- c(bits, sprintf("**dropped:** %s", paste0("`", gone, "`", collapse = ", ")))
+  for (v in intersect(names(P), names(C))) {
+    a <- setdiff(C[[v]]$terms, P[[v]]$terms)
+    r <- setdiff(P[[v]]$terms, C[[v]]$terms)
+    flip <- if (P[[v]]$op != C[[v]]$op) {
+      if (C[[v]]$op == "==") " — **now an identity**" else " — **now estimated**"
+    } else ""
+    # A `foreign_demand` identity's partner list is the country PARTITION, not
+    # a specification change, so listing eleven added and six removed partners
+    # would drown the one thing worth reading.
+    if (grepl("_foreign_demand$", v) && (length(a) > 3 || length(r) > 3)) {
+      bits <- c(bits, sprintf("`%s` — partner set follows the partition", v))
+      next
+    }
+    if (!length(a) && !length(r) && !nzchar(flip)) next
+    ch <- c(if (length(a)) paste0("+", a), if (length(r)) paste0("\u2212", r))
+    bits <- c(bits, sprintf("`%s`%s%s", v, flip,
+                            if (length(ch)) paste0(": ", paste0("`", ch, "`", collapse = ", ")) else ""))
+  }
+  if (!length(bits)) "no change to the template — the *partition* is what differs" else bits
+}
+
+# Each stage's template is a change to ONE earlier stage, and it is not always
+# the previous row of the table: 3a extends 2b, 3d puts 3a's block on 2d.
+# Getting this wrong would describe stage 3d as inventing a labour block.
+tmpl_parent <- c(stage1 = NA, stage2a = "stage1", stage2b = "stage2a",
+                 stage2c = "stage2b", stage2d = "stage2c", stage3a = "stage2b",
+                 stage3b = "stage3a", stage3d = "stage2d")
+
+# Forecast-error comparison. Two groups, never pooled: stages 1 and 2a forecast
+# from 2023Q1 into a fully observed window, stages 2b onward from 2025Q1 where
+# only five quarters have happened.
+err_concepts <- c("gdp", "prices", "consumption", "investment", "exports", "imports")
+# `de`/`fr`/`it`/`us` are the four entities every joint stage carries under its
+# own name. `ea_gdp` is deliberately excluded even though it exists everywhere:
+# it aggregates eleven countries in stage 2b and four in stage 2d, so scoring it
+# across stages would compare two different objects.
+err_entities <- c("de", "fr", "it", "us")
+err_vars <- function(fcl) {
+  v <- fc_common_vars(fcl, err_concepts)
+  v[sub("_.*$", "", v) %in% err_entities]
+}
+late <- c("stage2b", "stage2c", "stage2d", "stage3a", "stage3b", "stage3d")
+early <- c("stage1", "stage2a")
+fc_late <- fc[late]; fc_early <- fc[early]
+err_late <- fc_error_by_horizon(fc_late, err_vars(fc_late))
+err_early <- fc_error_by_horizon(fc_early, err_vars(fc_early))
+err_late$short <- sub(" \\(.*$", "", err_late$label)
+err_early$short <- sub(" \\(.*$", "", err_early$label)
+
+# The multi-origin backtest, for the section that says what a single origin
+# cannot settle. Built by reports/evaluation.qmd's own pipeline.
+evaluation <- readRDS(file.path("data", "cache", "evaluation", "analysis.rds"))
+bt <- evaluation$lb_quarterly_2b_2c
+# The leaderboard stores `horizon` as a character key, which a continuous scale
+# cannot train on.
+bt$horizon <- as.integer(bt$horizon)
+bt$variant <- factor(bt$variant, levels = c("naive", "stage1", "stage2", "stage2c"),
+                     labels = c("naive AR(1)", "Stage 1", "Stage 2b", "Stage 2c"))
 ```
 
 ## What this is
@@ -133,6 +226,62 @@ A **multi-country Bayesian simultaneous-equations macro model**, built on the
 **The one thing that governs all of it:** every system spends observations on
 parameters. `df = T − k`. Nearly every result in this deck is downstream of
 that number.
+
+```{r stage-template-walk}
+#| results: asis
+if (!is_deck) {
+  cat("## The equation template, stage by stage\n\n")
+  cat(paste(
+    "Every stage is written once for a generic country `cc` and applied to each",
+    "economy, so a system with 68 stochastic equations still has only a handful",
+    "of distinct *forms*. That is what makes the stages comparable at all, and",
+    "it is why this section is the right place to start: read the eight blocks",
+    "below and you have read the whole model.\n\n"))
+  cat(paste(
+    "The equations are **extracted from the fitted systems**, not transcribed --",
+    "`scratch/overview_build.R` takes one representative entity's equations off",
+    "each `sys_eq` and replaces its own prefix with `cc`. A block below therefore",
+    "cannot describe a specification that was not estimated. The intercept and the",
+    "four COVID impulse dummies are suppressed throughout for readability; `.L(1)`",
+    "is a one-quarter lag; `==` marks an identity, imposed during estimation rather",
+    "than fitted.\n\n"))
+  cat(paste(
+    "Each block ends with what changed **relative to the stage it descends from**,",
+    "which is not always the previous row: stage 3a extends stage 2b, and stage 3d",
+    "puts stage 3a's block on stage 2d's partition. The diffs are computed from the",
+    "two templates rather than written by hand. They compare regressor *names*,",
+    "so a change of identity weight alone -- an expenditure share re-derived on a",
+    "different sample, say -- does not appear as a change; the weights are printed",
+    "in full above each diff for exactly that reason.\n\n"))
+  for (st in shapes$stage) {
+    row <- shapes[shapes$stage == st, ]
+    cat(sprintf("### %s — %s\n\n", row$label, row$scope))
+    cat(sprintf("`k = %d`, `T = %d`, **`df = %d`** · %s–%s · %d stochastic + %d identities\n\n",
+                row$k, row$t_obs, row$df, row$est_start, row$est_end,
+                row$stochastic, row$identities))
+    stoch <- grep("==", templates[[st]], invert = TRUE, value = TRUE)
+    ident <- grep("==", templates[[st]], value = TRUE)
+    cat("```\n", paste(pretty_eq(stoch), collapse = "\n"), "\n```\n\n", sep = "")
+    if (length(ident)) {
+      cat("*Identities:*\n\n")
+      cat("```\n", paste(pretty_eq(ident), collapse = "\n"), "\n```\n\n", sep = "")
+    }
+    par <- tmpl_parent[[st]]
+    if (!is.na(par)) {
+      cat(sprintf("**Changed from %s:**\n\n", shapes$label[shapes$stage == par]))
+      cat(paste0("- ", template_diff(templates[[par]], templates[[st]]), collapse = "\n"), "\n\n")
+    }
+  }
+  cat(paste(
+    "Two things are visible in that sequence and in no single block. The first is",
+    "that the **behavioural** forms barely move after stage 2c — 2d changes the",
+    "partition and not the specification, and 3d adds 3a's block unchanged — so",
+    "the differences between those systems are differences of *sample and",
+    "capacity*, not of theory. The second is that every step that adds detail",
+    "spends `df`, and the `df` column above falls monotonically until stage 2d",
+    "re-partitions and buys it back.\n\n"))
+}
+```
 
 ## The country template — behavioural equations
 
@@ -494,6 +643,252 @@ plot_forecast_fan(fc$stage1$paths, v, space = "rate", ncol = 3,
 
 The realised path sits inside the band for every country, and the fan widens in
 exactly the countries you would expect.
+
+## Forecast — German GDP, every stage side by side
+
+::: {.content-visible unless-format="revealjs"}
+The charts above show one stage each. This one holds the *variable* fixed and
+varies the *system*, which is the comparison that actually separates the stages:
+same country, same origin, same eight quarters, same 1000 draws — only the model
+changes. Stages 1 and 2a are absent because they forecast from 2023Q1, a
+different origin, and putting them on this axis would compare two different
+questions.
+:::
+
+```{r fan-cross-gdp}
+#| fig-width: 11
+#| fig-height: 4.6
+cmp <- fc_stage_compare(fc_late, "de_gdp")
+plot_forecast_fan(cmp$paths, cmp$vars, space = "rate", ncol = 3,
+                  labeller = cmp$labeller,
+                  subtitle = "de_gdp, all six systems that forecast from 2025Q1; grey = realised")
+```
+
+```{r cross-gdp-note}
+#| results: asis
+w <- do.call(rbind, lapply(names(fc_late), function(s) {
+  d <- fc_late[[s]]$paths
+  d <- d[d$kind == "forecast" & d$variable == "de_gdp" & d$horizon == 8, ]
+  data.frame(stage = s, df = sh(s, "df"),
+             width = d$rate_upper - d$rate_lower, median = d$rate_median)
+}))
+cat(sprintf(paste(
+  "The **medians barely differ** -- %.2f to %.2fpp at horizon 8, a spread of",
+  "%.1fpp. What differs is the **width of the band**: %.0f to %.0fpp across the",
+  "same six systems, and it tracks `df` at a rank correlation of **%.2f**. The",
+  "systems disagree far less about where growth is going than about how much they",
+  "know.\n"),
+  min(w$median), max(w$median), diff(range(w$median)),
+  min(w$width), max(w$width),
+  stats::cor(w$df, w$width, method = "spearman")))
+```
+
+## Forecast — German prices, every stage side by side
+
+```{r fan-cross-prices}
+#| fig-width: 11
+#| fig-height: 4.6
+cmpp <- fc_stage_compare(fc_late, "de_prices")
+plot_forecast_fan(cmpp$paths, cmpp$vars, space = "rate", ncol = 3,
+                  labeller = cmpp$labeller,
+                  subtitle = "de_prices, same six systems; grey = realised")
+```
+
+::: {.content-visible unless-format="revealjs"}
+This is the stage-2c price finding as a picture. Stage 2b's `cc_prices` has no
+contemporaneous endogenous regressor, so it is effectively a univariate AR with
+exogenous cost-push terms and is *structurally immune* to the explosive-draw
+population. Stage 2c's Phillips curve couples it to `cc_gdp`, and prices inherit
+GDP's explosive share — which is the price of making prices reachable from the
+policy rate at all.
+:::
+
+```{r cross-prices-expl}
+# forecast_explosive_table() filters to kind == "forecast" itself; indexing
+# `paths` on horizon alone would also pick up the history rows.
+expl_de_prices <- do.call(rbind, lapply(names(fc_late), function(s) {
+  e <- forecast_explosive_table(fc_late[[s]]$paths, "de_prices")
+  data.frame(Stage = sub(" \\(.*$", "", fc_late[[s]]$label),
+             `Explosive share of draws, h1` = sprintf("%.3f", e$h1),
+             `h8` = sprintf("%.3f", e$h_last),
+             check.names = FALSE, stringsAsFactors = FALSE)
+}))
+kable(expl_de_prices, row.names = FALSE, align = "lrr")
+```
+
+## Forecast — stage 2d, prices across all six entities
+
+```{r fan-2d-prices}
+#| fig-width: 11
+#| fig-height: 4.9
+v <- fc_vars(fc$stage2d$paths, stage2d_countries(), "prices")
+plot_forecast_fan(fc$stage2d$paths, v, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(v),
+                  subtitle = "inner 25-75%, outer 10-90% clipped; grey = realised")
+```
+
+::: {.content-visible unless-format="revealjs"}
+## Forecast — the wider grids
+
+The two grids below are handout-only: they carry more panels than a slide can
+hold, and are the reference version of the two charts above.
+
+```{r fan-2b-grid}
+#| fig-width: 10
+#| fig-height: 7.5
+v <- fc_vars(fc$stage2b$paths,
+             c("de", "fr", "it", "es", "nl", "be", "at", "pt", "gr", "ie", "us"), "gdp")
+plot_forecast_fan(fc$stage2b$paths, v, space = "rate", ncol = 3,
+                  labeller = fc_entity_labels(v),
+                  title = "Stage 2b — GDP, all eleven economies",
+                  subtitle = "forecast from 2025Q1; grey = realised where it exists")
+```
+
+```{r fan-3d-grid}
+#| fig-width: 10
+#| fig-height: 5.2
+v <- c(fc_vars(fc$stage3d$paths, c("de", "reu"), "wages"),
+       fc_vars(fc$stage3d$paths, c("de", "reu"), "unemployment"),
+       fc_vars(fc$stage3d$paths, c("de", "reu"), "nonenergy_prices"))
+plot_forecast_fan(fc$stage3d$paths, v, space = "rate", ncol = 3,
+                  labeller = fc_full_labels(v),
+                  title = "Stage 3d — the labour block's own variables",
+                  subtitle = "the wage-price channel, on Germany and the REU bloc")
+```
+:::
+
+## Forecast errors — the stages against the outturn
+
+::: {.content-visible unless-format="revealjs"}
+Everything above is about the *shape* of the predictive distribution. This is
+about where its centre actually landed. Five quarters of 2025 and 2026 have now
+been published, so the six systems that forecast from 2025Q1 can be scored on
+horizons 1 to 5 against realised data none of them saw.
+
+The comparison is only meaningful on a **shared variable set**: every stage is
+scored on the same `r length(err_vars(fc_late))` series — Germany, France, Italy
+and the US, on GDP, prices, consumption, investment, exports and imports.
+`ea_gdp` is excluded even though every stage carries it, because it aggregates
+eleven countries in stage 2b and four in stage 2d and would compare two
+different objects. Errors are in **rate space**, quarterly growth in percentage
+points; a level error would compound horizon 1's mistake into every later
+horizon and would additionally be incomparable for stages 1 and 2a, whose level
+paths are anchored on filled rather than observed values.
+:::
+
+Same `r length(err_vars(fc_late))` series, same origin, same outturn:
+
+```{r err-curve}
+#| fig-width: 10
+#| fig-height: 4.4
+ggplot(err_late, aes(horizon, mae, colour = short)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = unique(err_late$horizon)) +
+  scale_colour_brewer(palette = "Dark2", name = NULL) +
+  labs(x = "horizon (quarters ahead of 2025Q1)",
+       y = "mean absolute error, pp of quarterly growth",
+       caption = sprintf("%d variable-quarters behind each point", err_late$n[1])) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+## Forecast errors — the numbers
+
+```{r err-table}
+w <- reshape(err_late[, c("short", "horizon", "mae")], idvar = "short",
+             timevar = "horizon", direction = "wide")
+names(w) <- c("Stage", paste0("h", sort(unique(err_late$horizon))))
+w[-1] <- lapply(w[-1], function(x) sprintf("%.2f", x))
+w$Mean <- sprintf("%.2f", vapply(split(err_late$mae, err_late$short),
+                                 mean, numeric(1))[w$Stage])
+kable(w, row.names = FALSE, align = c("l", rep("r", ncol(w) - 1)))
+```
+
+```{r err-rank}
+#| results: asis
+# Derived, not transcribed: a hand-written ranking here went stale the first
+# time the artefacts were rebuilt.
+m <- vapply(split(err_late$mae, err_late$short), mean, numeric(1))
+m <- sort(m)
+cat(sprintf(paste(
+  "::: {style=\"font-size: 0.85em\"}\nThe spread across stages is **small relative to",
+  "the level of the error** -- every system is between %.2f and %.2fpp at every",
+  "horizon, and the ordering changes from one horizon to the next. Averaged over",
+  "the five horizons **%s** is lowest at %.2f and **%s** highest at %.2f, a gap of",
+  "%.0f%%. On five quarters and a single origin that ordering is a sanity check,",
+  "not a ranking.\n:::\n"),
+  min(err_late$mae), max(err_late$mae),
+  names(m)[1], m[1], names(m)[length(m)], m[length(m)],
+  100 * (m[length(m)] / m[1] - 1)))
+```
+
+## Forecast errors — what one origin cannot settle
+
+::: {.content-visible unless-format="revealjs"}
+The previous two slides are one draw of the world. This project has already been
+burned by exactly that: on a five-origin annual sample stage 2c looked *better*
+than stage 2b at long horizons, and on a twenty-origin quarterly sample it is
+clearly worse. A single origin cannot sign a comparison between systems this
+close together, and the table above should be read as a sanity check that none
+of them is broken — not as a ranking.
+
+The honest version is an expanding-window backtest that re-estimates every
+system at every origin. `reports/evaluation.qmd` runs it: 92 joint-system
+estimations, twenty usable quarterly origins, four specifications. It predates
+stages 2d and 3d, so those are absent here.
+:::
+
+**Twenty origins, re-estimated at each one** — the comparison that can carry weight:
+
+```{r backtest-curve}
+#| fig-width: 10
+#| fig-height: 4.2
+ggplot(bt, aes(horizon, mae, colour = variant)) +
+  geom_line(linewidth = 0.8) + geom_point(size = 2) +
+  scale_x_continuous(breaks = 1:8) +
+  # Log scale, because the unclamped naive benchmark reaches 18.8pp at horizon 8
+  # while the models sit near 2 -- on a linear axis the four model lines would
+  # be indistinguishable from each other and from the floor.
+  scale_y_log10() +
+  scale_colour_brewer(palette = "Set1", name = NULL) +
+  labs(x = "horizon (quarters)", y = "mean absolute error, pp (log scale)",
+       caption = sprintf("%s variable-quarters per point; expanding window, re-estimated at each origin", bt$n[1])) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+::: {style="font-size: 0.85em"}
+The naive AR(1) benchmark **explodes** past horizon 6 — deliberately unclamped,
+which is the honest textbook comparison, but it is why RMSE is not readable here
+and MAE is. Stage 1 beats the joint systems on MAE at every horizon; the joint
+systems buy cross-country structure, not point accuracy.
+:::
+
+## Forecast errors — stages 1 and 2a, on their own origin
+
+::: {.content-visible unless-format="revealjs"}
+Stages 1 and 2a forecast from 2023Q1 into a window that is now entirely
+observed, so they get all eight horizons scored — but against different quarters
+of history than the six systems above, which is why they are not on the same
+chart. Their common set is Germany and France only, `r length(err_vars(fc_early))`
+series.
+:::
+
+```{r err-early}
+kable(
+  {
+    w2 <- reshape(err_early[, c("short", "horizon", "mae")], idvar = "short",
+                  timevar = "horizon", direction = "wide")
+    names(w2) <- c("Stage", paste0("h", sort(unique(err_early$horizon))))
+    w2[-1] <- lapply(w2[-1], function(x) sprintf("%.2f", x))
+    w2
+  }, row.names = FALSE, align = c("l", rep("r", 8)))
+```
+
+Adding the linkage mechanism (2a) neither helped nor hurt the point forecast at
+this origin — which is what stage 2a was for. It was a test that the *mechanism*
+worked, not a bid for accuracy.
 
 ## The finding the forecasts made visible
 

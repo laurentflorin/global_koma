@@ -587,3 +587,56 @@ forecast_explosive_table <- function(paths, variables = NULL) {
   rownames(out) <- NULL
   out[order(-out$h_last), ]
 }
+
+#' Forecast error against the realised path, per variable and horizon
+#'
+#' The counterpart to [forecast_explosive_table()]: that one says how much of
+#' the predictive distribution survived, this one says how close the surviving
+#' median landed. Both read the same `paths` data frame, so a report can put
+#' them side by side without loading a fit.
+#'
+#' **Only quarters with an observed outturn get a row.** Which quarters those
+#' are differs by stage and is the whole reason this returns `n` rather than a
+#' bare error: stages 1 and 2a forecast from 2023Q1 into a window that is
+#' entirely observed, so all eight horizons score; stages 2b onward forecast
+#' from 2025Q1, where only the first few quarters have happened. Comparing a
+#' stage scored on eight horizons against one scored on five is not a
+#' comparison, and pooling them silently is the mistake this function is shaped
+#' to make visible.
+#'
+#' **Score in rate space unless you have a reason not to.** A level error
+#' compounds every earlier quarter's error into the current one, so a level
+#' MAE at horizon 5 is mostly a restatement of the horizon-1 error; it also
+#' inherits the anchoring problem [forecast_ankers()] documents, which makes
+#' stages 1 and 2a's level errors incomparable with the others' by
+#' construction. Rate space is per-quarter growth and has neither problem.
+#'
+#' @param paths The `paths` element of a [stage_forecast()] result.
+#' @param variables Variables to score. `NULL` does every variable present.
+#' @param space `"rate"` (default) or `"level"` -- see above.
+#'
+#' @return A `data.frame`, one row per `variable` x `horizon` that has an
+#'   outturn, with `median`, `actual`, `error` (median minus actual) and
+#'   `abs_error`. Variables with no outturn anywhere contribute no rows.
+#' @export
+forecast_error_table <- function(paths, variables = NULL, space = c("rate", "level")) {
+  space <- match.arg(space)
+  variables <- variables %||% unique(paths$variable)
+  prefix <- if (identical(space, "level")) "level" else "rate"
+  d <- paths[paths$kind == "forecast" & paths$variable %in% variables, ]
+  med <- d[[paste0(prefix, "_median")]]
+  act <- d[[paste0("actual_", prefix)]]
+  keep <- !is.na(med) & !is.na(act)
+  out <- data.frame(
+    variable = d$variable[keep],
+    horizon = d$horizon[keep],
+    median = med[keep],
+    actual = act[keep],
+    stringsAsFactors = FALSE
+  )
+  out$error <- out$median - out$actual
+  out$abs_error <- abs(out$error)
+  out <- out[order(out$variable, out$horizon), ]
+  rownames(out) <- NULL
+  out
+}

@@ -134,6 +134,34 @@ test_that("forecast_table and forecast_explosive_table summarise the forecast ro
   expect_true(all(ex$max >= ex$h1))
 })
 
+test_that("forecast_error_table scores only quarters with an outturn", {
+  skip_on_cran()
+  s <- diagnostics_synthetic_stage2_fit(ndraws = 60)
+  f <- stage_forecast(s$fit, s$panel, horizon = 4, variables = c("de_gdp", "fr_gdp"))
+
+  e <- forecast_error_table(f$paths, space = "rate")
+  expect_true(all(c("variable", "horizon", "median", "actual", "error", "abs_error") %in% names(e)))
+  # History rows carry an `actual` too; only the forecast window may be scored,
+  # or a stage would be graded on the observations it was estimated on.
+  expect_true(all(e$horizon >= 1))
+  expect_equal(e$abs_error, abs(e$median - e$actual))
+  expect_equal(e$error, e$median - e$actual)
+
+  # A quarter with no outturn contributes no row -- that is how the report tells
+  # a five-quarter-scored stage from an eight-quarter-scored one.
+  n_with_actual <- sum(f$paths$kind == "forecast" &
+                         f$paths$variable %in% c("de_gdp", "fr_gdp") &
+                         !is.na(f$paths$actual_rate) & !is.na(f$paths$rate_median))
+  expect_equal(nrow(e), n_with_actual)
+
+  # Restricting the variable set restricts the rows, and an all-explosive
+  # forecast (every median NA) scores nothing rather than erroring.
+  expect_setequal(forecast_error_table(f$paths, "de_gdp")$variable, "de_gdp")
+  blown <- stage_forecast(s$fit, s$panel, horizon = 3, variables = "de_gdp",
+                          explosive_threshold = 0)
+  expect_equal(nrow(forecast_error_table(blown$paths)), 0L)
+})
+
 test_that("plot_forecast_fan returns a ggplot without evaluating it", {
   skip_if_not_installed("ggplot2")
   skip_on_cran()
