@@ -417,6 +417,16 @@ sign_checks <- function(coef_table, iso2, labour = FALSE, external = FALSE,
       # the financial block below.
       rules <- Filter(function(r) r$check != "long_rate_loads_on_policy_rate", rules)
     }
+    if (isTRUE(labour)) {
+      # Under the labour block `<iso2>_prices` is an IDENTITY over the energy
+      # and non-energy sub-indices, so there is no `prices ~ gdp` coefficient
+      # for the stage-2c Phillips rule to look at -- it scores NA/FALSE against
+      # an equation the specification deliberately does not contain. The same
+      # claim is made, and checked, by `price_phillips_curve_negative` on
+      # `<iso2>_nonenergy_prices` in stage3a_sign_rules(). Same reasoning as
+      # the `spread` and `financial` drops above.
+      refinements <- setdiff(refinements, "phillips")
+    }
     rules <- c(rules, stage2c_sign_rules(iso2, refinements, merged_demand = merged_demand))
   }
   if (isTRUE(labour)) rules <- c(rules, stage3a_sign_rules(iso2))

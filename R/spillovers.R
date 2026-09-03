@@ -61,17 +61,38 @@ extend_forecast_horizon <- function(fit, panel, quarters) {
     dates$forecast$end[1] + (dates$forecast$end[2] - 1) / frequency,
     by = 1 / frequency
   ))
-  extra <- quarters - native_horizon
-  if (extra <= 0) {
-    dates$forecast$end <- advance_periods(dates$forecast$start, quarters - 1, frequency)
+  # The target end, and then how far EACH series is from it. The original
+  # version added a single `quarters - native_horizon` to every exogenous
+  # series, which assumed they all end exactly at the fit's native forecast
+  # end. That held until an exogenous series was itself CONSTRUCTED from other
+  # series -- `<iso2>_foreign_prices` is a chained index over partners' export
+  # prices, so it stops where the shortest partner does, which for stage 3d is
+  # 2024Q4 (China's IFS export-price index). Such a series was left short of
+  # even the native horizon and koma refused the forecast outright. Measuring
+  # each series against the target is a strict generalisation: one that already
+  # ends at the native end still gets exactly `quarters - native_horizon`.
+  dates$forecast$end <- advance_periods(dates$forecast$start, quarters - 1, frequency)
+  target_end <- dates$forecast$end[1] + (dates$forecast$end[2] - 1) / frequency
+  periods_short <- function(x) {
+    max(0L, as.integer(round((target_end - stats::tsp(x)[2]) * frequency)))
+  }
+
+  if (all(vapply(fit$sys_eq$exogenous_variables,
+                 function(v) periods_short(fit$ts_data[[v]]) == 0L, logical(1)))) {
     return(list(fit = fit, dates = dates, panel = panel, extension = data.frame(
-      variable = character(0), method = character(0), stringsAsFactors = FALSE
+      variable = character(0), method = character(0), periods_added = integer(0),
+      stringsAsFactors = FALSE
     )))
   }
 
   out <- fit
   out_panel <- panel
   log <- lapply(fit$sys_eq$exogenous_variables, function(v) {
+    extra <- periods_short(fit$ts_data[[v]])
+    if (extra == 0L) {
+      return(data.frame(variable = v, method = "already reaches the horizon",
+                        periods_added = 0L, stringsAsFactors = FALSE))
+    }
     if (grepl("^covid_", v)) {
       x <- fit$ts_data[[v]]
       extended <- stats::ts(c(as.numeric(x), rep(0, extra)),
@@ -85,6 +106,19 @@ extend_forecast_horizon <- function(fit, panel, quarters) {
     if (is.null(level)) {
       cli::cli_abort("{.arg panel} is missing {.val {v}}, needed to extend the forecast horizon.")
     }
+    # Trim the RAGGED EDGE before extrapolating from it. `align_panel(extend =
+    # TRUE)` pads a short series with trailing NAs, and `koma::rate()` drops
+    # them again -- so the fit's own series ends at the last observation while
+    # the panel's runs on as NA. Extrapolating from `tail(level, 1)` would then
+    # compound from an NA and produce an all-NA extension, which koma reports
+    # as "does not extend into the forecast period" rather than as a bad value.
+    # Bites any exogenous series built by chaining others: stage 3d's
+    # `<iso2>_foreign_prices` stops where China's export-price index does.
+    observed <- which(!is.na(as.numeric(level)))
+    if (length(observed) == 0) {
+      cli::cli_abort("{.val {v}} has no observed values to extrapolate from.")
+    }
+    level <- stats::window(level, end = stats::time(level)[max(observed)])
 
     if (identical(attr(level, "series_type"), "rate")) {
       # A rate/none series (e.g. a policy rate, if one is ever exogenous):
@@ -121,7 +155,6 @@ extend_forecast_horizon <- function(fit, panel, quarters) {
     )
   })
 
-  dates$forecast$end <- advance_periods(dates$forecast$start, quarters - 1, frequency)
   list(fit = out, dates = dates, panel = out_panel, extension = do.call(rbind, log))
 }
 

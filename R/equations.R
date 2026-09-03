@@ -215,7 +215,17 @@ identity_equation <- function(dep, weighted_terms) {
       rendered[i] <- paste0("(", weight, ")*", components[i])
     } else {
       separators[i] <- if (weight < 0) "-" else "+"
-      rendered[i] <- paste0(format(abs(weight), trim = TRUE), "*", components[i])
+      # `digits = 15`, not format()'s default 7. koma parses the STRING, while
+      # the identity's left-hand side series is built from the numeric weight
+      # (chain_weighted_index()), so a weight carrying more than 7 significant
+      # digits makes the two disagree -- silently, since koma has no
+      # identity-consistency check. Caught on `reu_prices`, whose HICP split is
+      # a seven-member average and therefore not a round number: the identity
+      # was violated by 1.5e-07, small but real, and amplified by how volatile
+      # energy prices are. A weight that IS round (every expenditure share,
+      # rounded to 3dp) renders identically either way, so no existing equation
+      # string changes.
+      rendered[i] <- paste0(format(abs(weight), trim = TRUE, digits = 15), "*", components[i])
     }
   }
 

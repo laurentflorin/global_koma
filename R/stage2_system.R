@@ -760,9 +760,17 @@ foreign_price_weights <- function(linkage_weights, iso2, digits = 3) {
   slack <- 1 - sum(renormalised)
   if (abs(slack) > 0) renormalised[which.max(renormalised)] <- renormalised[which.max(renormalised)] + slack
 
+  # Take the ENTITY PREFIX, not a fixed list of concept suffixes. A
+  # `foreign_demand` identity does not always load a partner's GDP: stage 2a/2b
+  # load `<cc>_gdp`, `ireland_proxy` loads `ie_consumption`, and stage 2c/2d
+  # load `<cc>_imports`. A `sub("_(gdp|consumption)$", ...)` left `fr_imports`
+  # untouched and then aborted inside country_var() -- the same defect
+  # `spillover_sanity_checks()` already carries a note about, in a second
+  # place. Splitting on the first underscore covers every basis, and `row_gdp`
+  # is removed above so the residual cannot be mistaken for an entity.
   out <- stats::setNames(
     as.numeric(renormalised),
-    country_var(sub("_(gdp|consumption)$", "", partners), "export_prices")
+    country_var(sub("_.*$", "", partners), "export_prices")
   )
   attr(out, "row_weight_dropped") <- dropped
   out

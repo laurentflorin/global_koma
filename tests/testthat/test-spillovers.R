@@ -17,12 +17,26 @@ test_that("extend_forecast_horizon is a no-op when the horizon is already covere
   expect_equal(length(ext$fit$ts_data$row_gdp), length(fx$fit$ts_data$row_gdp))
 })
 
-test_that("extend_forecast_horizon extends level exogenous series by trailing growth", {
+test_that("no exogenous series is extended when the data already reaches the horizon", {
+  # The fixture's panel runs to 2019Q4 and an 8-quarter horizon from 2018Q1
+  # ends exactly there, so nothing is short. Extending anyway would append
+  # points past the forecast end that no draw ever reads.
   fx <- diagnostics_synthetic_fit()
   ext <- extend_forecast_horizon(fx$fit, fx$panel, quarters = 8)
-
   expect_equal(ext$dates$forecast$end, c(2019, 4))
+  expect_equal(nrow(ext$extension), 0)
+  expect_equal(length(ext$fit$ts_data$row_gdp), length(fx$fit$ts_data$row_gdp))
+})
+
+test_that("extend_forecast_horizon extends level exogenous series by trailing growth", {
+  fx <- diagnostics_synthetic_fit()
+  # 12 quarters from 2018Q1 ends 2020Q4, four past the panel's own end, so the
+  # extrapolation actually has to run.
+  ext <- extend_forecast_horizon(fx$fit, fx$panel, quarters = 12)
+
+  expect_equal(ext$dates$forecast$end, c(2020, 4))
   expect_true("row_gdp" %in% ext$extension$variable)
+  expect_equal(ext$extension$periods_added[ext$extension$variable == "row_gdp"], 4)
   expect_equal(length(ext$fit$ts_data$row_gdp), length(fx$fit$ts_data$row_gdp) + 4)
 
   # the extension should be a smooth continuation, not a discontinuous jump:
@@ -40,7 +54,7 @@ test_that("extend_forecast_horizon extends level exogenous series by trailing gr
 
 test_that("extend_forecast_horizon holds a rate/none exogenous flat, not compounding it", {
   fx <- diagnostics_synthetic_fit()
-  ext <- extend_forecast_horizon(fx$fit, fx$panel, quarters = 8)
+  ext <- extend_forecast_horizon(fx$fit, fx$panel, quarters = 12)
 
   tail_vals <- utils::tail(as.numeric(ext$fit$ts_data$ea_policy_rate), 4)
   # flat, not exponentially growing: all four appended values identical
@@ -55,7 +69,7 @@ test_that("extend_forecast_horizon aborts when panel lacks a needed exogenous se
   fx <- diagnostics_synthetic_fit()
   panel_missing <- fx$panel
   panel_missing$row_gdp <- NULL
-  expect_error(extend_forecast_horizon(fx$fit, panel_missing, quarters = 8), "row_gdp")
+  expect_error(extend_forecast_horizon(fx$fit, panel_missing, quarters = 12), "row_gdp")
 })
 
 # --- scenario_diff -------------------------------------------------------
@@ -439,4 +453,48 @@ test_that("failed_restriction_draws is deterministic for a given fit and restric
   a <- suppressMessages(failed_restriction_draws(fx$fit, rest, horizon = 4, seed = 42))
   b <- suppressMessages(failed_restriction_draws(fx$fit, rest, horizon = 4, seed = 99))
   expect_equal(as.integer(a), as.integer(b))
+})
+
+test_that("extend_forecast_horizon measures each series' own shortfall", {
+  # An exogenous series CONSTRUCTED from others stops where its shortest
+  # component does -- stage 3d's `<iso2>_foreign_prices` is a chained index
+  # over partners' export prices and ends a year before the rest of the panel.
+  # A blanket `quarters - native_horizon` left it short of even the native
+  # horizon and koma refused the forecast outright.
+  fx <- diagnostics_synthetic_fit()
+  panel <- fx$panel
+  fit <- fx$fit
+  short <- stats::window(panel$row_gdp, end = c(2018, 4))
+  fit$ts_data$row_gdp <- koma::rate(short)
+  panel$row_gdp <- short
+
+  ext <- extend_forecast_horizon(fit, panel, quarters = 8)
+  added <- stats::setNames(ext$extension$periods_added, ext$extension$variable)
+  # row_gdp ends 2018Q4 and the horizon ends 2019Q4: four quarters short.
+  expect_equal(unname(added[["row_gdp"]]), 4)
+  # Everything else already reaches it and is left alone.
+  expect_true(all(added[setdiff(names(added), "row_gdp")] == 0))
+  expect_equal(stats::end(ext$fit$ts_data$row_gdp), c(2019, 4))
+  expect_false(anyNA(as.numeric(ext$fit$ts_data$row_gdp)))
+})
+
+test_that("extend_forecast_horizon extrapolates from the last OBSERVED value", {
+  # align_panel(extend = TRUE) pads a short series with trailing NAs and
+  # koma::rate() drops them again, so the panel runs on as NA while the fit's
+  # series ends at the last observation. Extrapolating from tail(level, 1)
+  # would compound from an NA and produce an all-NA extension, which koma
+  # reports as "does not extend into the forecast period".
+  fx <- diagnostics_synthetic_fit()
+  panel <- fx$panel
+  fit <- fx$fit
+  padded <- stats::window(panel$row_gdp, end = c(2020, 4), extend = TRUE)
+  padded[stats::time(padded) > 2018.8] <- NA_real_
+  attrs <- get_custom_attrs(panel$row_gdp)
+  attrs[["ets_attributes"]] <- NULL
+  panel$row_gdp <- do.call(koma::as_ets, c(list(padded), attrs))
+  fit$ts_data$row_gdp <- koma::rate(panel$row_gdp)
+
+  ext <- extend_forecast_horizon(fit, panel, quarters = 8)
+  expect_false(anyNA(as.numeric(ext$fit$ts_data$row_gdp)))
+  expect_equal(stats::end(ext$fit$ts_data$row_gdp), c(2019, 4))
 })
