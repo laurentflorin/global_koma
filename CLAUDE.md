@@ -29,7 +29,7 @@ docs/
   koma-api.md              verified reference for the koma package's API
   methodology.qmd          this project's modelling methodology (stub)
 reports/                rendered output (git-ignored)
-  overview_presentation.qmd  revealjs deck: the whole project for a meeting
+  overview_presentation.qmd  one source -> revealjs deck + scrolling handout
 _targets.R              the targets pipeline: data -> panel -> stage 1 -> stage 2 -> stage 3
 scratch/                ad hoc exploration, not part of the pipeline or package
 ```
@@ -770,12 +770,24 @@ against `T = 98`, so `df` 15 -> 14 -> 10 -> **8**. See
   `long_rate <- govdebt` link was ~0. Check the per-link means before reading a
   low gain as reassurance.
 
-## The presentation deck (`reports/overview_presentation.qmd`)
+## The overview deck and handout (`reports/overview_presentation.qmd`)
 
-A revealjs slide deck covering the whole project: the country-generic equation
-template, the stage lineage, the headline result of each stage, the forecasts
-and the stage-2d spillover battery. Built for presenting, not for reference —
-the per-stage reports remain the place where anything is argued in full.
+One source, **two outputs**: a revealjs slide deck
+(`overview_presentation.html`) and a scrolling handout
+(`overview_handout.html`), covering the country-generic equation template, the
+stage lineage, the headline result of each stage, the forecasts and the
+stage-2d spillover battery. Built for presenting and circulating, not for
+reference — the per-stage reports remain the place where anything is argued in
+full.
+
+- **Both formats emit `.html`, so each needs an explicit `output-file`** or the
+  second render silently overwrites the first.
+- **`content-visible when-format="html"` also matches revealjs**, because
+  revealjs *is* an HTML format — handout-only prose written that way appears on
+  the slides too. Use `unless-format="revealjs"`, which is verified to exclude
+  the deck and keep the handout.
+- **The `. . .` pause marker renders as literal `. . .` text** in non-revealjs
+  HTML, so each one is wrapped in a `when-format="revealjs"` block.
 
 - **Its numbers are derived, never transcribed.** `scratch/overview_build.R`
   loads each fitted system once and extracts `k`, `T`, `df`, the equation counts

@@ -2,7 +2,11 @@
 title: "A multi-country Bayesian macro model"
 subtitle: "Structure, results and forecasts across five estimated systems"
 format:
+  # Two outputs from one source, so the deck and the handout cannot drift.
+  # Both formats emit .html, so each needs an explicit `output-file` or the
+  # second render silently overwrites the first.
   revealjs:
+    output-file: overview_presentation.html
     theme: simple
     slide-number: true
     embed-resources: true
@@ -10,6 +14,13 @@ format:
     height: 760
     fig-align: center
     code-line-numbers: false
+  html:
+    output-file: overview_handout.html
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    embed-resources: true
+    fig-align: center
 execute:
   echo: false
   warning: false
@@ -94,6 +105,14 @@ peak_by <- function(d, concept) {
 
 ## What this is
 
+::: {.content-visible unless-format="revealjs"}
+*This is the handout form of `overview_presentation.qmd`. The same source also
+renders as a slide deck (`overview_presentation.html`); this version is meant to
+be read end to end rather than presented. Every figure is derived from the
+cached fits — see the Reference section for which report argues each point in
+full.*
+:::
+
 A **multi-country Bayesian simultaneous-equations macro model**, built on the
 `koma` package.
 
@@ -107,13 +126,23 @@ A **multi-country Bayesian simultaneous-equations macro model**, built on the
 - Everything below comes from cached fits and is reproducible from the repo
 :::
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 **The one thing that governs all of it:** every system spends observations on
 parameters. `df = T − k`. Nearly every result in this deck is downstream of
 that number.
 
 ## The country template — behavioural equations
+
+::: {.content-visible unless-format="revealjs"}
+The model is written once, for a generic country `cc`, and applied to every
+economy. That is what makes the equation count manageable: stage 2c has 68
+stochastic equations but only **eight distinct forms**, six of which are these,
+applied identically eleven times. The forms below are stage 2c's and stage 2d's,
+which are the same; earlier stages differ in the ways set out later.
+:::
 
 Six equations per country, identical in form for every economy:
 
@@ -168,6 +197,14 @@ instrument rather than ten separate ones.
 
 ## The stages at a glance
 
+::: {.content-visible unless-format="revealjs"}
+Each stage is a deliberate step rather than an iteration on the last. Stages 2a
+through 2d change the *specification* or the *country partition* — never both at
+once, which is what keeps any pair of them comparable. Stages 3a and 3b add
+blocks to one country, Germany, and are where the degrees-of-freedom budget
+finally binds.
+:::
+
 ```{r shapes-table}
 kable(
   data.frame(
@@ -217,7 +254,9 @@ Structure has to be *traced*, not assumed.
 `r sh("stage2b","stochastic")` stochastic equations, `r sh("stage2b","identities")` identities,
 `k = `r sh("stage2b","k")``, `df = `r sh("stage2b","df")``.
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 Tracing what `ea_policy_rate` can reach within a quarter:
 
@@ -227,7 +266,9 @@ Tracing what `ea_policy_rate` can reach within a quarter:
 **0 of 11** price variables.
 :::
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 The Taylor rule responds to an inflation rate that **nothing it does can
 influence**. The monetary block was an open loop, and no amount of estimation
@@ -253,7 +294,9 @@ kable(data.frame(
 ), row.names = FALSE)
 ```
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 **Result:** the policy rate now reaches **all 114** endogenous variables,
 including every price. A fifth refinement was estimated and **rejected** — it
@@ -298,7 +341,9 @@ kable(data.frame(
 ), row.names = FALSE, align = "llrr")
 ```
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 Every earlier structural change traded `df` for detail: **22 → 15 → 8**.
 Collapsing seven countries removes enough equations that `k` falls 76 → 46 —
@@ -329,7 +374,9 @@ than being invented from indicator proxies.
 :::
 :::
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 ::: {style="font-size: 0.85em"}
 Two things stated rather than buried: `cn_long_rate` is **spliced over 45%** of
@@ -362,6 +409,13 @@ kable(data.frame(
 :::
 
 ## Forecasts — how they are produced
+
+::: {.content-visible unless-format="revealjs"}
+Adding forecasts was not just a reporting exercise: running every system forward
+is what turned the degrees-of-freedom argument from a claim about estimation
+into a measurable property of the output. The caveats below are not boilerplate
+— each one is a trap that produced a wrong answer before it was handled.
+:::
 
 Every system is run **8 quarters** forward, 1000 posterior draws.
 
@@ -446,6 +500,15 @@ of Chinese trade inside the euro area.
 
 ## Spillovers — is any of it real?
 
+::: {.content-visible unless-format="revealjs"}
+koma has no impulse-response function, so a spillover is the difference between
+two forecasts — one unconditional, one restricted — paired by common random
+numbers so the difference isolates the shock rather than koma's own
+call-to-call noise. That pairing is exact. What it does **not** remove is
+sampling error in the level of the estimand itself, and the only way to find out
+how large that is, is to re-run the identical battery at a different seed.
+:::
+
 Same fit, same battery, **only the seed changed**:
 
 ```{r placebo}
@@ -458,7 +521,9 @@ kable(data.frame(
 ), row.names = FALSE, align = "lrrr")
 ```
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 For stage 2b, **most of what anyone wanted to conclude was smaller than the
 matrix's own noise.**
@@ -490,6 +555,11 @@ policy rate's route in — not to the price equations.
 
 ## Which system for which question
 
+::: {.content-visible unless-format="revealjs"}
+No single system dominates. The table below is the practical summary; the reason
+each row is what it is has been given above.
+:::
+
 ```{r verdict}
 kable(data.frame(
   `If you want to…` = c(
@@ -505,7 +575,9 @@ kable(data.frame(
 ), row.names = FALSE, align = "ll")
 ```
 
+::: {.content-visible when-format="revealjs"}
 . . .
+:::
 
 ::: {style="font-size: 0.9em"}
 **The through-line:** every result in this deck that survived did so because it
