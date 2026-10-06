@@ -12,6 +12,7 @@ tune_tau_system(
   max_iter = 3,
   factor = 2,
   tau = NULL,
+  error_priors = NULL,
   ...
 )
 }
@@ -30,6 +31,11 @@ tune_tau_system(
 \item{factor}{Multiplier applied to a flagged equation's \code{tau}.}
 
 \item{tau}{Optional starting \code{tau} vector, e.g. a previous stage's result.}
+
+\item{error_priors}{Passed to \code{\link[=build_stage2_system]{build_stage2_system()}}, e.g.
+\code{default_error_priors(spec)}. The informative sampler this switches to has
+different acceptance rates, so tune it from scratch, not from a no-prior
+fit's \code{tau}.}
 
 \item{...}{Passed to \code{\link[=fit_stage2]{fit_stage2()}} (notably \code{workers}).}
 }

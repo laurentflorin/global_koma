@@ -1354,13 +1354,17 @@ wage_price_loop_gain <- function(fit, iso2, hicp_weight) {
 #' @param max_iter Maximum re-estimation rounds.
 #' @param factor Multiplier applied to a flagged equation's `tau`.
 #' @param tau Optional starting `tau` vector, e.g. a previous stage's result.
+#' @param error_priors Passed to [build_stage2_system()], e.g.
+#'   `default_error_priors(spec)`. The informative sampler this switches to has
+#'   different acceptance rates, so tune it from scratch, not from a no-prior
+#'   fit's `tau`.
 #' @param ... Passed to [fit_stage2()] (notably `workers`).
 #'
 #' @return A list with `fit`, `sys_eq`, `tau`, `history` (acceptance rates by
 #'   iteration) and `converged`.
 #' @export
 tune_tau_system <- function(spec, panel, dates, band = c(0.2, 0.6), max_iter = 3,
-                            factor = 2, tau = NULL, ...) {
+                            factor = 2, tau = NULL, error_priors = NULL, ...) {
   tau <- if (is.null(tau)) list() else as.list(tau)
   history <- list()
   fit <- NULL
@@ -1369,7 +1373,7 @@ tune_tau_system <- function(spec, panel, dates, band = c(0.2, 0.6), max_iter = 3
 
   for (iteration in 0:max_iter) {
     tau_arg <- if (length(tau) > 0) unlist(tau) else NULL
-    sys_eq <- build_stage2_system(spec, tau = tau_arg)
+    sys_eq <- build_stage2_system(spec, tau = tau_arg, error_priors = error_priors)
     fit <- fit_stage2(sys_eq, panel, dates, ...)
 
     acceptance <- check_acceptance_rates(fit, band = band)

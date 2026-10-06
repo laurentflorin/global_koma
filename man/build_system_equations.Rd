@@ -4,7 +4,7 @@
 \alias{build_system_equations}
 \title{Assemble the joint multi-country equation string}
 \usage{
-build_system_equations(spec, tau = NULL)
+build_system_equations(spec, tau = NULL, error_priors = NULL)
 }
 \arguments{
 \item{spec}{A \code{\link[=stage2_spec]{stage2_spec()}} result.}
@@ -12,6 +12,10 @@ build_system_equations(spec, tau = NULL)
 \item{tau}{Optional named numeric vector, dependent variable -> sampler
 \code{tau} override, appended as \verb{[tau = value]}. Same contract as
 \code{\link[=stage1_country_equations]{stage1_country_equations()}}'s argument of the same name.}
+
+\item{error_priors}{Optional named list, dependent variable -> \code{c(df, scale)}, rendered as each equation's trailing \verb{\{df, scale\}} error-term
+prior. Usually \code{\link[=default_error_priors]{default_error_priors()}}; see there for why a prior that
+adds no information still changes the estimate.}
 }
 \value{
 A character vector of equation strings, stochastic first.

@@ -151,6 +151,53 @@ test_that("build_system_equations appends per-equation tau settings", {
   expect_error(build_system_equations(stage2_test_spec(), tau = c(nope = 2)), "not a stochastic equation")
 })
 
+test_that("default_error_priors counts contemporaneous endogenous regressors as koma does", {
+  spec <- stage2_test_spec()
+  priors <- default_error_priors(spec)
+  g <- build_stage2_system(spec)$character_gamma_matrix
+
+  expect_named(priors, names(spec$stochastic))
+  # koma's construct_priors_j() keys its default on the number of "gamma"
+  # cells in the equation's column; ea_policy_rate's Taylor rule has two.
+  koma_count <- vapply(names(priors), function(dep) sum(grepl("gamma", g[, dep])), numeric(1))
+  expect_equal(vapply(priors, `[`, numeric(1), 1), koma_count + 2)
+  expect_equal(priors$de_consumption, c(3, 0.001))
+  expect_equal(priors$ea_policy_rate, c(4, 0.001))
+})
+
+test_that("build_system_equations renders the error prior after the terms and before tau", {
+  spec <- stage2_test_spec()
+  eqs <- build_system_equations(spec, tau = c(de_consumption = 2.2),
+                                error_priors = default_error_priors(spec))
+  expect_true("de_consumption ~ de_gdp + de_consumption.L(1) + {3, 0.001} [tau = 2.2]" %in% eqs)
+  expect_error(build_system_equations(spec, error_priors = list(nope = c(2, 0.001))),
+               "not a stochastic equation")
+})
+
+test_that("default error priors parse to exactly koma's own defaults", {
+  spec <- stage2_test_spec()
+  sys_eq <- build_stage2_system(spec, tau = c(de_consumption = 2.2),
+                                error_priors = default_error_priors)
+  plain <- build_stage2_system(spec)
+  n <- length(sys_eq$stochastic_equations)
+
+  # Every equation carries a prior, so koma estimates it on the informative
+  # sampler -- and the prior it builds is the one it would have used anyway.
+  expect_true(all(lengths(sys_eq$priors[seq_len(n)]) > 0))
+  expect_equal(sys_eq$equation_settings$de_consumption$tau, 2.2)
+  for (jx in seq_len(n)) {
+    expect_equal(
+      koma:::construct_priors_j(sys_eq$priors, sys_eq$character_gamma_matrix,
+                                sys_eq$character_beta_matrix, jx),
+      koma:::construct_priors_j(rep(list(list()), n), plain$character_gamma_matrix,
+                                plain$character_beta_matrix, jx)
+    )
+  }
+  # The structural matrices are untouched: only the sampler changes.
+  expect_identical(sys_eq$character_gamma_matrix, plain$character_gamma_matrix)
+  expect_identical(sys_eq$character_beta_matrix, plain$character_beta_matrix)
+})
+
 test_that("stage2_exogenous_variables derives the exact set koma requires", {
   ex <- stage2_exogenous_variables(stage2_test_spec())
 
@@ -325,6 +372,28 @@ test_that("fit_stage2 names the missing derived series rather than failing insid
     forecast = list(start = c(2018, 1), end = c(2018, 4))
   )
   expect_error(fit_stage2(sys_eq, panel, dates), "de_foreign_demand")
+})
+
+test_that("tune_tau_system estimates and forecasts with default error priors", {
+  skip_on_cran()
+  panel <- stage2_test_panel()
+  lw <- stage2_linkage_weights(c("de", "fr"), stage2_test_trade_weights(), stage2_test_gdp_weights())
+  spec <- stage2_test_spec()
+  dates <- list(
+    estimation = list(start = c(2000, 1), end = c(2015, 4)),
+    forecast = list(start = c(2016, 1), end = c(2016, 4))
+  )
+
+  tuned <- tune_tau_system(spec, build_stage2_panel(panel, lw), dates, max_iter = 0,
+                           error_priors = default_error_priors(spec),
+                           options = list(gibbs = list(ndraws = 200)))
+
+  expect_true(all(lengths(tuned$sys_eq$priors[seq_along(spec$stochastic)]) > 0))
+  expect_named(tuned$fit$estimates, names(spec$stochastic))
+  # koma strips the prior from its normalised equation strings and leaves a
+  # trailing "+"; the forecast must not care.
+  fc <- suppressWarnings(koma::forecast(tuned$fit, dates))
+  expect_equal(nrow(fc$forecasts[[1]]), 4)
 })
 
 test_that("fit_stage2 estimates the linked system end to end", {
