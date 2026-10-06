@@ -951,14 +951,21 @@ absent: it is a rollout *feasibility* study whose only fitted system is the
 stage-2b benchmark it compares against.
 
 - **The explosive-draw share is the headline number, and it tracks `df`
-  exactly.** Averaged over each stage's GDP and price variables, the share of
-  posterior draws discarded at horizon 8 is **0.00** for stage 2a, **0.04** for
-  stage 1, **0.35** for stage 2d (`df = 32`), **0.49** for stage 2b and 2c
-  (`df = 22`), **0.58** for stage 3a (`df = 15`) and **0.67** for stage 3b
-  (`df = 8`). That is the degrees-of-freedom cost this repo has been describing
-  qualitatively, finally measured on the thing users actually want. It is also
-  the strongest argument for stage 2d: re-partitioning does not just raise `df`
-  on paper, it visibly buys back forecast usability.
+  exactly.** Averaged over **every** forecast variable of each stage, the share
+  of posterior draws discarded at horizon 8 is **0.00** for stage 2a, **0.04**
+  for stage 1, **0.35** for stage 2d (`df = 32`), **0.49** for stage 2b and
+  **0.50** for 2c (`df = 22`), **0.58** for stage 3a (`df = 15`) and **0.67**
+  for stage 3b (`df = 8`). That is the degrees-of-freedom cost this repo has
+  been describing qualitatively, finally measured on the thing users actually
+  want. It is also the strongest argument for stage 2d: re-partitioning does
+  not just raise `df` on paper, it visibly buys back forecast usability. In
+  stages 2b and 2d a third to a half of the level is a koma sampler artefact
+  rather than estimation uncertainty, though the ordering is not -- see the
+  `T - k` artefact section below.
+  **Quote the all-variable figure, or GDP alone, never GDP+prices**: whether
+  prices explode depends on whether the price equation has a contemporaneous
+  regressor, not on `df`. Stage 2b's prices never do (8e-5), so its GDP+prices
+  average is 0.30 against stage 2d's 0.34 and the ordering breaks.
 - **koma silently shortens a horizon it cannot deliver**, so `stage_forecast()`
   calls `extend_forecast_horizon()` and then **checks `nrow(fc$forecasts[[1]])`
   and aborts** if fewer quarters came back. Without the extension every stage
@@ -998,6 +1005,54 @@ stage-2b benchmark it compares against.
 - **Set the seed.** koma's stochastic forecasts are not reproducible
   call-to-call (the same fact `scenario_diff()` documents), so without
   `stage_forecast(seed = )` a report's numbers change on every render.
+
+## koma's `T - k` variance artefact (`default_error_priors()`)
+
+`scratch/error_prior_build.R` re-estimates stages 2d and 2b with koma's own
+default error prior written onto every stochastic equation, which changes the
+sampler and nothing else (see `default_error_priors()`'s documentation for the
+mechanism). Run on koma 0.4.0 against the cached baselines, at the same 2025Q1
+origin and seed as `scratch/forecasts_build.R`; results in
+`data/cache/error_priors/<stage>_comparison.rds`. Tuning takes about 3 minutes
+(2d) and 14 minutes (2b) at six workers. **The production fits, and every
+other number in this file, are still on the no-prior sampler.**
+
+- **The artefact is real and exactly the size koma's sampler code implies.**
+  With no prior koma draws the residual covariance from `riwish(T - k, S)` with
+  the *system's* `k`; with one, from `riwish(T + m_j + 2, S)`. The posterior
+  median residual variance falls by a median **2.48x** in stage 2d (`df = 32`)
+  and **4.77x** in stage 2b (`df = 22`). The per-equation prediction
+  `(T - k_j) / (T - k - m_j - 2)` matches to a median observed/predicted ratio
+  of 0.98 and 0.975, correlation 0.86 and 0.98 across equations. `m_j`, the
+  equation's contemporaneous endogenous regressors, matters because it sets the
+  inverse-Wishart's dimension: stage 2b's long-rate equations (`m_j = 3`) are
+  inflated most, about 6x. `(T - k_j) / (T - k - 2)` is the `m_j = 0` case.
+- **It inflates coefficient uncertainty, not coefficients.** Own-lag 90%
+  intervals narrow 1.60x (2d) and 2.27x (2b), about the square root of the
+  variance ratio, while the median own lag barely moves (2d 0.276 -> 0.283, 2b
+  0.200 -> 0.214). The coefficient prior koma fills in is `N(0, 1000 I)`,
+  effectively flat.
+- **It accounts for a third to a half of the explosive draws.** Horizon-8 GDP
+  explosive share: stage 2d 0.401 -> **0.185** (-54%), stage 2b 0.598 ->
+  **0.400** (-33%); over all variables 0.351 -> 0.157 and 0.494 -> 0.322. The
+  fall holds at every horizon. Stage 2b's prices stay at 8e-5: with no
+  contemporaneous regressor they were never exposed.
+- **It does not explain the `df` gradient.** If the cross-stage ordering were
+  the artefact, stage 2b, whose inflation is twice stage 2d's, should have
+  gained more. It gained the same in absolute terms (GDP -0.20 against -0.22)
+  and less in relative terms, and with the artefact removed it lands exactly on
+  stage 2d's *baseline* (0.400 against 0.401), still more than twice
+  2d-with-prior (0.185). So the overview deck's df-versus-explosive chart
+  overstates every stage's level, but its ordering is genuine estimation
+  uncertainty. One origin and one seed: the shifts are large, but have not yet
+  been seed-placeboed.
+- **The informative sampler accepts less at the same `tau`, so tuning goes
+  down, not up.** At `tau = 1.1`, 27 of 38 stage-2d equations and 52 of 68
+  stage-2b equations fell *below* 20%, and every adjustment was a halving.
+  Stage 2d converged at iteration 2 (17 equations at 0.55, 10 at 0.275, median
+  acceptance 0.272); stage 2b went 52 -> 27 -> 3 -> 1 and stopped at `max_iter`
+  with `be_consumption` at 19.3%. The no-prior baselines had tuned the other way
+  (17 and 14 equations at 2.2). Never reuse a no-prior `tau` on a prior fit.
 
 ## Spillover / conditional-forecast analysis (`spillovers.R`)
 
