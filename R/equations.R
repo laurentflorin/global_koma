@@ -279,10 +279,14 @@ identity_equation <- function(dep, weighted_terms) {
 #'   as a function (e.g. `list(foreign_demand = , ea = )`).
 #' @param tau Optional named numeric vector of per-equation sampler `tau`
 #'   overrides, as in [build_system_equations()].
+#' @param error_priors Optional per-equation error-term priors, as in
+#'   [build_system_equations()]. A function `(spec) -> named list`, e.g.
+#'   [default_error_priors()], is applied to the merged spec, since the blocks
+#'   are not merged until here.
 #'
 #' @return A `koma::koma_seq` object.
 #' @export
-build_system <- function(countries, blocks, weights, tau = NULL) {
+build_system <- function(countries, blocks, weights, tau = NULL, error_priors = NULL) {
   if (length(blocks) == 0) {
     cli::cli_abort("{.arg blocks} is empty; a system needs at least one block.")
   }
@@ -321,8 +325,9 @@ build_system <- function(countries, blocks, weights, tau = NULL) {
   }
 
   spec <- list(stochastic = stochastic, identities = identities)
+  if (is.function(error_priors)) error_priors <- error_priors(spec)
   koma::system_of_equations(
-    equations = build_system_equations(spec, tau = tau),
+    equations = build_system_equations(spec, tau = tau, error_priors = error_priors),
     exogenous_variables = stage2_exogenous_variables(spec)
   )
 }

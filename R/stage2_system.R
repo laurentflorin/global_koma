@@ -1297,10 +1297,14 @@ ea_aggregate_block <- function(weights) {
 #' @param tau Optional named numeric vector, dependent variable -> sampler
 #'   `tau` override, appended as `[tau = value]`. Same contract as
 #'   [stage1_country_equations()]'s argument of the same name.
+#' @param error_priors Optional named list, dependent variable -> `c(df,
+#'   scale)`, rendered as each equation's trailing `{df, scale}` error-term
+#'   prior. Usually [default_error_priors()]; see there for why a prior that
+#'   adds no information still changes the estimate.
 #'
 #' @return A character vector of equation strings, stochastic first.
 #' @export
-build_system_equations <- function(spec, tau = NULL) {
+build_system_equations <- function(spec, tau = NULL, error_priors = NULL) {
   stochastic <- spec$stochastic %||% list()
   identities <- spec$identities %||% list()
   if (length(stochastic) == 0) {
@@ -1311,10 +1315,15 @@ build_system_equations <- function(spec, tau = NULL) {
   if (length(unknown_tau) > 0) {
     cli::cli_abort("{.arg tau} names {.val {unknown_tau}}, which {?is/are} not a stochastic equation in {.arg spec}.")
   }
+  unknown_prior <- setdiff(names(error_priors), names(stochastic))
+  if (length(unknown_prior) > 0) {
+    cli::cli_abort("{.arg error_priors} names {.val {unknown_prior}}, which {?is/are} not a stochastic equation in {.arg spec}.")
+  }
 
   stochastic_strings <- vapply(names(stochastic), function(dep) {
     eq <- stochastic[[dep]]
-    out <- stochastic_equation(dep, terms = eq$terms, lags = eq$lags)
+    out <- stochastic_equation(dep, terms = eq$terms, lags = eq$lags,
+                               error_prior = error_priors[[dep]])
     if (!is.null(tau) && dep %in% names(tau)) {
       out <- paste0(out, " [tau = ", format(tau[[dep]], trim = TRUE), "]")
     }
@@ -1326,6 +1335,48 @@ build_system_equations <- function(spec, tau = NULL) {
   }, character(1))
 
   unname(c(stochastic_strings, identity_strings))
+}
+
+#' koma's own default error-term prior, made explicit for every equation
+#'
+#' Returns, for each stochastic equation, the `{df, scale}` error prior koma
+#' would use anyway: `df = n + 2` and `scale = 0.001`, where `n` is the number
+#' of **contemporaneous endogenous** regressors in that equation (koma's
+#' `construct_priors_j()` defaults, identical in koma 0.3.1 and 0.4.0). The prior
+#' carries no information. What it changes is which sampler koma runs.
+#'
+#' **An equation with no prior is estimated on `draw_parameters_j()`, which
+#' draws its residual covariance from `riwish(T - k, S)` with `k` the whole
+#' system's column count**, even when the equation itself uses three of
+#' those columns. Any prior switches it to `draw_parameters_j_informative()`,
+#' which draws from `riwish(T + df, S + scale)` and never charges for columns
+#' the equation does not use. On a synthetic system that inflated the residual
+#' variance of a three-regressor equation by about `(T - k_j) / (T - k - 2)`:
+#' 2.5x at `df = 24`, 8x at `df = 9`, 24x at `df = 4`. With this prior it
+#' stayed within 10% of the truth throughout.
+#'
+#' Two cautions. Contemporaneous endogenous terms deliberately get **no**
+#' coefficient prior: koma (0.3.1 and 0.4.0) discards the likelihood in the
+#' Metropolis target whenever one is set, so the coefficient would be drawn from
+#' its prior alone. And the informative sampler's Metropolis proposal is still scaled
+#' from a `T - k`-weighted initial Hessian, so acceptance rates move: re-tune
+#' with [tune_tau_system()] rather than reusing a baseline's `tau`.
+#'
+#' @param spec A [stage2_spec()] result, or any `list(stochastic, identities)`.
+#' @param scale The error prior's scale. koma's default is `0.001`.
+#'
+#' @return A named list, dependent variable -> `c(df, scale)`, for every
+#'   stochastic equation in `spec`.
+#' @export
+default_error_priors <- function(spec, scale = 0.001) {
+  stochastic <- spec$stochastic %||% list()
+  endogenous <- c(names(stochastic), names(spec$identities %||% list()))
+  lapply(stochastic, function(eq) {
+    # stochastic_equation() renders a term named in `lags` only in its lagged
+    # form, so a term is a contemporaneous regressor iff it carries no lag.
+    contemporaneous <- unique(setdiff(eq$terms, names(eq$lags)))
+    c(sum(contemporaneous %in% endogenous) + 2, scale)
+  })
 }
 
 #' Determine the joint system's exogenous variables
@@ -1380,7 +1431,7 @@ stage2_exogenous_variables <- function(spec) {
 #'
 #' @return A `koma::koma_seq` object for the full system.
 #' @export
-build_stage2_system <- function(spec, tau = NULL) {
+build_stage2_system <- function(spec, tau = NULL, error_priors = NULL) {
   # One code path with [build_system()]: pass the already-merged spec as a
   # single block, so ordering, duplicate detection and exogenous derivation
   # are the same logic stage 3 will extend.
@@ -1388,7 +1439,8 @@ build_stage2_system <- function(spec, tau = NULL) {
     countries = character(),
     blocks = list(stage2 = spec),
     weights = list(),
-    tau = tau
+    tau = tau,
+    error_priors = error_priors
   )
 }
 

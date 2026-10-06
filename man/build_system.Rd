@@ -4,7 +4,7 @@
 \alias{build_system}
 \title{Assemble a koma system from a set of blocks}
 \usage{
-build_system(countries, blocks, weights, tau = NULL)
+build_system(countries, blocks, weights, tau = NULL, error_priors = NULL)
 }
 \arguments{
 \item{countries}{Character vector of ISO-2 country codes, passed to any
@@ -17,6 +17,11 @@ as a function (e.g. \code{list(foreign_demand = , ea = )}).}
 
 \item{tau}{Optional named numeric vector of per-equation sampler \code{tau}
 overrides, as in \code{\link[=build_system_equations]{build_system_equations()}}.}
+
+\item{error_priors}{Optional per-equation error-term priors, as in
+\code{\link[=build_system_equations]{build_system_equations()}}. A function \verb{(spec) -> named list}, e.g.
+\code{\link[=default_error_priors]{default_error_priors()}}, is applied to the merged spec, since the blocks
+are not merged until here.}
 }
 \value{
 A \code{koma::koma_seq} object.
