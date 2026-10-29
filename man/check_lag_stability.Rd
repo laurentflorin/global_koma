@@ -18,10 +18,7 @@ A \code{data.frame} with columns \code{equation}, \code{term}, \code{estimate},
 \description{
 An equation whose own-lag coefficient reaches 1 in absolute value has a
 unit or explosive root, and koma's Gibbs sampler places \strong{no stationarity
-constraint on draws} -- the sampler will happily return them (see
-\code{R/spillovers.R}, where an increasing share of explosive draws is the
-central obstacle to interpreting any forecast difference). Stage 3a adds
-seven equations per labour country and cuts the residual degrees of
-freedom, both of which make this more likely, so it is worth checking
-directly rather than inferring from downstream symptoms.
+constraint on draws}, so it will happily return them. Few degrees of
+freedom make this more likely. When a coefficient next to the own lag goes
+to zero, check whether the lag went to a unit root and absorbed it.
 }

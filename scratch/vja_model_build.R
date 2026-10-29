@@ -66,20 +66,12 @@ cli::cli_inform(c(
 ))
 
 # --- 4. pre-flight --------------------------------------------------------------
-# stage2_preflight() checks identities with its own rule for which may be
-# inexact, which does not know the trade totals here are published series. So
-# its identity row is replaced by identity_consistency() with the rule that
-# fits: GDP and the trade totals are observed and hold only up to inventories,
-# the discrepancy and chain-linking; everything else was built from the
-# identity's own weights and must hold exactly.
-preflight <- stage2_preflight(sys_eq_w, panel, dates = vja_dates)
-preflight <- preflight[preflight$check != "exact identities hold in the panel", ]
-consistency <- identity_consistency(sys_eq_w, panel, inexact = "^(de|fr|it|reu|us|gb|jp)_(gdp|exports|imports)$")
-exact <- consistency[consistency$exact_expected, ]
-preflight <- rbind(preflight, data.frame(
-  check = "constructed identities hold exactly", ok = all(exact$ok),
-  detail = sprintf("%d checked, worst |error| %.3g", nrow(exact), max(exact$max_abs_error))
-))
+# GDP and the trade totals are published series and hold only up to
+# inventories, the discrepancy and chain-linking; everything else was built
+# from the identity's own weights and must hold exactly.
+observed_identities <- "^(de|fr|it|reu|us|gb|jp)_(gdp|exports|imports)$"
+preflight <- preflight_system(sys_eq_w, panel, dates = vja_dates, inexact = observed_identities)
+consistency <- identity_consistency(sys_eq_w, panel, inexact = observed_identities)
 print(preflight, right = FALSE, row.names = FALSE)
 if (!all(preflight$ok %in% TRUE)) {
   cli::cli_abort("Pre-flight failed; see the table above.")
@@ -97,7 +89,7 @@ fit_path <- file.path(cache_dir, "fit.rds")
 spec_now <- list(equations = vja_equations, exogenous = vja_exogenous, dates = vja_dates)
 fit <- if (file.exists(fit_path)) readRDS(fit_path) else NULL
 if (is.null(fit) || !identical(attr(fit, "vja_spec"), spec_now)) {
-  fit <- fit_stage2(sys_eq, panel, vja_dates, workers = workers)
+  fit <- fit_system(sys_eq, panel, vja_dates, workers = workers)
   attr(fit, "vja_spec") <- spec_now
   saveRDS(fit, fit_path)
   cli::cli_inform("Estimated in {round(attr(fit, 'runtime_s') / 60, 1)} min; saved {.file {fit_path}}.")
@@ -187,7 +179,7 @@ saveRDS(list(preflight = preflight, consistency = consistency, weights = weights
         file.path(cache_dir, "checks.rds"))
 
 # --- 7. forecast ---------------------------------------------------------------------
-fc <- stage_forecast(fit, panel, horizon = 8)
+fc <- forecast_system(fit, panel, horizon = 8)
 saveRDS(fc, file.path(cache_dir, "forecast.rds"))
 explosive <- forecast_explosive_table(fc$paths)
 cli::cli_inform("Explosive draws at horizon 8: {sprintf('%.2f', mean(explosive$h_last))} over all variables, {sprintf('%.2f', mean(explosive$h_last[grepl('_gdp$', explosive$variable)]))} for GDP.")

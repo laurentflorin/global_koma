@@ -6,6 +6,20 @@
 \usage{
 forecast_history(panel, variables, origin, history, frequency)
 }
+\arguments{
+\item{panel}{The full, untruncated panel.}
+
+\item{variables}{Variables to return.}
+
+\item{origin}{The forecast start, \code{c(year, period)}.}
+
+\item{history}{Number of periods before \code{origin}.}
+
+\item{frequency}{Observations per year.}
+}
+\value{
+Rows shaped like \code{\link[=forecast_system]{forecast_system()}}'s \code{paths}, \code{kind = "history"}.
+}
 \description{
 The observed history rows a fan chart joins onto
 }

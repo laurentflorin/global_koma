@@ -195,7 +195,7 @@ ea_prices == (de_nominal_consumption/ea_nominal_consumption)*de_prices + (fr_nom
 # real-side equations as 0/1 dummies: those whose mean absolute GDP growth
 # across the nine entities is more than three times its 2004Q3-2019Q4 average
 # of 0.93pp (2020Q1 3.8 times, 2020Q2 15.3, 2020Q3 12.0, 2021Q2 3.5; next is
-# 2021Q3 at 2.7). Stage 2b's rule, and the same four quarters.
+# 2021Q3 at 2.7).
 vja_exogenous <- c(
   "de_government", "fr_government", "it_government", "reu_government",
   "us_government", "gb_government", "jp_government",

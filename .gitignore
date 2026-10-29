@@ -16,9 +16,8 @@ renv/python/
 renv/sandbox/
 renv/staging/
 
-# targets pipeline store -- rebuild with targets::tar_make().
+# The local store of the archived targets pipeline, if one is still on disk.
 _targets/
-_targets_r/
 
 # R session/package build artifacts.
 .Rproj.user/
@@ -29,14 +28,6 @@ _targets_r/
 inst/doc/
 man/*.Rd.bak
 NAMESPACE.bak
-
-# Rendered reports ARE committed. They are the only way to read this project's
-# results without the cached fits, which are 1.3 GB of koma posterior draws and
-# stay git-ignored above. Every report sets `embed-resources: true`, so each
-# .html is self-contained and no `_files/` sidecar is ever produced -- the rule
-# below is a guard in case one ever renders without embedding.
-reports/*_files/
-docs/*.html
 
 /.quarto/
 **/*.quarto_ipynb

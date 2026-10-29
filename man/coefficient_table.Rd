@@ -10,7 +10,7 @@ coefficient_table(fit, ci_low = 5, ci_up = 95)
 \item{fit}{A \code{koma::koma_estimate} object.}
 
 \item{ci_low, ci_up}{Lower/upper quantile, in percent. Default \code{5}/\code{95},
-i.e. a 90\% interval, matching the brief.}
+i.e. a 90\% interval.}
 }
 \value{
 A \code{data.frame} with columns \code{equation}, \code{term}, \code{estimate},

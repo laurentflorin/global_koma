@@ -22,20 +22,10 @@ A \code{data.frame} with \code{variable}, \code{anker_time}, \code{anker}, \code
 }
 \description{
 \strong{koma anchors a level forecast on the last value in the fit's own
-\code{ts_data}, which is not always an observed one.} Stages 1 and 2a estimate
-to 2019Q4 and forecast from 2023Q1, so koma \emph{conditionally fills} 2020Q1
-through 2022Q4 first and takes the anker off the end of that fill. Measured
-on the stage-2a pilot, \code{de_prices}'s anker is \strong{85.02} against an observed
-2022Q4 value of \strong{93.55} -- a 9\% gap that has nothing to do with the
-forecast and everything to do with the fill not having seen the inflation
-surge it was filling across.
-}
-\details{
-The consequence is specific: for those stages the \strong{rate} fan chart is
-directly comparable to the actuals and the \strong{level} one is not, because it
-starts from the wrong place. Stages 2b onward estimate to 2024Q4 and
-forecast from 2025Q1 with nothing to fill, so their ankers are observed and
-both spaces are fine. This function returns the numbers so a report can say
-which case it is in rather than leaving the reader to assume.
+\code{ts_data}, which is not always an observed one.} When the forecast starts
+after the estimation end, koma \emph{conditionally fills} the gap first and takes
+the anker off the end of that fill. The level path then starts from the
+fill, not from the data, while the rate path is unaffected. A gap of zero
+says the forecast starts straight from the last observation.
 }
 \keyword{internal}

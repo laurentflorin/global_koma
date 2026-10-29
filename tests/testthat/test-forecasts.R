@@ -11,13 +11,16 @@ test_that("lookup_ts reads by date and returns NA off the ends", {
   expect_equal(lookup_ts(x, c(2019.75, 2021), 4), c(NA_real_, NA_real_))
 })
 
-# --------------------------------------------------------------------------
-# The vectorised level inversion must reproduce koma's own, exactly
-# --------------------------------------------------------------------------
+test_that("advance_periods adds quarters, including across a year boundary", {
+  expect_equal(advance_periods(c(2020, 1), 0), c(2020, 1))
+  expect_equal(advance_periods(c(2020, 1), 3), c(2020, 4))
+  expect_equal(advance_periods(c(2020, 1), 4), c(2021, 1))
+  expect_equal(advance_periods(c(2020, 3), 7), c(2022, 2))
+})
 
 test_that("forecast_draws_level_matrix reproduces koma::level() to machine precision", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 60)
+  s <- synthetic_fit()
   ext <- extend_forecast_horizon(s$fit, s$panel, 4)
   set.seed(3)
   fc <- suppressWarnings(koma::forecast(
@@ -25,25 +28,36 @@ test_that("forecast_draws_level_matrix reproduces koma::level() to machine preci
   ))
   h <- nrow(fc$forecasts[[1]])
 
+  # The slow path: koma::level() once per draw, with the mean forecast's
+  # attributes put back on each draw (the draws carry none).
+  koma_level <- function(var) {
+    m <- fc$mean[[var]]
+    keep <- c("series_type", "method", "anker", "ets_attributes", "class")
+    a <- attributes(m)
+    vapply(fc$forecasts, function(draw) {
+      d <- stats::ts(draw[, var], start = a$tsp[1], frequency = a$tsp[3])
+      attributes(d)[keep] <- a[keep]
+      as.numeric(koma::level(d))[-1]
+    }, numeric(h))
+  }
+
   compared <- 0
   for (v in s$fit$sys_eq$endogenous_variables) {
     rate_draws <- vapply(fc$forecasts, function(d) d[seq_len(h), v], numeric(h))
     fast <- forecast_draws_level_matrix(fc, v, rate_draws)
-    slow <- tryCatch(forecast_draws_level(fc, v)[seq_len(h), , drop = FALSE],
-                     error = function(e) NULL)
+    slow <- tryCatch(koma_level(v)[seq_len(h), , drop = FALSE], error = function(e) NULL)
     if (is.null(slow) || is.null(fast)) next
     compared <- compared + 1
-    expect_equal(fast, slow, tolerance = 1e-12,
-                 info = paste("level inversion differs for", v))
+    expect_equal(fast, slow, tolerance = 1e-12, info = paste("level inversion differs for", v))
   }
   # If this drops to zero the test has stopped testing anything.
   expect_gt(compared, 0)
 })
 
 test_that("a method = 'none' series is returned unchanged rather than dropped", {
-  # Every policy rate, spread and ratio in this project is rate/none: koma
-  # passes those numbers through untouched and gives them no `anker`, so
-  # koma::level() errors on them. Level space IS rate space there.
+  # Interest rates are rate/none: koma passes those numbers through untouched
+  # and gives them no `anker`, so koma::level() errors on them. Level space IS
+  # rate space there.
   fake <- list(mean = list(
     r = structure(stats::ts(c(1, 2), start = c(2025, 1), frequency = 4),
                   series_type = "rate", method = "none", anker = NA)
@@ -60,15 +74,11 @@ test_that("a series with no usable anker yields NULL rather than a wrong level",
   expect_null(forecast_draws_level_matrix(fake, "p", matrix(c(1, 2, 3, 4), nrow = 2)))
 })
 
-# --------------------------------------------------------------------------
-# stage_forecast()
-# --------------------------------------------------------------------------
-
-test_that("stage_forecast delivers the horizon asked for and labels history", {
+test_that("forecast_system delivers the horizon asked for and labels history", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 60)
-  f <- stage_forecast(s$fit, s$panel, horizon = 6, history = 4,
-                      variables = c("de_gdp", "de_prices"))
+  s <- synthetic_fit()
+  f <- forecast_system(s$fit, s$panel, horizon = 6, history = 4,
+                       variables = c("de_gdp", "de_prices"))
 
   expect_equal(f$horizon, 6)
   fore <- f$paths[f$paths$kind == "forecast", ]
@@ -83,145 +93,157 @@ test_that("stage_forecast delivers the horizon asked for and labels history", {
   ok <- !is.na(fore$rate_lower)
   expect_true(all(fore$rate_lower[ok] <= fore$rate_median[ok]))
   expect_true(all(fore$rate_median[ok] <= fore$rate_upper[ok]))
+  # The forecast window 2018Q1-2019Q2 is inside the panel, so it is scored.
+  expect_gt(f$n_actual, 0)
 })
 
-test_that("stage_forecast is reproducible for a given seed and varies without one", {
+test_that("forecast_system is reproducible for a given seed and varies without one", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 60)
-  a <- stage_forecast(s$fit, s$panel, horizon = 4, variables = "de_gdp", seed = 11)
-  b <- stage_forecast(s$fit, s$panel, horizon = 4, variables = "de_gdp", seed = 11)
+  s <- synthetic_fit()
+  a <- forecast_system(s$fit, s$panel, horizon = 4, variables = "de_gdp", seed = 11)
+  b <- forecast_system(s$fit, s$panel, horizon = 4, variables = "de_gdp", seed = 11)
   expect_equal(a$paths, b$paths)
 
   # koma's forecasts are not reproducible call-to-call by default, which is
   # exactly why `seed` exists -- a different seed must give a different path.
-  c2 <- stage_forecast(s$fit, s$panel, horizon = 4, variables = "de_gdp", seed = 12)
+  c2 <- forecast_system(s$fit, s$panel, horizon = 4, variables = "de_gdp", seed = 12)
   expect_false(isTRUE(all.equal(a$paths$rate_median, c2$paths$rate_median)))
 })
 
-test_that("stage_forecast rejects an unknown variable and a bad probs pair", {
+test_that("forecast_system rejects an unknown variable and a bad probs pair", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 40)
-  expect_error(stage_forecast(s$fit, s$panel, variables = "xx_gdp"), "not endogenous")
-  expect_error(stage_forecast(s$fit, s$panel, probs = c(0.9, 0.1)), "increasing quantiles")
+  s <- synthetic_fit()
+  expect_error(forecast_system(s$fit, s$panel, variables = "xx_gdp"), "not endogenous")
+  expect_error(forecast_system(s$fit, s$panel, probs = c(0.9, 0.1)), "increasing quantiles")
 })
 
 test_that("explosive draws are filtered per horizon in rates and cumulatively in levels", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 60)
+  s <- synthetic_fit()
   # A threshold of zero makes every finite draw "explosive", so every quantile
   # must come back NA rather than being computed on an empty vector.
-  f <- stage_forecast(s$fit, s$panel, horizon = 3, variables = "de_gdp",
-                      explosive_threshold = 0)
+  f <- forecast_system(s$fit, s$panel, horizon = 3, variables = "de_gdp",
+                       explosive_threshold = 0)
   fore <- f$paths[f$paths$kind == "forecast", ]
   expect_true(all(fore$explosive_frac == 1))
   expect_true(all(is.na(fore$rate_median)))
   expect_true(all(is.na(fore$level_median)))
 })
 
-test_that("forecast_table and forecast_explosive_table summarise the forecast rows only", {
+test_that("forecast_explosive_table summarises the forecast rows only", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 60)
-  f <- stage_forecast(s$fit, s$panel, horizon = 4, variables = c("de_gdp", "fr_gdp"))
-
-  tab <- forecast_table(f$paths, space = "rate")
-  expect_equal(nrow(tab), 4)
-  expect_setequal(names(tab), c("quarter", "de_gdp", "fr_gdp"))
-  expect_false(any(grepl("^history", tab$quarter)))
-
+  s <- synthetic_fit()
+  f <- forecast_system(s$fit, s$panel, horizon = 4, variables = c("de_gdp", "fr_gdp"))
   ex <- forecast_explosive_table(f$paths)
   expect_setequal(ex$variable, c("de_gdp", "fr_gdp"))
   expect_true(all(ex$h1 >= 0 & ex$h1 <= 1))
   expect_true(all(ex$max >= ex$h1))
 })
 
-test_that("forecast_error_table scores only quarters with an outturn", {
+test_that("extend_forecast_horizon is a no-op when the horizon is already covered", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 60)
-  f <- stage_forecast(s$fit, s$panel, horizon = 4, variables = c("de_gdp", "fr_gdp"))
-
-  e <- forecast_error_table(f$paths, space = "rate")
-  expect_true(all(c("variable", "horizon", "median", "actual", "error", "abs_error") %in% names(e)))
-  # History rows carry an `actual` too; only the forecast window may be scored,
-  # or a stage would be graded on the observations it was estimated on.
-  expect_true(all(e$horizon >= 1))
-  expect_equal(e$abs_error, abs(e$median - e$actual))
-  expect_equal(e$error, e$median - e$actual)
-
-  # A quarter with no outturn contributes no row -- that is how the report tells
-  # a five-quarter-scored stage from an eight-quarter-scored one.
-  n_with_actual <- sum(f$paths$kind == "forecast" &
-                         f$paths$variable %in% c("de_gdp", "fr_gdp") &
-                         !is.na(f$paths$actual_rate) & !is.na(f$paths$rate_median))
-  expect_equal(nrow(e), n_with_actual)
-
-  # Restricting the variable set restricts the rows, and an all-explosive
-  # forecast (every median NA) scores nothing rather than erroring.
-  expect_setequal(forecast_error_table(f$paths, "de_gdp")$variable, "de_gdp")
-  blown <- stage_forecast(s$fit, s$panel, horizon = 3, variables = "de_gdp",
-                          explosive_threshold = 0)
-  expect_equal(nrow(forecast_error_table(blown$paths)), 0L)
+  s <- synthetic_fit()
+  ext <- extend_forecast_horizon(s$fit, s$panel, quarters = 2)
+  expect_equal(nrow(ext$extension), 0)
+  expect_equal(ext$dates$forecast$end, c(2018, 2))
+  expect_equal(length(ext$fit$ts_data$row_imports), length(s$fit$ts_data$row_imports))
 })
 
-test_that("plot_forecast_fan labels a rate series as a level, not as growth", {
-  skip_if_not_installed("ggplot2")
+test_that("no exogenous series is extended when the data already reaches the horizon", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 40)
-  f <- stage_forecast(s$fit, s$panel, horizon = 4,
-                      variables = c("de_gdp", "ea_policy_rate"))
-  ylab <- function(p) p$labels$y
-
-  # `de_gdp` is diff_log: rate space really is growth.
-  expect_match(ylab(plot_forecast_fan(f$paths, "de_gdp", space = "rate")),
-               "quarterly growth")
-  # `ea_policy_rate` is method = "none": level space IS rate space, so calling
-  # the axis "quarterly growth" would misdescribe every number on it.
-  expect_match(ylab(plot_forecast_fan(f$paths, "ea_policy_rate", space = "rate")),
-               "^percent")
-  # Mixing the two in one panel grid is flagged rather than silently taking
-  # whichever label came first.
-  expect_match(ylab(plot_forecast_fan(f$paths, c("de_gdp", "ea_policy_rate"), space = "rate")),
-               "rate series shown as levels")
+  # The panel runs to 2019Q4 and an 8-quarter horizon from 2018Q1 ends exactly
+  # there, so nothing is short. Extending anyway would append points past the
+  # forecast end that no draw ever reads.
+  s <- synthetic_fit()
+  ext <- extend_forecast_horizon(s$fit, s$panel, quarters = 8)
+  expect_equal(ext$dates$forecast$end, c(2019, 4))
+  expect_equal(nrow(ext$extension), 0)
+  expect_equal(length(ext$fit$ts_data$row_imports), length(s$fit$ts_data$row_imports))
 })
 
-test_that("common_forecast_variables drops a variable the stages disagree on", {
+test_that("extend_forecast_horizon extends level exogenous series by trailing growth", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 40)
-  a <- stage_forecast(s$fit, s$panel, horizon = 4, variables = c("de_gdp", "fr_gdp"))
-  b <- a
+  s <- synthetic_fit()
+  # 12 quarters from 2018Q1 ends 2020Q4, four past the panel's own end, so the
+  # extrapolation actually has to run.
+  ext <- extend_forecast_horizon(s$fit, s$panel, quarters = 12)
+  added <- stats::setNames(ext$extension$periods_added, ext$extension$variable)
 
-  # Same names, same realised paths: nothing is dropped.
-  v <- common_forecast_variables(list(a = a, b = b))
-  expect_setequal(as.character(v), c("de_gdp", "fr_gdp"))
-  expect_length(attr(v, "dropped"), 0)
+  expect_equal(ext$dates$forecast$end, c(2020, 4))
+  expect_equal(unname(added[["row_imports"]]), 4)
+  expect_equal(length(ext$fit$ts_data$row_imports), length(s$fit$ts_data$row_imports) + 4)
 
-  # Now make the second "stage" mean something different by `de_gdp`, which is
-  # exactly what the labour block does to `<iso2>_prices`: same name, series
-  # rebuilt from components. Scoring the two against each other would compare
-  # two questions, so the variable must drop out.
-  i <- b$paths$variable == "de_gdp"
-  b$paths$actual_rate[i] <- b$paths$actual_rate[i] + 0.5
-  v2 <- common_forecast_variables(list(a = a, b = b))
-  expect_setequal(as.character(v2), "fr_gdp")
-  expect_equal(names(attr(v2, "dropped")), "de_gdp")
-  expect_equal(unname(attr(v2, "dropped")), 0.5, tolerance = 1e-8)
+  # The fit's ts_data is in rate space, so the appended values are the stated
+  # trailing-4Q average growth rate itself.
+  avg <- mean(utils::tail(as.numeric(koma::rate(s$panel$row_imports)), 4))
+  expect_equal(utils::tail(as.numeric(ext$fit$ts_data$row_imports), 4), rep(avg, 4), tolerance = 1e-6)
 
-  # An intersection is still taken: a variable only one stage carries is not
-  # comparable however well the others agree.
-  c3 <- stage_forecast(s$fit, s$panel, horizon = 4, variables = "fr_gdp")
-  expect_setequal(as.character(common_forecast_variables(list(a = a, c = c3))), "fr_gdp")
-
-  # The concept filter selects on the part after the entity prefix.
-  expect_setequal(as.character(common_forecast_variables(list(a = a, b = a), "gdp")),
-                  c("de_gdp", "fr_gdp"))
-  expect_length(common_forecast_variables(list(a = a, b = a), "prices"), 0)
+  # A dummy is extended with zeros.
+  expect_equal(ext$extension$method[ext$extension$variable == "covid_2009q1"], "zero (dummy)")
+  expect_equal(utils::tail(as.numeric(ext$fit$ts_data$covid_2009q1), 4), rep(0, 4))
 })
 
-test_that("plot_forecast_fan returns a ggplot without evaluating it", {
-  skip_if_not_installed("ggplot2")
+test_that("extend_forecast_horizon holds a rate/none exogenous flat, not compounding it", {
   skip_on_cran()
-  s <- diagnostics_synthetic_stage2_fit(ndraws = 40)
-  f <- stage_forecast(s$fit, s$panel, horizon = 4, variables = c("de_gdp", "de_prices"))
-  p <- plot_forecast_fan(f$paths, c("de_gdp", "de_prices"), space = "rate")
-  expect_s3_class(p, "ggplot")
-  expect_s3_class(plot_forecast_fan(f$paths, "de_gdp", space = "level"), "ggplot")
+  s <- synthetic_fit()
+  ext <- extend_forecast_horizon(s$fit, s$panel, quarters = 12)
+
+  tail_vals <- utils::tail(as.numeric(ext$fit$ts_data$us_short_rate), 4)
+  # flat, not exponentially growing: all four appended values identical
+  expect_equal(tail_vals, rep(tail_vals[1], 4), tolerance = 1e-8)
+  # and equal to the trailing-4Q average of the original series (level == rate
+  # space here since method = "none")
+  expect_equal(tail_vals[1], mean(utils::tail(as.numeric(s$panel$us_short_rate), 4)),
+               tolerance = 1e-8)
+})
+
+test_that("extend_forecast_horizon aborts when panel lacks a needed exogenous series", {
+  skip_on_cran()
+  s <- synthetic_fit()
+  panel_missing <- s$panel
+  panel_missing$row_imports <- NULL
+  expect_error(extend_forecast_horizon(s$fit, panel_missing, quarters = 12), "row_imports")
+})
+
+test_that("extend_forecast_horizon measures each series' own shortfall", {
+  skip_on_cran()
+  # An exogenous series built from others stops where its shortest component
+  # does. A blanket `quarters - native_horizon` would leave it short of even
+  # the native horizon, and koma would refuse the forecast outright.
+  s <- synthetic_fit()
+  panel <- s$panel
+  fit <- s$fit
+  short <- stats::window(panel$row_imports, end = c(2018, 4))
+  fit$ts_data$row_imports <- koma::rate(short)
+  panel$row_imports <- short
+
+  ext <- extend_forecast_horizon(fit, panel, quarters = 8)
+  added <- stats::setNames(ext$extension$periods_added, ext$extension$variable)
+  # row_imports ends 2018Q4 and the horizon ends 2019Q4: four quarters short.
+  expect_equal(unname(added[["row_imports"]]), 4)
+  # Everything else already reaches it and is left alone.
+  expect_true(all(added[setdiff(names(added), "row_imports")] == 0))
+  expect_equal(stats::end(ext$fit$ts_data$row_imports), c(2019, 4))
+  expect_false(anyNA(as.numeric(ext$fit$ts_data$row_imports)))
+})
+
+test_that("extend_forecast_horizon extrapolates from the last OBSERVED value", {
+  skip_on_cran()
+  # A panel series padded with trailing NAs ends at its last observation in the
+  # fit (koma::rate() drops them). Extrapolating from tail(level, 1) would
+  # compound from an NA and produce an all-NA extension, which koma reports as
+  # "does not extend into the forecast period".
+  s <- synthetic_fit()
+  panel <- s$panel
+  fit <- s$fit
+  padded <- stats::window(panel$row_imports, end = c(2020, 4), extend = TRUE)
+  padded[stats::time(padded) > 2018.8] <- NA_real_
+  attrs <- get_custom_attrs(panel$row_imports)
+  attrs[["ets_attributes"]] <- NULL
+  panel$row_imports <- do.call(koma::as_ets, c(list(padded), attrs))
+  fit$ts_data$row_imports <- koma::rate(panel$row_imports)
+
+  ext <- extend_forecast_horizon(fit, panel, quarters = 8)
+  expect_false(anyNA(as.numeric(ext$fit$ts_data$row_imports)))
+  expect_equal(stats::end(ext$fit$ts_data$row_imports), c(2019, 4))
 })

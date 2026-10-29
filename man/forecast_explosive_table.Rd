@@ -7,7 +7,7 @@
 forecast_explosive_table(paths, variables = NULL)
 }
 \arguments{
-\item{paths}{The \code{paths} element of a \code{\link[=stage_forecast]{stage_forecast()}} result.}
+\item{paths}{The \code{paths} element of a \code{\link[=forecast_system]{forecast_system()}} result.}
 
 \item{variables}{Variables to include.}
 }
@@ -16,10 +16,8 @@ A \code{data.frame}, one row per variable, with the explosive share at
 horizon 1, the horizon-8 share, and the maximum.
 }
 \description{
-The companion every fan chart in this project needs. koma constrains no
-draw to be stationary, so at horizon 8 a substantial minority of draws have
-compounded to absurd growth rates; the fan is drawn from what survives, and
-this says how much did not. A variable whose share climbs steeply with the
-horizon has a fan that understates its true uncertainty, and should be read
-as an ordering rather than a number.
+The companion to every fan chart: the quantiles are drawn from the draws
+that did not explode (see the file header), and this says how many did. A
+variable whose share climbs steeply with the horizon has a fan that
+understates its true uncertainty.
 }

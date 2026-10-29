@@ -18,9 +18,8 @@ A \verb{horizon x ndraws} matrix in level space, or \code{NULL} if the
 inversion is not defined for this series.
 }
 \description{
-The vectorised equivalent of \code{\link[=forecast_draws_level]{forecast_draws_level()}}, which calls
-\code{koma::level()} once per draw -- 1000 calls per variable, and on the
-stage-3b system that is 120,000 calls and more than ten minutes. Reading
+The vectorised equivalent of calling \code{koma::level()} once per draw, which
+for a hundred variables and 1000 draws takes minutes. Reading
 \code{koma:::level.ts} (verified against koma 0.3.1), a \code{rate}/\code{diff_log} series
 is inverted as \code{exp(cumsum(x/100)) * 100}, prepended with the base \code{100},
 then rescaled by \code{anker/100} -- which, after dropping the prepended anker
@@ -29,14 +28,12 @@ with \code{cumprod(1 + x/100)}.
 }
 \details{
 \strong{A \code{method = "none"} series is returned unchanged, and that is not a
-shortcut.} Every policy rate, spread and ratio in this project is
-\code{rate}/\code{none}: koma passes those numbers through untouched, so level space
-\emph{is} rate space, and they carry no \code{anker} at all -- \code{koma::level()} errors
-on them rather than returning something usable, which would otherwise leave
-every policy rate blank on a level chart.
+shortcut.} Interest rates are \code{rate}/\code{none}: koma passes those numbers
+through untouched, so level space \emph{is} rate space, and they carry no
+\code{anker} at all -- \code{koma::level()} errors on them.
 
-This is checked against \code{\link[=forecast_draws_level]{forecast_draws_level()}} in
-\code{tests/testthat/test-forecasts.R}; if koma's inversion ever changes, that
-test fails rather than this silently drifting.
+\code{tests/testthat/test-forecasts.R} checks this against \code{koma::level()}
+draw by draw, so a change in koma's inversion fails a test rather than
+drifting silently.
 }
 \keyword{internal}

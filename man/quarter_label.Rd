@@ -15,6 +15,5 @@ quarter_label(t, frequency = 4)
 A character vector.
 }
 \description{
-\code{2025.25} -> \code{"2025Q2"}. Used for report tables; the plots keep the numeric
-time so the axis stays continuous.
+\code{2025.25} -> \code{"2025Q2"}.
 }

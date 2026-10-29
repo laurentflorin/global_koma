@@ -9,7 +9,7 @@ A verified map of the [`koma`](https://cran.r-project.org/package=koma) R packag
 |---|---|
 | Package version | **0.3.1** (CRAN, published 2026-07-29) |
 | Verified against | R 4.4.3, source tarball `koma_0.3.1.tar.gz` + a live install |
-| Method | Every export below was read in `R/*.R` **and** exercised in R. Probe scripts: `scratch/koma_probes.R`, `scratch/vignette_repro.R`, `scratch/koma_scaling.R` |
+| Method | Every export below was read in `R/*.R` **and** exercised in R. Probe scripts: `scratch/koma_probes.R`, `scratch/vignette_repro.R`, `scratch/koma_scaling.R`, on the `archive/global-koma-stages` branch |
 | Model reference | Rathke A. and Sarferaz S. (forthcoming), *Bayesian Estimation of Simultaneous Equations Model* |
 
 **Do not use the pkgdown site as a reference.** <https://timothymerlin.github.io/koma/> is

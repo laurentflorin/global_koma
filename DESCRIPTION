@@ -1,13 +1,12 @@
 Package: globalkoma
-Title: Multi-Country Bayesian Macro Model Built on koma
+Title: The VJA Multi-Country Macro Model, Built on koma
 Version: 0.0.0.9000
 Authors@R: person("Laurent", "Florin", , "laurent.f94@gmail.com", role = c("aut", "cre"))
-Description: Data pipeline and modelling code for a multi-country Bayesian
-    simultaneous-equations macro model, built on top of the 'koma' package.
-    Stage 1 estimates per-country satellite models, stage 2 assembles the
-    joint multi-country system of equations, and stage 3 builds regional
-    (euro-area) and global aggregation blocks. Orchestrated with 'targets';
-    library management with 'renv'.
+Description: Panel helpers, pre-flight checks, estimation, diagnostics and
+    forecasting for the VJA multi-country Bayesian simultaneous-equations
+    model, built on the 'koma' package. The model itself is one explicit koma
+    equation string; the scripts that build its data, panel and fit live in
+    scratch/. Library management with 'renv'.
 License: file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -16,23 +15,14 @@ Depends:
     R (>= 4.1.0)
 Imports:
     cli,
-    ecb,
-    eurostat,
-    httr2,
-    jsonlite,
     koma,
-    pdftools,
-    readxl,
-    rlang,
     stats,
     utils
 Suggests:
     devtools,
+    eurostat,
     future,
-    future.apply,
-    parallelly,
-    targets,
-    tarchetypes,
+    readxl,
     testthat (>= 3.2.3),
     withr
 Config/roxygen2/version: 8.1.0

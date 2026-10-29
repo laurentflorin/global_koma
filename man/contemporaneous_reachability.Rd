@@ -27,23 +27,15 @@ regressor.
 }
 \details{
 \strong{Why this is worth measuring rather than assuming.} Making a variable
-endogenous does not give it a transmission channel: stage 2b promoted
-\code{ea_policy_rate} to its own Taylor rule and it still reached no price
-variable anywhere in the system, because the price equation's
-contemporaneous endogenous regressor set was \emph{empty}. The rule therefore
-responded to an inflation rate nothing it did could influence -- an open
-loop that looks closed in the equation listing. Stage 2c's Phillips-curve
-and consumption-rate refinements exist to close it, and this function is
-how that claim is checked.
+endogenous does not give it a transmission channel. A Taylor rule whose
+rate reaches no price equation responds to an inflation rate nothing it
+does can influence: an open loop that looks closed in the equation listing.
 
 The search starts from the equations \code{from} \emph{enters}, so \code{from} appears in
-the result only when a cycle brings it back to itself. Read that with care:
-stage 2b's \code{ea_policy_rate} \strong{is} self-reachable, through the Taylor rule's
-\code{ea_gdp} term, while reaching no price variable at all. Self-reachability
-says \emph{a} loop is closed, not \emph{which} one -- which is why the price count
-matters here and the self-reach on its own does not.
+the result only when a cycle brings it back to itself. Self-reachability
+says \emph{a} loop is closed, not \emph{which} one: count what is reached (prices,
+GDP) rather than whether the start point comes back.
 
 Reachability is a statement about \emph{structure}, not about magnitude. A path
-whose links are estimated near zero is reachable and inert; use
-\code{\link[=loop_gain]{loop_gain()}} to put a number on one.
+whose links are estimated near zero is reachable and inert.
 }

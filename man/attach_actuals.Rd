@@ -6,9 +6,18 @@
 \usage{
 attach_actuals(paths, panel, frequency)
 }
+\arguments{
+\item{paths}{Forecast rows, with \code{variable} and \code{time}.}
+
+\item{panel}{The full, untruncated panel.}
+
+\item{frequency}{Observations per year.}
+}
+\value{
+\code{paths} with \code{actual_rate} and \code{actual_level} columns.
+}
 \description{
-A stage whose forecast window is already in the past (stages 1 and 2a) gets
-an actual for every quarter; one forecasting genuinely forward gets \code{NA}
-beyond the data. Both are normal and the report distinguishes them.
+A forecast window already in the past gets an actual for every quarter;
+one forecasting genuinely forward gets \code{NA} beyond the data.
 }
 \keyword{internal}

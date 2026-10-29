@@ -1,179 +1,101 @@
-# Shared fixtures for tests that need a real (fast, synthetic, no-network)
-# koma_estimate to exercise estimate/forecast-touching code. Lives in a
-# helper-*.R file, not a plain test-*.R one, because testthat only guarantees
-# a file is sourced into every test file's environment for helper-*.R --
-# top-level definitions in a test-*.R file are not reliably visible from
-# another test-*.R file (verified: they are not, under this project's actual
-# test-running configuration).
+# Shared fixtures: a small synthetic panel and a two-country system written
+# out as one koma equation string, the way scratch/vja_model_equations.R is.
+# Lives in a helper-*.R file because testthat sources only those into every
+# test file's environment.
 
-diagnostics_synthetic_panel <- function(iso2 = "de", n = 80, seed = 42) {
+synthetic_panel <- function(n = 80, seed = 42) {
   set.seed(seed)
   mk <- function(v, series_type = "level", method = "diff_log") {
     koma::as_ets(stats::ts(v, start = c(2000, 1), frequency = 4),
                  series_type = series_type, method = method)
   }
-  consumption <- 100 + cumsum(stats::rnorm(n, 1.0, 0.2))
-  investment  <-  40 + cumsum(stats::rnorm(n, 0.4, 0.1))
-  government  <-  60 + cumsum(stats::rnorm(n, 0.5, 0.1))
-  exports     <-  90 + cumsum(stats::rnorm(n, 0.9, 0.2))
-  imports     <-  80 + cumsum(stats::rnorm(n, 0.8, 0.2))
-  domestic_demand <- consumption + investment + government
-  gdp <- domestic_demand + exports - imports
+  walk <- function(base, drift, sd) base + cumsum(stats::rnorm(n, drift, sd))
+  rate <- function(base, sd) abs(base + cumsum(stats::rnorm(n, 0, sd)))
 
-  country <- stats::setNames(list(
-    consumption = mk(consumption), investment = mk(investment),
-    government = mk(government), exports = mk(exports), imports = mk(imports),
-    domestic_demand = mk(domestic_demand), gdp = mk(gdp),
-    prices = mk(100 + cumsum(stats::rnorm(n, 0.4, 0.2))),
-    core_prices = mk(100 + cumsum(stats::rnorm(n, 0.3, 0.2))),
-    unemployment = mk(abs(7 + cumsum(stats::rnorm(n, 0, 0.1))), "rate", "none"),
-    long_rate = mk(abs(3 + cumsum(stats::rnorm(n, 0, 0.1))), "rate", "none")
-  ), country_var(iso2, c(
-    "consumption", "investment", "government", "exports", "imports",
-    "domestic_demand", "gdp", "prices", "core_prices", "unemployment", "long_rate"
-  )))
-
-  shared <- list(
-    row_gdp          = mk(100 + cumsum(stats::rnorm(n, 0.8, 0.2))),
-    eur_usd          = mk(1.1 + cumsum(stats::rnorm(n, 0, 0.01))),
-    us_exchange_rate = mk(100 + cumsum(stats::rnorm(n, 0, 1))),
-    oil_price        = mk(50 + cumsum(stats::rnorm(n, 0.3, 1))),
-    ea_policy_rate   = mk(abs(2 + cumsum(stats::rnorm(n, 0, 0.1))), "rate", "none"),
-    us_policy_rate   = mk(abs(2 + cumsum(stats::rnorm(n, 0, 0.1))), "rate", "none")
-  )
-
-  c(country, shared)
-}
-
-# The stage-3a concepts, added to a synthetic panel so the labour/price block
-# can be built and its identities checked without touching the network. The
-# levels are arbitrary but positive (chain_weighted_index() takes logs) and
-# `wages` is deliberately built as a wage BILL divided by employment, mirroring
-# derived_wage_rate(), so the ulc/real_income identities are exercised on a
-# series constructed the same way the real one is.
-stage3a_synthetic_panel <- function(iso2 = "de", n = 80, seed = 7) {
-  panel <- diagnostics_synthetic_panel(iso2, n = n)
-  set.seed(seed)
-  mk <- function(v) {
-    koma::as_ets(stats::ts(v, start = c(2000, 1), frequency = 4),
-                 series_type = "level", method = "diff_log")
+  panel <- list()
+  for (cc in c("de", "fr")) {
+    consumption <- walk(100, 1.0, 0.2)
+    investment <- walk(40, 0.4, 0.1)
+    government <- walk(60, 0.5, 0.1)
+    exports <- walk(90, 0.9, 0.2)
+    imports <- walk(80, 0.8, 0.2)
+    series <- list(
+      consumption = mk(consumption), investment = mk(investment),
+      government = mk(government), exports = mk(exports), imports = mk(imports),
+      gdp = mk(consumption + investment + government + exports - imports),
+      prices = mk(walk(100, 0.4, 0.2)),
+      long_rate = mk(rate(3, 0.1), "rate", "none")
+    )
+    panel <- c(panel, stats::setNames(series, paste0(cc, "_", names(series))))
   }
-  employment <- 40000 + cumsum(stats::rnorm(n, 20, 40))
-  wage_bill <- 300 + cumsum(stats::rnorm(n, 2.0, 0.5))
-  extra <- stats::setNames(list(
-    employment = mk(employment),
-    wages = mk(wage_bill / employment),
-    nonenergy_prices = mk(100 + cumsum(stats::rnorm(n, 0.35, 0.2))),
-    energy_prices = mk(100 + cumsum(stats::rnorm(n, 0.5, 1.5))),
-    import_prices = mk(100 + cumsum(stats::rnorm(n, 0.3, 0.6))),
-    export_prices = mk(100 + cumsum(stats::rnorm(n, 0.3, 0.5)))
-  ), country_var(iso2, c(
-    "employment", "wages", "nonenergy_prices", "energy_prices",
-    "import_prices", "export_prices"
-  )))
-  # A partner, so the foreign-demand and foreign-price indices both have
-  # something to average over.
-  partner <- stats::setNames(
-    list(
-      mk(100 + cumsum(stats::rnorm(n, 0.3, 0.5))),
-      mk(100 + cumsum(stats::rnorm(n, 0.8, 0.3)))
-    ),
-    country_var("fr", c("export_prices", "gdp"))
-  )
-  c(panel, extra, partner)
+  panel$row_imports <- mk(walk(100, 0.8, 0.2))
+  panel$ea_short_rate <- mk(rate(2, 0.1), "rate", "none")
+  panel$us_short_rate <- mk(rate(2, 0.1), "rate", "none")
+  panel$covid_2009q1 <- covid_dummy("covid_2009q1", panel$de_gdp)
+  panel
 }
 
-diagnostics_synthetic_fit <- function(iso2 = "de", n = 80, ndraws = 200) {
-  panel <- diagnostics_synthetic_panel(iso2, n = n)
-  dates <- list(
-    estimation = list(start = c(2000, 1), end = c(2015, 4)),
+# Every stochastic equation before every identity; explicit weights on every
+# identity term; "- 0.4*x", never "+ -0.4*x". The rest-of-world term keeps each
+# foreign-demand identity's weights clear of summing over the system alone.
+synthetic_equations <- "
+de_consumption ~ constant + de_consumption.L(1) + de_long_rate
+de_investment ~ constant + de_investment.L(1) + de_long_rate
+de_exports ~ constant + de_foreign_demand + covid_2009q1
+de_imports ~ constant + de_domestic_demand
+de_prices ~ constant + de_prices.L(1)
+de_long_rate ~ constant + de_long_rate.L(1) + ea_short_rate + us_short_rate
+fr_consumption ~ constant + fr_consumption.L(1) + fr_long_rate
+fr_investment ~ constant + fr_investment.L(1) + fr_long_rate
+fr_exports ~ constant + fr_foreign_demand + covid_2009q1
+fr_imports ~ constant + fr_domestic_demand
+fr_prices ~ constant + fr_prices.L(1)
+fr_long_rate ~ constant + fr_long_rate.L(1) + ea_short_rate + us_short_rate
+ea_short_rate ~ constant + ea_short_rate.L(1) + ea_prices + ea_gdp
+de_domestic_demand == 0.5*de_consumption + 0.2*de_investment + 0.3*de_government
+de_gdp == 1*de_domestic_demand + 0.4*de_exports - 0.4*de_imports
+de_foreign_demand == 0.6*fr_imports + 0.4*row_imports
+fr_domestic_demand == 0.5*fr_consumption + 0.2*fr_investment + 0.3*fr_government
+fr_gdp == 1*fr_domestic_demand + 0.4*fr_exports - 0.4*fr_imports
+fr_foreign_demand == 0.6*de_imports + 0.4*row_imports
+ea_gdp == 0.5*de_gdp + 0.5*fr_gdp
+ea_prices == 0.5*de_prices + 0.5*fr_prices
+"
+
+synthetic_exogenous <- c("de_government", "fr_government", "row_imports", "us_short_rate", "covid_2009q1")
+
+synthetic_dates <- function(estimation_end = c(2015, 4)) {
+  list(
+    estimation = list(start = c(2000, 1), end = estimation_end),
     forecast = list(start = c(2018, 1), end = c(2018, 4))
   )
-  list(
-    panel = panel, dates = dates,
-    fit = fit_stage1(iso2, panel, dates, options = list(gibbs = list(ndraws = ndraws)))
-  )
 }
 
-# A small two-country JOINT (stage-2-shaped) synthetic fit, for tests that
-# need a system spanning more than one country -- score_all_countries()'s
-# contract, and the stage-2 backtest recipe in R/scoring.R. Countries share
-# one draw of each unprefixed variable (eur_usd, oil_price, ...), taken from
-# the first country's panel; that has no economic meaning here, it only
-# needs to be internally consistent and estimable.
-diagnostics_synthetic_stage2_fit <- function(countries = c("de", "fr"), n = 80, ndraws = 100,
-                                             estimation_end = c(2015, 4),
-                                             forecast_start = c(2018, 1),
-                                             forecast_end = c(2018, 4)) {
-  panels <- lapply(seq_along(countries), function(i) {
-    diagnostics_synthetic_panel(countries[i], n = n, seed = 42 + i)
-  })
-  panel <- panels[[1]]
-  for (p in panels[-1]) panel <- c(panel, p[setdiff(names(p), names(panel))])
-
-  # Deliberately NOT reciprocal-sums-to-1: stage2_linkage_weights() folds
-  # whatever is left over into a "row_gdp" residual identity term, and koma's
-  # construct_posterior() aborts ("posterior beta matrix has zeros at
-  # different indices...") if that residual's weight comes out at EXACTLY
-  # zero, which a perfectly-reciprocal small closed system produces. Real
-  # bilateral trade weights never sum to 1 across a handful of countries, so
-  # this only bites a hand-built synthetic fixture -- keep the off-diagonal
-  # below 1 so row_gdp stays genuinely nonzero.
-  n_c <- length(countries)
-  trade_weights <- matrix((1 - diag(n_c)) / (n_c - 1) * 0.7, n_c, n_c, dimnames = list(countries, countries))
-  gdp_weights <- stats::setNames(rep(1 / n_c, n_c), countries)
-
-  lw <- stage2_linkage_weights(countries, trade_weights, gdp_weights)
-  dates <- list(
-    estimation = list(start = c(2000, 1), end = estimation_end),
-    forecast = list(start = forecast_start, end = forecast_end)
-  )
-  shares <- stats::setNames(
-    lapply(countries, function(cc) expenditure_shares(panel, cc, dates)),
-    countries
-  )
-  spec <- stage2_spec(countries, shares, lw)
-  sys_eq <- build_stage2_system(spec)
-  stage2_panel <- build_stage2_panel(panel, lw)
-
-  list(
-    panel = stage2_panel, raw_panel = panel, dates = dates, sys_eq = sys_eq,
-    linkage_weights = lw, trade_weights = trade_weights, gdp_weights = gdp_weights,
-    fit = fit_stage2(sys_eq, stage2_panel, dates, options = list(gibbs = list(ndraws = ndraws)))
-  )
-}
-
-# A two-country stage-2 system built straight from a stage2_options() list, so
-# a test can compare the STRUCTURE of a stage-2b system against a stage-2c one
-# without estimating either. Deliberately mirrors test-stage2_system.R's own
-# fixtures (uneven trade weights, a "row" residual well clear of zero) rather
-# than sharing them, because those live in that file and are not visible here.
-reachability_sys_eq <- function(opts = stage2_options(), countries = c("de", "fr")) {
-  n <- length(countries)
-  trade_weights <- matrix(
-    0, n, n + 1,
-    dimnames = list(countries, c(countries, "row"))
-  )
-  for (i in seq_len(n)) {
-    others <- setdiff(seq_len(n), i)
-    trade_weights[i, others] <- 0.25
-    trade_weights[i, "row"] <- 1 - 0.25 * length(others)
+# The system, and the panel with a series for every identity that has no
+# observed counterpart (everything but GDP), chained from the identity's own
+# weights so it holds exactly.
+synthetic_system <- function(equations = synthetic_equations, n = 80, seed = 42) {
+  sys_eq <- koma::system_of_equations(equations, exogenous_variables = synthetic_exogenous)
+  panel <- synthetic_panel(n = n, seed = seed)
+  for (nm in setdiff(names(sys_eq$identities), names(panel))) {
+    id <- sys_eq$identities[[nm]]
+    w <- stats::setNames(unlist(id$weights, use.names = FALSE), names(id$components))
+    panel[[nm]] <- chain_weighted_index(panel, w)
   }
-  gdp_weights <- stats::setNames(rep(1 / n, n), countries)
-
-  lw <- stage2_linkage_weights(countries, trade_weights, gdp_weights)
-  shares <- stats::setNames(lapply(countries, function(cc) {
-    list(
-      gdp = stats::setNames(
-        c(0.9, 0.4, -0.3),
-        country_var(cc, c("domestic_demand", "exports", "imports"))
-      ),
-      domestic_demand = stats::setNames(
-        c(0.6, 0.2, 0.2),
-        country_var(cc, c("consumption", "investment", "government"))
-      )
-    )
-  }), countries)
-
-  build_stage2_system(stage2_spec(countries, shares, lw, opts = opts))
+  list(sys_eq = sys_eq, panel = panel, dates = synthetic_dates())
 }
+
+# Estimated once per test run and draw count: the tests that need a fit only
+# read it, and copies they modify do not touch the cache.
+synthetic_fit <- local({
+  cache <- list()
+  function(ndraws = 100) {
+    key <- as.character(ndraws)
+    if (is.null(cache[[key]])) {
+      s <- synthetic_system()
+      s$fit <- fit_system(s$sys_eq, s$panel, s$dates, options = list(gibbs = list(ndraws = ndraws)))
+      cache[[key]] <<- s
+    }
+    cache[[key]]
+  }
+})

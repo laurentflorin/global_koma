@@ -1,9 +1,7 @@
 # Copy this file to .Renviron (never commit .Renviron itself -- it is
 # git-ignored) and fill in real values. R reads .Renviron automatically at
-# session start; see CLAUDE.md for the rule that FRED_API_KEY and the KOF
-# database password must never be committed, logged, or printed.
-
-FRED_API_KEY=
+# session start; see CLAUDE.md for the rule that the KOF database password
+# must never be committed, logged, or printed.
 
 # KOF time-series database (archivedb.kof.ethz.ch), read with koftsdb by
 # scratch/vja_data_build.R. koftsdb can only prompt for the password inside

@@ -22,7 +22,7 @@
 #   Ireland and the Netherlands are fetched too, to be left out (below).
 #
 # Everything stays in levels (CLAUDE.md). What happens to the data here, all
-# of it reported by vja_panel_notes():
+# of it listed in the panel's "notes" attribute:
 # - Monthly and daily series become quarterly averages. A trailing quarter
 #   that is not complete yet is dropped.
 # - Splices, in levels: euro-area short rate (EONIA minus its fixed spread

@@ -6,6 +6,16 @@
 \usage{
 lookup_ts(x, times, frequency)
 }
+\arguments{
+\item{x}{A \code{ts}.}
+
+\item{times}{Decimal times.}
+
+\item{frequency}{Observations per year.}
+}
+\value{
+A numeric vector the length of \code{times}.
+}
 \description{
 Read a \code{ts} at given decimal times, returning \code{NA} off the ends
 }
