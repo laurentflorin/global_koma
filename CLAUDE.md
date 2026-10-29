@@ -1159,6 +1159,136 @@ The FRED API key lives in `.Renviron` as `FRED_API_KEY`. Copy
 - If a key is ever accidentally committed, treat it as compromised: rotate
   it at FRED before doing anything else, then scrub the commit.
 
+## Macrobond (desktop licence only)
+
+This project has a Macrobond **desktop** licence and no Web API licence, so
+Macrobond data cannot be fetched from R on Linux.
+
+- **Neither of Macrobond's programmatic routes works here.** `MacrobondAPI`, its
+  R package, drives the desktop application over COM, so it is a Windows-only
+  binary that needs the app installed on the same machine. The REST Web API is
+  **licensed separately**: a desktop login is not a Web API credential.
+- **The data comes from an Excel macro run on Windows**, `MacrobondDownload.bas`
+  (not in the repo). It writes `data/raw/vja_macrobond_download*.xlsx`, which
+  `scratch/vja_data_build.R` reads (next section).
+
+## KOF time-series database (`koftsdb`)
+
+`scratch/vja_data_build.R` reads China's VJA series (`cn.kof.vja.*`, schema
+`vja`) from `archivedb.kof.ethz.ch` with `koftsdb`, and combines them with the
+Macrobond download into `data/raw/vja_data.csv`.
+
+- **`koftsdb` and KOF's build of `timeseriesdb` come from
+  `https://kran.kof.ethz.ch`, not GitLab or CRAN**, as the
+  `KOF/koma/koma-vja` lockfile records. That repository answers 403 unless you
+  are on the KOF VPN, while the database itself is reachable from the general
+  ETH network. Install with `options(repos = c(KRAN =
+  "https://kran.kof.ethz.ch", CRAN = "https://cloud.r-project.org"))` and then
+  `renv::install(c("timeseriesdb", "koftsdb"))`. They are not in `renv.lock`.
+- **`RPostgres` builds from source against conda-forge's `libpq`**, added to
+  the `koma` env on 2026-10-28. Install through `scratch/Rrun`, which puts the
+  env's compilers and `pkg-config` on the path.
+- **`db_connection_create()` is `timeseriesdb`'s, and it can only prompt for
+  the password inside RStudio.** Anywhere else it stops with "Unable to obtain
+  password". The script passes `KOFDB_PASSWORD` (and optionally `KOFDB_USER`)
+  from `.Renviron` through `passwd_from_env`, under the same rules as
+  `FRED_API_KEY`. The result is cached in `data/cache/kofdb/vja_kofdb.rds`.
+
+## The VJA model (`scratch/vja_model_*.R`)
+
+Nine entities (`de`, `fr`, `it`, `reu`, `us`, `gb`, `jp`, `cn`, `in`) in one
+system: 69 stochastic equations and 39 identities, `k = 45`, `T = 87`
+(2004Q4-2026Q2), `df = 42`. **The equations are not generated**:
+`scratch/vja_model_equations.R` is one hand-written koma string, `[tau = x]`
+settings included. `scratch/vja_model_panel.R` builds the panel, and
+`scratch/vja_model_build.R` checks, estimates (about two minutes on four
+workers) and forecasts into `data/cache/vja/`. Set `VJA_PREFLIGHT_ONLY=1` to
+stop before estimating.
+
+- **Identity weights are koma injected weights, `(a/b)*x`, and koma keeps one
+  year of them.** It sums `a` and `b` to annual, shifts them back a year and
+  keeps the value at `dates$dynamic_weights$end`. So every weight is the 2025
+  ratio, used for the whole sample and the forecast, not an average.
+  - **A weight can only be one series over another.** `(a/(a+b))` and
+    `(a/a+b)` both fail to parse, so every denominator must be a series in the
+    numerator's units.
+  - Foreign demand needs `dots_<from>_<to>` (IMF DOTS bilateral exports) and
+    `dots_<from>_partners`.
+  - `ea_prices` needs `<cc>_nominal_consumption`, because a price index cannot
+    weight itself.
+  - Those series sit in the panel as `weight_variables`, not model variables.
+- **A constructed identity whose own left-hand side divides its weights needs a
+  level first.** `<cc>_domestic_demand` and `ea_gdp` are built as the sum of
+  their components, to evaluate the weights. They are then rebuilt as a chained
+  index from those weights, scaled to the same 2025 level. The weights therefore
+  come out unchanged and the identity holds exactly. `vja_add_identity_series()`
+  evaluates the weights with `koma:::get_seq_weights()`, the function
+  `estimate()` itself calls. The build checks that koma's fitted weights match
+  to 1e-12.
+- **The trade totals are now observed, so their identities are inexact.** With
+  2025 goods shares fixed across twenty years, `gb_exports` misses its
+  published growth by up to 7.7pp in one quarter, and GDP's identities by
+  1.6-4.3pp. Neither enters an estimated equation as a regressor; only the
+  forecast enforces them.
+- **`reu_prices` is derived with the same 2025 consumption weights.** That
+  makes `ea_prices` reproduce the euro-area HICP's growth to 9e-14, so the ECB
+  rule reacts to the published index.
+- **Macrobond's euro area changes composition.** Its level against Eurostat's
+  fixed EA20 runs from 1.04 in 1995 to 1.000 in 2023-24 and 0.994 in 2026, the
+  year Bulgaria joined. Subtracting members from it puts every accession into
+  the rest of the euro area as a growth spike. The euro-area entities' national
+  accounts therefore come from Eurostat `namq_10_gdp` (`CLV20_MEUR`, SCA).
+  Those agree with Macrobond exactly for Germany, and for Italy up to a constant
+  factor: Macrobond's Italian aggregates are 2010-reference volumes, 1.03-1.12
+  times smaller. France is the exception.
+- **France's Macrobond (INSEE) services trade is not Eurostat's P62/P72.** The
+  level ratio is 1.33 and the growth correlation 0.78, while France's goods
+  exports match exactly.
+- **`reu` leaves Ireland and the Netherlands out of its national accounts.**
+  Multinationals' IP transactions give Dutch investment a growth sd of 15.8 on
+  2004Q3-2019Q4, and Irish investment is worse still. With both in, the bloc's
+  investment growth has sd 6.6 and autocorrelation -0.68, and its services
+  imports 7.2 and -0.73. Excluding both gets them to 1.8 (autocorrelation
+  +0.61) and 1.75; Ireland alone only to 3.8 and 4.8. The IP flow appears as
+  investment and as imported services, so it cancels in GDP, which two separate
+  equations cannot reproduce. Their prices and yields are not distorted and stay
+  in `reu`, and `ea_gdp` covers the euro area less those two.
+- **The euro-area HICPs and UK CPI are published unadjusted.** Italy's quarterly
+  inflation averages -0.91 / +1.98 / -0.72 / +1.20 by quarter. The panel
+  adjusts them with STL on logs; afterwards no series fails a quarter-dummy
+  F-test. US CPI is already adjusted. China's KOF trade does not test as
+  seasonal, so it is left alone.
+- **Three series break where nothing happened.** The OECD's US government
+  consumption jumps 7.1% at 2007Q1 and otherwise matches the BEA quantity index
+  to 0.01pp, so the panel uses the index, scaled to the OECD level. India's
+  OECD QNA GDP, exports and imports all jump 42-50% at 2004Q2, two price bases
+  joined without linking, so India starts there. China's KOF series run to
+  2031Q4 and are cut at 2026Q2, after which they are KOF's own forecast.
+- **COVID is four 0/1 dummies in the real-side equations.** The quarters are
+  2020Q1-Q3 and 2021Q2: those whose mean absolute GDP growth across the nine is
+  more than three times its 2004Q3-2019Q4 average of 0.93pp. It is stage 2b's
+  rule and selects the same quarters.
+- **Consumption, investment and prices carry no GDP term**, by specification.
+  GDP enters only the four Taylor rules and China's and India's equations.
+  - **Without 2021Q2, the earlier version with GDP in those equations
+    exploded.** UK consumption loaded 1.37 on UK GDP. The within-quarter gain of
+    GDP -> consumption and investment -> domestic demand -> GDP, net of
+    imports, then reached 1 in 24% of draws, and 30% of all forecast draws
+    exploded by horizon 8. **An explosive forecast can be a within-quarter
+    loop, not a lag**: no own lag was near 1.
+  - With the GDP terms gone that loop does not exist. The share of explosive
+    draws at horizon 8 is 0.00.
+- **The estimates repeat known weaknesses.** All 69 acceptance rates are in
+  band (39-60%, 31 equations at `tau = 2.2`). 69 of 79 expected signs are right.
+  - Euro-area long rates do not load on the ECB rate (`it` -0.061 straddling
+    zero, `reu` -0.125 with an interval just below zero).
+  - The exchange rate barely moves goods exports.
+  - Japan's short rate is within 0.15 of zero in 71 of 89 quarters. So its own
+    lag is 1.038, and the yen loads -24 on its changes, fitted to the 2024-26
+    hikes, during which the yen kept falling.
+  - China's and India's constants give sample-average growth (China about
+    1.7%/q), with no trend decline.
+
 ## Backtesting and scoring (`R/scoring.R`)
 
 - **`k < T` (`df > 0`) is the right first gate for a joint system but not a

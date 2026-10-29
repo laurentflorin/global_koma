@@ -1,9 +1,16 @@
 # Copy this file to .Renviron (never commit .Renviron itself -- it is
 # git-ignored) and fill in real values. R reads .Renviron automatically at
-# session start; see CLAUDE.md for the rule that FRED_API_KEY must never be
-# committed, logged, or printed.
+# session start; see CLAUDE.md for the rule that FRED_API_KEY and the KOF
+# database password must never be committed, logged, or printed.
 
 FRED_API_KEY=
+
+# KOF time-series database (archivedb.kof.ethz.ch), read with koftsdb by
+# scratch/vja_data_build.R. koftsdb can only prompt for the password inside
+# RStudio. KOFDB_USER is only needed if the database user name differs from
+# your login name.
+KOFDB_USER=
+KOFDB_PASSWORD=
 
 # renv keeps its library outside the repo, on the Data disk. Without this,
 # renv falls back to a per-user cache path and reports a fresh, empty library.
