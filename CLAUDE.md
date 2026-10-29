@@ -26,10 +26,12 @@ scratch/
   vja_data_build.R        Macrobond downloads + KOF database -> data/raw/vja_data.csv
   vja_model_equations.R   the model: one explicit koma equation string
   vja_model_panel.R       the quarterly panel the equations name
-  vja_model_build.R       checks, estimation, forecast -> data/cache/vja/
+  vja_model_build.R       checks, estimation, forecast -> data/outputs/
+  vja_model_plots.R       koma's forecast and MCMC plots -> data/outputs/plots/
   Rrun                    runs R with the koma env's compilers on the path
 data/raw/               git-ignored: raw downloaded series
-data/cache/             git-ignored: cached API responses and fits
+data/cache/             git-ignored: cached API responses (Eurostat, KOF database)
+data/outputs/           git-ignored: the fit, panel, checks, forecasts and plots
 docs/koma-api.md        verified reference for the koma package's API
 ```
 
@@ -173,9 +175,18 @@ Macrobond data cannot be fetched from R on Linux.
   R package, drives the desktop application over COM, so it is a Windows-only
   binary that needs the app installed on the same machine. The REST Web API is
   **licensed separately**: a desktop login is not a Web API credential.
-- **The data comes from an Excel macro run on Windows**, `MacrobondDownload.bas`
-  (not in the repo). It writes `data/raw/vja_macrobond_download*.xlsx`, which
-  `scratch/vja_data_build.R` reads (next section).
+- **The data comes from an Excel macro run on Windows.** `data/raw/` holds the
+  macro, `MacrobondDownload.bas`, and one workbook,
+  `vja_macrobond_download.xlsx`, whose Keys sheet lists only the series the
+  model reads: 141 rows, of which 138 are from Macrobond and 3 are China's KOF
+  series. Its Instructions sheet has the refresh steps.
+  `scratch/vja_data_build.R` turns it into `data/raw/vja_data.csv` (next
+  section). Both files are git-ignored with the rest of `data/raw/`, so keep a
+  copy elsewhere.
+- **Macrobond's COM interface returns search results as object arrays, which
+  VBA cannot hold** (error 458). The macro's `FindMacrobondKeys` reads them
+  through `DispCallFunc` instead. PowerShell gets the managed object and fails
+  on serialisation, so don't retry it.
 
 ## KOF time-series database (`koftsdb`)
 
@@ -207,7 +218,7 @@ system: 69 stochastic equations and 39 identities, `k = 45`, `T = 87`
 `scratch/vja_model_equations.R` is one hand-written koma string, `[tau = x]`
 settings included. `scratch/vja_model_panel.R` builds the panel, and
 `scratch/vja_model_build.R` checks, estimates (about two minutes on four
-workers) and forecasts into `data/cache/vja/`. Set `VJA_PREFLIGHT_ONLY=1` to
+workers) and forecasts into `data/outputs/`. Set `VJA_PREFLIGHT_ONLY=1` to
 stop before estimating.
 
 - **Identity weights are koma injected weights, `(a/b)*x`, and koma keeps one

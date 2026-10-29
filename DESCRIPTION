@@ -22,6 +22,9 @@ Suggests:
     devtools,
     eurostat,
     future,
+    ggplot2,
+    htmltools,
+    plotly,
     readxl,
     testthat (>= 3.2.3),
     withr

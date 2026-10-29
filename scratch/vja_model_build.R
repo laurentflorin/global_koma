@@ -14,21 +14,21 @@
 # 3. Build the identity series that have no observed counterpart, from those
 #    weights, so those identities hold exactly.
 # 4. Pre-flight: everything koma assumes and does not check, plus k < T.
-# 5. Estimate, cached in data/cache/vja/fit.rds. The cache is reused only if
+# 5. Estimate, kept in data/outputs/fit.rds. That fit is reused only if
 #    the equations, exogenous variables and dates are unchanged; delete it
 #    after changing the data.
 # 6. Acceptance rates, own-lag stability, expected signs, and whether each
 #    short rate reaches prices and GDP.
 # 7. An eight-quarter forecast from 2026Q3, with the share of explosive draws.
 #
-# Results go to data/cache/vja/: fit.rds, panel.rds, checks.rds, forecast.rds.
+# Results go to data/outputs/: fit.rds, panel.rds, checks.rds, forecast.rds.
 
 suppressMessages(devtools::load_all(".", quiet = TRUE))
 source(file.path("scratch", "vja_model_panel.R"))
 source(file.path("scratch", "vja_model_equations.R"))
 
-cache_dir <- file.path("data", "cache", "vja")
-dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+out_dir <- file.path("data", "outputs")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 workers <- 4
 
 # --- 1. panel and equations -------------------------------------------------
@@ -85,7 +85,7 @@ if (nzchar(Sys.getenv("VJA_PREFLIGHT_ONLY"))) {
 }
 
 # --- 5. estimate -------------------------------------------------------------------
-fit_path <- file.path(cache_dir, "fit.rds")
+fit_path <- file.path(out_dir, "fit.rds")
 spec_now <- list(equations = vja_equations, exogenous = vja_exogenous, dates = vja_dates)
 fit <- if (file.exists(fit_path)) readRDS(fit_path) else NULL
 if (is.null(fit) || !identical(attr(fit, "vja_spec"), spec_now)) {
@@ -103,7 +103,7 @@ koma_gap <- max(abs(as.numeric(fit_weights) - unlist(lapply(sys_eq_w$identities,
 if (!is.finite(koma_gap) || koma_gap > 1e-12) {
   cli::cli_abort("koma's estimated weights differ from the ones the identity series were built from (gap {koma_gap}).")
 }
-saveRDS(panel, file.path(cache_dir, "panel.rds"))
+saveRDS(panel, file.path(out_dir, "panel.rds"))
 
 # --- 6. checks ---------------------------------------------------------------------
 acceptance <- check_acceptance_rates(fit)
@@ -176,11 +176,11 @@ print(reach, row.names = FALSE)
 saveRDS(list(preflight = preflight, consistency = consistency, weights = weights,
              acceptance = acceptance, coefficients = coefs, lags = lags,
              signs = signs, reach = reach),
-        file.path(cache_dir, "checks.rds"))
+        file.path(out_dir, "checks.rds"))
 
 # --- 7. forecast ---------------------------------------------------------------------
 fc <- forecast_system(fit, panel, horizon = 8)
-saveRDS(fc, file.path(cache_dir, "forecast.rds"))
+saveRDS(fc, file.path(out_dir, "forecast.rds"))
 explosive <- forecast_explosive_table(fc$paths)
 cli::cli_inform("Explosive draws at horizon 8: {sprintf('%.2f', mean(explosive$h_last))} over all variables, {sprintf('%.2f', mean(explosive$h_last[grepl('_gdp$', explosive$variable)]))} for GDP.")
 gdp <- fc$paths[fc$paths$kind == "forecast" & fc$paths$variable %in% paste0(vja_entities, "_gdp"), ]

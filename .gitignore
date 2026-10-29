@@ -4,8 +4,10 @@
 # Raw and cached data -- never commit; refetch/rebuild instead.
 data/raw/*
 data/cache/*
+data/outputs/*
 !data/raw/.gitkeep
 !data/cache/.gitkeep
+!data/outputs/.gitkeep
 
 # renv project library -- restored from renv.lock with renv::restore().
 renv/library/

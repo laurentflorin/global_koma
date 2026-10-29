@@ -6,13 +6,15 @@
 #
 # Two sources:
 #
-# - Macrobond, downloaded on Windows with the Excel macro MacrobondDownload.bas
-#   into data/raw/vja_macrobond_download*.xlsx. A workbook's Keys sheet is the
-#   key list, and its Data sheet holds every series at native frequency. If a
-#   key failed and was re-downloaded into a second workbook matching the same
-#   pattern, each key is taken from the most recent workbook where its Status
-#   is OK. A newer workbook can also give a country and variable a different
-#   key: the newest key that downloaded wins, and the replacement is reported.
+# - Macrobond: data/raw/vja_macrobond_download.xlsx, refreshed on Windows with
+#   the Excel macro data/raw/MacrobondDownload.bas (its Instructions sheet has
+#   the steps). Its Keys sheet is the key list -- only the series the VJA model
+#   reads -- and its Data sheet holds every series at native frequency.
+#   Further workbooks matching data/raw/vja_macrobond_download*.xlsx are read
+#   too, oldest first, for a partial re-download: each key is taken from the
+#   most recent workbook where its Status is OK, and a newer workbook can give
+#   a country and variable a different key (the newest key that downloaded
+#   wins, and the replacement is reported).
 # - KOF's time-series database (koftsdb, schema "vja"), for the rows whose key
 #   is a KOF key (`<cc>.kof.<...>`): China's GDP, exports and imports.
 #   koftsdb is a private KOF package and the database needs a password, so the
@@ -112,7 +114,17 @@ key_list <- key_list[pick[!duplicated(group)], ]
 is_kof <- grepl("^[a-z]{2}\\.kof\\.", key_list$Macrobond_Key)
 
 macrobond_obs <- do.call(rbind, lapply(unique(ok$workbook), function(p) {
-  x <- readxl::read_excel(p, "Data", col_types = c("text", "date", "numeric"))
+  x <- suppressWarnings(readxl::read_excel(p, "Data", col_types = c("text", "date", "numeric")))
+  x <- x[!is.na(x$Key), ]
+  # A workbook saved by something other than Excel can turn the date cells into
+  # text ("Wed Jan 02 1980 01:00:00 GMT+0100 ..."), which reads as NA here and
+  # would otherwise fail much later with an unrelated error.
+  if (anyNA(x$Date)) {
+    cli::cli_abort(c(
+      "{.file {p}}: {sum(is.na(x$Date))} of {nrow(x)} dates in the Data sheet are not Excel dates.",
+      "i" = "Was it saved by a viewer that writes dates as text? Re-save it in Excel, or rebuild it from the macro."
+    ))
+  }
   x[x$Key %in% ok$Key[ok$workbook == p], ]
 }))
 # readxl returns UTC midnight; the macro writes calendar days only.
